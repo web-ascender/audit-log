@@ -66,6 +66,40 @@ module AuditLog
     # future partition is a write-path outage, so this has margin.
     attr_accessor :partition_months_ahead
 
+    # How long audit rows are kept. A partition is eligible for retirement once
+    # its UPPER bound is older than this -- never its lower, or a month still
+    # holding in-horizon days would go. nil disables retirement entirely.
+    #
+    # Seven years is the common denominator of the horizons that actually drive
+    # this decision (SOX at seven, HIPAA at six, most commercial contracts at
+    # five or fewer). It is a starting point to be overridden per application,
+    # not a legal opinion.
+    attr_accessor :retention
+
+    # :detach or :drop. Detaching is reversible with a single ATTACH and leaves
+    # the data in the schema under a `_retired_` name; dropping is not. The
+    # default is the reversible one because an audit log is the worst place in
+    # the database to find out the horizon was set wrong. Switch to :drop once
+    # something exports the detached partitions first.
+    attr_accessor :retention_action
+
+    # Consolidate a calendar year's twelve monthly partitions into one yearly
+    # partition once the whole year is older than this. nil disables rollup.
+    #
+    # Two years back, so the window the auditor screens actually range over is
+    # always still stored by month. Rolling up costs a full rewrite of the year
+    # under an exclusive lock, and it coarsens retention -- a yearly partition
+    # can only be retired whole, so up to eleven extra months are kept past the
+    # horizon. Both are acceptable for cold years and neither is for warm ones.
+    attr_accessor :rollup_after
+
+    # Applied to every maintenance path that needs ACCESS EXCLUSIVE on an audit
+    # table: drain_default!, retire!, and rollup_year!'s swap. A pending
+    # ACCESS EXCLUSIVE request blocks every lock queued behind it, so an
+    # unbounded wait behind one long reader stalls the audit write path for the
+    # whole application. Fail fast and report instead.
+    attr_accessor :maintenance_lock_timeout
+
     # How far either side of a request's own timestamp the drill-down looks for
     # the rows belonging to it. See AuditLog::RequestDrillDown: this exists to buy
     # partition pruning on a query that has no occurred_at predicate of its own.
@@ -94,6 +128,10 @@ module AuditLog
       @default_excluded_columns = DEFAULT_EXCLUDED_COLUMNS.dup
       @partition_months_ahead   = 3
       @drill_down_slack         = 24.hours
+      @retention                = 7.years
+      @retention_action         = :detach
+      @rollup_after             = 2.years
+      @maintenance_lock_timeout = "5s"
       @raise_on_subscriber_error = true
       @unaudited_tables         = {
         "schema_migrations"    => "Rails internal",

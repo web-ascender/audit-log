@@ -96,7 +96,9 @@ rows constituted "submitting an order".
 10. Copy the specs in `spec/audit_log/` — especially `coverage_spec.rb`.
 
 11. Schedule `AuditLog::Partitions.ensure!` daily. **A missing future partition
-    is a write-path outage**, not a degraded report.
+    is a write-path outage**, not a degraded report. Nothing else in
+    `partitions.rb` belongs in a cron — see
+    [The partition lifecycle](#the-partition-lifecycle).
 
 ### What a model needs
 
@@ -121,14 +123,14 @@ cost lives in the migration, next to the table it audits.
 | `actor_label.rb` | Renders the label that gets snapshotted onto every row. |
 | `migration_helpers.rb` | `attach_audit_trigger` / `detach_audit_trigger`. |
 | `schema.rb` | `install!` / `uninstall!` for a migration. |
-| `partitions.rb` | Monthly partition rotation, freezing, overflow detection, UTC-boundary enforcement. |
+| `partitions.rb` | Partition rotation, default-partition drain, yearly rollup, retention, freezing, UTC-boundary enforcement. |
 | `bypass.rb` | The one escape hatch, which logs itself. |
 | `console.rb` | Narrates console sessions. |
 | `db/sql/audit_tables.sql` | The two partitioned tables and their indexes. |
 | `db/sql/audit_row_change.sql` | The trigger function. The heart of layer 1. |
 | `app/queries/` | One object per auditor question (`ActorActivity`, `RecordHistory`, `ActionReport`, `Reconciler`). |
 | `app/controllers/`, `app/views/` | The auditor UI. |
-| `tasks/audit_log.rake` | `partitions`, `freeze`, `reconcile`, `coverage`, `benchmark`. |
+| `tasks/audit_log.rake` | `partitions`, `drain_default`, `rollup`, `retention`, `freeze`, `reconcile`, `coverage`, `benchmark`. |
 
 ---
 
@@ -388,6 +390,121 @@ partition** — a known `+1`, not a bug, and not worth trading the correct
 auditor-facing semantic for. Do not "fix" it by moving the partition boundaries
 into the app zone.
 
+### The partition lifecycle
+
+Four operations, and only the first one is safe to schedule.
+
+| | What it does | Lock on the parent | Where it belongs |
+|---|---|---|---|
+| `ensure!` | Provisions the current month plus `partition_months_ahead` | Catalog-only, nothing to scan | **Daily cron.** A missing future partition is a write-path outage |
+| `drain_default!` | Moves stranded rows out of the default partition | `ACCESS EXCLUSIVE` | On demand, when `rake audit_log:partitions` warns |
+| `rollup!` | Consolidates a closed year's twelve monthlies into one | `ACCESS EXCLUSIVE` for the swap; a full rewrite before it | Maintenance window |
+| `retire!` | Detaches (or drops) partitions past the horizon | `ACCESS EXCLUSIVE`, briefly | Quarterly, deliberately |
+
+All three of the manual ones run under `config.maintenance_lock_timeout` (5s).
+Without it, a maintenance statement waiting for `ACCESS EXCLUSIVE` behind one
+long-running reader blocks *every* lock request queued behind it — which is to
+say the audit write path for the whole application. Failing fast and reporting
+is strictly better than a maintenance task that takes production down.
+
+#### Draining the default partition
+
+A row whose month has no partition lands in `audit_changes_default` — that is
+the backstop working. The trap is what happens next: **a partition covering that
+range can no longer be created**, because Postgres validates the default
+partition's implied constraint and refuses.
+
+```
+ERROR:  updated partition constraint for default partition "audit_changes_default"
+        would be violated by some row
+```
+
+So the rows have to come *out* before the partition can go *in*. `drain_default!`
+does that in one transaction: stage the rows into a temp table, create the real
+partitions, insert them back so routing files them correctly. A failure anywhere
+leaves them in the default partition — exactly where they started, still
+queryable through the parent, nothing lost. Ids are preserved.
+
+The month a row is filed under is computed as
+`date_trunc('month', occurred_at AT TIME ZONE 'UTC')`. Applying `date_trunc`
+directly to a `timestamptz` truncates in the *session* zone, which for a row near
+a month boundary picks the wrong partition and fails the insert.
+
+#### Rolling months up into years
+
+A 7-year horizon at monthly granularity is 84 partitions per table, 168 in total
+— every one a relation the planner considers, autovacuum tracks, and `pg_dump`
+walks. `rollup!` consolidates any calendar year older than
+`config.rollup_after` (2 years) into a single yearly partition, taking that to
+roughly five yearly partitions plus a rolling window of months.
+
+**PostgreSQL has no `ALTER TABLE ... MERGE PARTITIONS`.** The patch was reverted
+before 17 shipped and is absent from 18, so this is a hand-rolled copy-and-swap,
+staged so the exclusive lock covers catalog work only:
+
+1. Build a standalone table with `LIKE parent INCLUDING ALL` and fill it from the
+   year's partitions. The parent is untouched; the application keeps writing.
+   `INCLUDING ALL` carries the indexes, which is what lets `ATTACH` match them
+   against the parent's partitioned indexes instead of rebuilding them under the
+   lock. A validated `CHECK` matching the future bound lets `ATTACH` skip its own
+   validation scan — same work, paid outside the lock.
+2. In one short transaction: detach the twelve monthlies, `ATTACH` the new table,
+   drop the now-redundant `CHECK`, drop the monthlies.
+
+Correctness rests on the year being closed, and that assumption is **asserted,
+not trusted**: an id watermark taken *before* the copy is re-checked after the
+detach, and a single row that arrived in between rolls the whole swap back. The
+watermark is taken before rather than after the copy on purpose — one read after
+the copy would not catch a row that landed *during* it, which is precisely the
+row that would be lost.
+
+`ATTACH` also has to scan the default partition to prove no row there belongs in
+the incoming range, so `rollup_year!` checks that first and points at
+`drain_default!` rather than failing cryptically at the end of a long copy.
+
+Two costs worth stating. It rewrites a full year of data. And it coarsens
+retention: a yearly partition can only be retired whole, so up to eleven extra
+months are kept past the horizon. Both are fine for cold years and neither is
+for warm ones — which is what `rollup_after` is for.
+
+#### Retention
+
+`config.retention` defaults to **7 years**; `nil` disables retirement entirely.
+A partition expires when its **upper** bound is older than the horizon, never its
+lower — keying on the lower bound would retire a month that still holds days
+inside it.
+
+`config.retention_action` defaults to `:detach`, not `:drop`, and that asymmetry
+is deliberate. Detaching is reversible with a single `ATTACH`, so a wrong horizon
+costs an afternoon; dropping is not, and an audit log is the worst table in the
+database to discover a wrong setting in. Detached partitions keep their rows and
+their disk under a `_retired_` name, and `rake audit_log:partitions` reports them
+with their size so they cannot pile up unseen. Switch to `:drop` once something
+exports them first.
+
+The rename is not cosmetic: it makes "expired, awaiting export" a visible state,
+and it stops `create_month!` from mistaking a retired table for a live partition.
+
+```bash
+DRY_RUN=1 bin/rails audit_log:retention   # what would go, and when
+DRY_RUN=1 bin/rails audit_log:rollup      # which years would consolidate
+```
+
+#### Why not pg_partman?
+
+It would replace roughly 65 of `partitions.rb`'s 103 code lines — about 2.5% of
+the library — and it would not replace the parts that matter. Scheduling does not
+go away (`run_maintenance_proc` still needs pg_cron, a background worker
+requiring `shared_preload_libraries`, or a rake task, and the failure mode is
+identical). The UTC-boundary hazard does not go away either — partman derives
+bounds with `date_trunc` against the maintenance session's `TimeZone`, which is
+exactly the bug fixed in `create_month!`, except no longer ours to fix. And it
+breaks plan §2.4's "no extensions", which is what makes this installable from an
+ordinary migration with no superuser.
+
+What partman is genuinely better at is retention and relocating rows out of the
+default partition. Both are now implemented above.
+
 ### Application code addresses the parent table, never a partition
 
 `audit_changes` and `audit_events` are partitioned parents with no storage of
@@ -401,7 +518,8 @@ partition, and `DETACH`/`DROP` for retention.
 Note that Postgres creates **nothing** automatically — declarative partitioning
 gives you routing and pruning, never provisioning. That is the entire reason
 `Partitions.ensure!` and its daily recurring task exist, and the reason
-`pg_partman` exists as an alternative (plan §8).
+`pg_partman` exists at all — see [Why not pg_partman?](#why-not-pg_partman)
+above for why this library does not use it.
 
 ## Not implemented (deliberately)
 
@@ -414,7 +532,10 @@ Per [`AUDIT_LOGGING_PLAN.md`](../../AUDIT_LOGGING_PLAN.md) §12, §13, §15:
 - **Cryptographic tamper evidence.** If ever needed, do it as a nightly sealing
   job, never in the trigger: an in-trigger `prev_hash` chain serializes every
   write through one hot tuple.
-- **Retention / export.** `DETACH PARTITION` → export → drop. Blocked on a
-  retention-horizon decision.
+- **Export of retired partitions.** `retire!` detaches and reports; what happens
+  to a detached partition — `COPY` to object storage, `pg_dump -t`, a cold
+  tablespace — is a deployment decision, not a library one. Until one is made,
+  `retention_action` stays `:detach` and the partitions sit in the schema where
+  `rake audit_log:partitions` keeps naming them.
 - **PII redaction.** Blocked on a policy decision.
 - **Read-access logging.** Explicitly out of scope.

@@ -23,6 +23,87 @@ namespace :audit_log do
            "#{b[:lower].iso8601} to #{b[:upper].iso8601}. Expect a gap or an " \
            "overlap at the month boundary; see AuditLog::Partitions."
     end
+
+    AuditLog::Partitions.retired_partitions.each do |r|
+      warn "NOTE: #{r[:name]} is detached and still occupying " \
+           "#{ActiveSupport::NumberHelper.number_to_human_size(r[:bytes])}. Export it and drop it."
+    end
+  end
+
+  desc "Move rows out of the default partition into the partitions that should hold them"
+  task drain_default: :environment do
+    # Takes ACCESS EXCLUSIVE on both audit tables -- see AuditLog::Partitions.
+    result = AuditLog::Partitions.drain_default!
+    result.each do |table, r|
+      if r[:moved].zero?
+        puts "#{table}_default: empty."
+        next
+      end
+
+      created = r[:created].any? ? " into new partition(s) #{r[:created].join(", ")}" : ""
+      puts "#{table}_default: moved #{r[:moved]} row(s)#{created}."
+    end
+  end
+
+  desc "DETACH (or DROP) partitions past the retention horizon. DRY_RUN=1 to preview"
+  task retention: :environment do
+    retention = AuditLog.config.retention
+    if retention.nil?
+      puts "Retention is disabled (AuditLog.config.retention is nil)."
+      next
+    end
+
+    action  = AuditLog.config.retention_action
+    expired = AuditLog::Partitions.expired_partitions
+
+    puts "Horizon: #{retention.inspect} -- anything ending before " \
+         "#{(Time.now.utc - retention).iso8601} is expired. Action: #{action}."
+
+    if expired.empty?
+      puts "Nothing expired."
+      next
+    end
+
+    if ENV["DRY_RUN"].present?
+      expired.each { |b| puts "  would #{action}: #{b[:name]} (#{b[:lower].to_date} .. #{b[:upper].to_date})" }
+      next
+    end
+
+    AuditLog::Partitions.retire!.each do |r|
+      puts r[:retired_as] ? "  detached: #{r[:name]} -> #{r[:retired_as]}" : "  dropped:  #{r[:name]}"
+    end
+    warn "Detached partitions still hold their data. Export and drop them; " \
+         "`rake audit_log:partitions` lists them." if action == :detach
+  end
+
+  desc "Consolidate closed years of monthly partitions into yearly ones. DRY_RUN=1 to preview"
+  task rollup: :environment do
+    if AuditLog.config.rollup_after.nil?
+      puts "Rollup is disabled (AuditLog.config.rollup_after is nil)."
+      next
+    end
+
+    candidates = AuditLog::Partitions.rollup_candidates
+    if candidates.empty?
+      puts "No closed year is stored as monthly partitions."
+      next
+    end
+
+    candidates.each do |c|
+      puts "#{c[:table]} #{c[:year]}: #{c[:partitions].size} monthly partition(s) -> " \
+           "#{AuditLog::Partitions.year_partition_name(c[:table], c[:year])}"
+    end
+
+    if ENV["DRY_RUN"].present?
+      puts "DRY_RUN -- nothing changed."
+      next
+    end
+
+    # Rewrites a full year of data and then takes ACCESS EXCLUSIVE for the swap.
+    # Maintenance window, not a cron.
+    AuditLog::Partitions.rollup!.compact.each do |r|
+      puts "  #{r[:name]}: #{r[:rows]} row(s), replaced #{r[:replaced].size} monthly partition(s)"
+    end
   end
 
   desc "VACUUM FREEZE every closed partition"
