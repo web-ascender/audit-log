@@ -6,6 +6,10 @@ module AuditLog
   # are the rows an auditor scrutinizes most, so they get their own screen.
   class OutOfBandController < ApplicationController
     def index
+      scope = AuditLog::Change.out_of_band
+                              .occurred_between(date_range.to_range).newest_first
+      return stream_csv(AuditLog::CsvExport.for(scope), "audit-out-of-band") if request.format.csv?
+
       @pagy    = paginate(AuditLog::Change.out_of_band
                                           .occurred_between(date_range.to_range)
                                           .newest_first)

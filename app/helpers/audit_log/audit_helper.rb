@@ -89,6 +89,22 @@ module AuditLog
       end
     end
 
+    # Same URL, same filters, same date range -- only the format differs. That is
+    # the point: the export is provably the screen the auditor is looking at, not
+    # a second query that might disagree with it.
+    #
+    # `?format=csv` rather than a `.csv` path extension, because action ids
+    # contain dots. `/audit/actions/order.submitted.csv` is recognised as
+    # `id: "order.submitted.csv"` with NO format -- the greedy `[^/]+` constraint
+    # swallows the extension -- so the path form silently serves HTML for an
+    # action that does not exist. Rails reads :format out of the query string just
+    # as happily, and it behaves the same on every screen.
+    def audit_csv_link
+      query = request.query_parameters.merge(format: "csv").to_query
+
+      link_to "Export CSV", "#{request.path}?#{query}", class: "button csv"
+    end
+
     def audit_request_link(request_id)
       return tag.span("out of band", class: "badge out-of-band") if request_id.blank?
 

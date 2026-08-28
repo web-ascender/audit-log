@@ -18,6 +18,9 @@ module AuditLog
       query = AuditLog::RecordHistory.new(
         record_type: @record_type, range: date_range.to_range, columns: @columns
       )
+      return stream_csv(AuditLog::CsvExport.for(query.changes), "audit-#{@record_type}") if
+        request.format.csv?
+
       @pagy            = paginate(query.changes)
       @changes         = @pagy.records
       @touched_columns = query.touched_columns
@@ -29,9 +32,13 @@ module AuditLog
       @record_type = params[:record_type]
       @record_id   = params[:record_id]
 
-      @pagy    = paginate(AuditLog::RecordHistory.new(
+      scope = AuditLog::RecordHistory.new(
         record_type: @record_type, record_id: @record_id
-      ).changes)
+      ).changes
+      return stream_csv(AuditLog::CsvExport.for(scope), "audit-#{@record_type}-#{@record_id}") if
+        request.format.csv?
+
+      @pagy    = paginate(scope)
       @changes = @pagy.records
     end
   end

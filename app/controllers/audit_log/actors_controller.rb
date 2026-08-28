@@ -20,6 +20,11 @@ module AuditLog
         actor_type: @actor_type, actor_id: @actor_id, range: date_range.to_range
       )
 
+      if request.format.csv?
+        scope = @view == "actions" ? @query.events : @query.changes(operations: %w[I U D])
+        return stream_csv(AuditLog::CsvExport.for(scope), "audit-actor-#{@actor_id}-#{@view}")
+      end
+
       if @view == "actions"
         @pagy    = paginate(@query.events)
         @events  = @pagy.records

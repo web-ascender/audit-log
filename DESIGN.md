@@ -1550,6 +1550,37 @@ deleted records.
 
 ---
 
+### 11.4a CSV export  **[added 2026-08-28]**
+
+Every browse screen serves `?format=csv` through `AuditLog::CsvExport`, streamed. Three decisions
+in it are load-bearing:
+
+**No row cap.** The screens page precisely so they never truncate silently; an export that quietly
+stopped at 10,000 rows would put that failure straight back. The only bound is the screen's own
+date range, which the caller has already applied.
+
+**It streams.** A month of `audit_changes` is not something to build in memory as one String and
+hand to `send_data`. Rows are fetched in batches and yielded as they are formatted. `Last-Modified`
+is set because `Rack::ETag` digests the whole body to compute an entity tag when it has no other
+validator — which would buffer the very thing the streaming avoids.
+
+**Batching walks the same `(occurred_at, id)` keyset the screens page by, not `in_batches`.**
+`in_batches` orders by primary key and discards the `ORDER BY`, so the export would come out in a
+different order from the screen it was taken from. Row-value comparison keeps the caller's date
+predicate intact, so partitions still prune.
+
+The link is `?format=csv`, **not** a `.csv` path extension. Action ids contain dots, and
+`/audit/actions/order.submitted.csv` is recognised as `id: "order.submitted.csv"` with no format —
+the greedy `[^/]+` id constraint swallows the extension, and the screen then serves HTML for an
+action that does not exist. A test asserting only the CSV header row passes against that, because a
+header is emitted even for zero rows; `audit_csv_spec.rb` asserts row content for exactly this
+reason.
+
+`csv` is declared in the Gemfile rather than merely required: it stopped being a default gem in
+Ruby 3.4, so `require "csv"` alone is a `LoadError`.
+
+---
+
 ### 11.5 Completeness reconciler
 
 Keeps the narrative layer honest about how much of the record layer it covers:
