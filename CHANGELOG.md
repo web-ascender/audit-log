@@ -2,6 +2,80 @@
 
 ## Unreleased
 
+### The timeline spine becomes a union, and takes a date bound  **[2026-08-28]**
+
+`AuditLog::Timeline` was anchored on `audit_changes` alone, which made it
+complete for every **write** to a record and silently blind to four things — each
+one an action that named the record and wrote no change row *to it*:
+
+1. an action that wrote only children (a line item added to an order whose own
+   row never changes — any aggregate root whose children change more than it
+   does),
+2. an action whose write landed in another table (`order.emailed` → `deliveries`),
+3. an action that wrote nothing at all (`order.exported`),
+4. **every** action on a record whose table is in `unaudited_tables` — no trigger,
+   so no change rows exist, so the page came back empty for a record with a full
+   narrative history. A category, not an edge case.
+
+`Timeline#changes` is now `Timeline#spine`: a union of the record's change rows
+and the events whose `subject` is that record, grouped by unit of work. All four
+are covered by that one leg.
+
+**It also removed code.** The old spine paged over change *rows* and grouped
+them, so a unit of work could straddle a cursor and needed a de-duplication pass.
+Keying the spine on the unit itself deletes that problem rather than managing it —
+one spine row is one entry and cannot split.
+
+**`range:` bounds both legs**, and is the biggest lever on cost. Measured with
+`EXPLAIN` against a 36-month horizon, 72 monthly partitions across the two tables:
+
+| Bound | Partitions in the plan |
+|---|---|
+| unbounded (the default) | 72 |
+| `1.year.ago..Time.current` | 34 |
+| `90.days.ago..Time.current` | 16 |
+| `30.days.ago..Time.current` | 4 |
+
+Three findings there are worth more than the 18×. **Pruning survives the union
+and the `GROUP BY`** — that was the open question. **The lower bound is the
+lever**: an upper bound alone is nearly useless (52 of 72), because history runs
+backwards indefinitely. And **an endless range is closed at the current instant**,
+which is worth 3× and loses nothing, because `occurred_at` is filled by
+`clock_timestamp()` and no row can be future-dated.
+
+The default stays unbounded and there is deliberately no config-level default: a
+bound nobody asked for is invisible truncation. A bounded timeline discloses
+itself through `bounded?` / `scope_description`, the way `requests/show` discloses
+the drill-down's window, and the engine's tab offers `?days=` so both states get
+rendered — a disclosure that never renders is a disclosure nobody has tested.
+`older_than_window?` is opt-in and never called from `#entries`, because it looks
+below the bound and would hand back the pruning the caller just bought.
+
+Four things found building it, each of which fails quietly rather than loudly:
+
+- **The unit-of-work key must be ONE non-null text column.**
+  `COALESCE(request_id::text, 'row:' || id)`. Keying on `(request_id, id)` — with
+  a NULL in one of the two on every row — makes the row-wise keyset predicate
+  evaluate to NULL, and the timeline goes blank after page one with no error. The
+  same NULL trap as `where.not(subject_type:, subject_id:)`, which is now twice
+  this feature has hit it in a different disguise.
+- **Bind Ruby Times, never SQL.** `now() - interval '30 days'` reported 12
+  partitions in the plan and **60 subplans removed at run time** — the planner
+  kept all 72. Only a literal timestamp prunes at plan time, which is where the
+  relation locks are.
+- **The bound belongs inside each leg.** On the outer aggregate the planner cannot
+  push a predicate on `max(occurred_at)` back through the `GROUP BY`.
+- **Pagy paginates the subquery, but only under three conditions** — a real
+  `table_name` that the subquery aliases to, `attribute :uow, :string`, and
+  ordering through `arel_table` rather than a symbol. `SpineRow` documents each
+  and `timeline_spec` pins them, so a Rails or Pagy upgrade fails a spec instead
+  of a screen.
+
+The CSV export is unchanged and deliberately not the spine: the timeline tab ships
+the record's change rows, because a spine row is a grouping this library invented
+rather than something the database recorded.
+
+
 ### A host-facing activity timeline  **[2026-08-28]**
 
 The auditor UI is for auditors. `AuditLog::Timeline` is the other audience: a

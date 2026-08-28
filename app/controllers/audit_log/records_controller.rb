@@ -38,11 +38,10 @@ module AuditLog
       @record_id   = params[:record_id]
       @view        = VIEWS.include?(params[:view]) ? params[:view] : "changes"
 
-      scope = view_scope
-      return stream_csv(AuditLog::CsvExport.for(scope),
+      return stream_csv(AuditLog::CsvExport.for(csv_scope),
                         "audit-#{@record_type}-#{@record_id}-#{@view}") if request.format.csv?
 
-      @pagy = paginate(scope)
+      @pagy = paginate(paginated_scope)
       case @view
       when "actions"
         @events             = @pagy.records
@@ -54,7 +53,8 @@ module AuditLog
         # contract can build a real view. A presenter nothing in the gem consumes
         # drifts from what the auditor UI actually does -- the same argument that
         # makes Coverage back both the rake task and the shared example.
-        @entries = record_timeline.entries(@pagy.records)
+        @entries        = record_timeline.entries(@pagy.records)
+        @timeline_scope = record_timeline
       else
         @changes = @pagy.records
       end
@@ -84,8 +84,23 @@ module AuditLog
     def record_timeline
       @audit_labels    ||= AuditLog::LabelResolver.new
       @record_timeline ||= AuditLog::Timeline.new(
-        record_type: @record_type, record_id: @record_id, labels: @audit_labels
+        record_type: @record_type, record_id: @record_id,
+        range: timeline_range, labels: @audit_labels
       )
+    end
+
+    # UNBOUNDED by default, like the rest of Screen A: a single record has
+    # bounded history, and a bound nobody asked for is invisible truncation.
+    #
+    # `?days=` is an opt-in fast path for a hot record, and it exists here mainly
+    # so the engine exercises BOTH states -- a disclosure that never renders is a
+    # disclosure nobody has tested. Closed at the top on purpose; see
+    # Timeline#window for the 3x that costs nothing.
+    def timeline_range
+      days = params[:days].to_i
+      return nil unless days.positive?
+
+      days.clamp(1, 3_650).days.ago..Time.current
     end
 
     def timeline
@@ -94,14 +109,31 @@ module AuditLog
       )
     end
 
-    # The CSV is the evidence artifact for whichever tab is open. It carries the
-    # SUBJECT-MATCHED events only -- the correlated section is a capped, inferred
-    # reading aid, and an export that silently mixed the two would be claiming
-    # more precision than the request_id link supports.
-    def view_scope
+    # What the screen PAGES. For the timeline that is the union spine -- one row
+    # per unit of work -- which is not a row of either audit table and is not
+    # what the export ships. See csv_scope.
+    def paginated_scope
       return timeline.events if @view == "actions"
-      return record_timeline.changes if @view == "timeline"
+      return record_timeline.spine if @view == "timeline"
 
+      record_changes
+    end
+
+    # What the screen EXPORTS, which is not always what it pages.
+    #
+    # The CSV is the evidence artifact, and DESIGN §11.4a is why it ships
+    # recorded rows: the actions tab exports the subject-matched events only,
+    # because the correlated section below it is a capped inference; the timeline
+    # tab exports the record's CHANGE ROWS, because a spine row is a derived
+    # grouping this library invented and not something the database recorded. An
+    # export that shipped either one would be claiming more than the log holds.
+    def csv_scope
+      return timeline.events if @view == "actions"
+
+      record_changes
+    end
+
+    def record_changes
       AuditLog::RecordHistory.new(
         record_type: @record_type, record_id: @record_id
       ).changes

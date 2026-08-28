@@ -59,14 +59,14 @@ Update it when you change behaviour.
 | Ruby | **>= 3.3** — the floor is `SecureRandom.uuid_v7` (DESIGN §2.1), not a preference. 3.3.0 exactly also cannot run Rails 8.1, for a reason of Rails' own. Developed on 4.0.6. |
 | Rails | **`~> 8.0`** — floor 8.0 (DESIGN §2.2), and a real ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. Developed on 8.1.3.1. |
 | PostgreSQL | **18.6 on port 5438** — not the workspace default 5437 |
-| Tests | RSpec against `spec/dummy` (297 examples), on every push via GitHub Actions |
+| Tests | RSpec against `spec/dummy` (308 examples), on every push via GitHub Actions |
 | Runtime deps | `rails`, `pagy` (keyset paging), `csv` (export). **`pg` deliberately is not one** — the host app picks its build. |
 
 ```bash
 bundle install
 cd spec/dummy && RAILS_ENV=test bundle exec bin/rails db:create db:migrate
 bundle exec rspec                       # from the gem root
-bundle exec rspec spec/preview.rb       # renders all 16 engine screens to spec/dummy/public/
+bundle exec rspec spec/preview.rb       # renders all 17 engine screens to spec/dummy/public/
 ```
 
 `spec/dummy/db/structure.sql` is **git-ignored on purpose**. For a disposable app
@@ -201,15 +201,52 @@ Do not "fix" these without reading the linked reasoning first.
   ending in nil. The host has i18n, knows its model names, and may have STI names
   the gem could never guess; it gets `operations`, `record_type` and
   `changed_columns`. `kind` (`:narrative` / `:change_only`) says which it holds.
-- **The timeline's grain is the unit of work, and its page-boundary rule is
-  load-bearing.** An entry is hydrated with EVERY change row of its request,
-  including rows past the end of the page — that is what stops a cursor splitting
-  one save in half. The cost is that the next page starts on one of those older
-  rows and would render the entry twice, so an entry whose newest row for this
-  record is newer than the page's own newest row was already shown in full and is
-  dropped. The check is local and stateless and can only ever drop a duplicate.
-  Removing it double-renders; removing the full hydration truncates an entry at
-  a page edge. `timeline_spec` pins both.
+- **The timeline's spine is a UNION over both tables, keyed on the unit of work,
+  and the key must be ONE non-null text column.** `COALESCE(request_id::text,
+  'row:' || id)` — an out-of-band write has no `request_id` and each one is its
+  own unit, so a synthetic key stops every uncorrelated write in the log
+  collapsing into one NULL group. Keying on `(request_id, id)` instead, with a
+  NULL in one of the two on every row, makes the row-wise keyset predicate
+  evaluate to NULL and the whole timeline goes blank after page one, silently.
+  That is the same NULL trap as `where.not(subject_type:, subject_id:)` in
+  `RecordTimeline` — it has now bitten this feature twice, in two disguises.
+- **The events leg of that union is not optional.** Without it the timeline drops
+  an action that wrote only children (a line item added to an order that itself
+  did not change), one whose write landed in another table, one that wrote
+  nothing, and EVERY action on a record whose table is in `unaudited_tables` —
+  which has no trigger, so a changes-only spine renders an empty page for a
+  record with a full narrative history. What it still does not reach is an
+  *unregistered* child-only write, and that is a registry gap for
+  `audit_log:reconcile`, not something to chase through a child's foreign key: it
+  would need a live join to a business table, which is what keeps these screens
+  truthful about deleted records. DESIGN §11.2b.
+- **`SpineRow` has three requirements that all look like clutter and are not.**
+  (1) `table_name` must be a REAL table and the subquery must alias to that same
+  name, or ActiveRecord raises `PG::UndefinedTable` on `spine::regclass` just
+  loading the class — and `occurred_at` must be a typed timestamptz or Pagy
+  cannot render the cursor at microsecond precision, which is the
+  `FULL_PRECISION` bug all over again. (2) `attribute :uow, :string` declares the
+  synthetic column. (3) Callers must order with `arel_table[:uow]`, never
+  `order(uow: :desc)` — a non-column name renders as an `Arel::Nodes::SqlLiteral`
+  and `Pagy::Keyset#extract_keyset` calls `.name` on it. `timeline_spec` pins all
+  three, so an upgrade that breaks one fails a spec rather than a screen.
+- **One spine row is one entry, so there is deliberately NO page-boundary rule.**
+  An earlier changes-only spine paged over change *rows* and grouped them, so a
+  unit of work could straddle a cursor and needed a de-duplication pass. Keying
+  the spine on the unit deleted that problem. Do not reintroduce row-level paging
+  here "for simplicity" — it costs a de-dup pass and buys nothing.
+- **`Timeline` is unbounded by default and there is deliberately no config-level
+  default bound.** A bound nobody asked for is invisible truncation. `range:`
+  goes INSIDE each leg (on the outer aggregate the planner cannot push a
+  predicate on `max(occurred_at)` back through the `GROUP BY`, so it prunes
+  nothing), it must be bound as Ruby Times and never as SQL — `now() - interval`
+  prunes at RUN time, after the planner has opened all 72 partitions — and an
+  endless range is closed at `Time.current`, which is safe because
+  `clock_timestamp()` cannot produce a future row and is worth 3x. Measured:
+  72 partitions unbounded, 4 at `30.days.ago..Time.current`.
+- **`older_than_window?` is opt-in and must never be called from `#entries`.** It
+  deliberately looks below `range.begin` — the one thing the bound exists to
+  avoid — so calling it per page hands back the pruning the caller just bought.
 - **`config.record_url` defaults to nil and the default is not a placeholder.**
   Inferring `product_path` from `"Product"` is the same mistake as sniffing a
   `name` column for a label, and it fails at render time on a screen an auditor
@@ -497,10 +534,10 @@ one. Do not reintroduce it.
 ## Testing
 
 ```bash
-bundle exec rspec                         # 297 examples, against spec/dummy
+bundle exec rspec                         # 308 examples, against spec/dummy
 bundle exec rspec spec/audit_log          # the library proper
 bundle exec rspec spec/requests           # the auditor UI and the CSV export
-bundle exec rspec spec/preview.rb         # dev tool: renders 16 screens to spec/dummy/public/
+bundle exec rspec spec/preview.rb         # dev tool: renders 17 screens to spec/dummy/public/
 ```
 
 `spec/preview.rb` is deliberately not `_spec.rb`, so it is not auto-collected.
@@ -527,7 +564,7 @@ property from different angles — **that nothing goes missing without saying so
 | `redaction_spec` | redaction removes structure, not just values |
 | `association_labels_spec` | a label replaces a stored id, or a failed lookup reads as an absent one |
 | `record_timeline_spec` | an unsubjected action vanishes from a record's narrative, or a capped section does not admit it is capped |
-| `timeline_spec` | the published host-facing contract changes shape, an entry splits or double-renders at a page edge, or `headline` starts inventing sentences |
+| `timeline_spec` | the published host-facing contract changes shape, a unit of work is dropped or repeated across pages, an event that wrote no change row falls off the timeline, or `headline` starts inventing sentences |
 | `install_generator_spec` | the ControllerContext include lands ahead of authentication, or a skipped step reports success |
 
 A change that makes any of those pass *more easily* is a regression.

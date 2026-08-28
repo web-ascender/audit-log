@@ -572,10 +572,10 @@ and the other records the same action touched.
 ```ruby
 # app/controllers/orders_controller.rb
 def show
-  @order    = Order.find(params[:id])
-  timeline  = AuditLog::Timeline.for(@order)
-  @pagy     = pagy_keyset(timeline.changes)      # or any keyset pager
-  @entries  = timeline.entries(@pagy.records)
+  @order   = Order.find(params[:id])
+  timeline = AuditLog::Timeline.for(@order)
+  @pagy    = pagy_keyset(timeline.spine)         # or any keyset pager
+  @entries = timeline.entries(@pagy.records)
 end
 ```
 
@@ -661,15 +661,63 @@ diffs, actors, other customers' records touched by the same action. That is a
 staff-grade view. `config.authorize` gates the *auditor UI*; this is your screen,
 so gate it with your own policy layer.
 
-### What Spine A does and does not cover
+### Bounding it
 
-The timeline is anchored on `audit_changes`, so **no write to this record can be
-missing from it**, whatever path it took — `update_all`, raw SQL and cascading
-deletes included. The gap is the other direction: an action that named this
-record as its subject but wrote no change row *to it* (`order.emailed`, where the
-write lands in `deliveries`) does not appear. Those are on the engine's Actions
-tab and in `AuditLog::RecordTimeline#events`. DESIGN §11.2b has the reasoning and
-the union query that would close it.
+`range:` narrows both halves of the spine and is the biggest lever on cost.
+Measured against a 36-month horizon (72 monthly partitions across the two
+tables):
+
+| Bound | Partitions touched |
+|---|---|
+| unbounded (default) | 72 |
+| `range: 1.year.ago..Time.current` | 34 |
+| `range: 90.days.ago..Time.current` | 16 |
+| `range: 30.days.ago..Time.current` | 4 |
+
+```ruby
+AuditLog::Timeline.for(@order, range: 90.days.ago..Time.current)   # max age
+AuditLog::Timeline.for(@order, range: (cutoff - 1.year)..cutoff)   # up to a date
+```
+
+**Close the range at the top, even when the top is "now."** `30.days.ago..`
+touches 12 partitions; `30.days.ago..Time.current` touches 4, for the same span.
+An endless range cannot exclude the months-ahead partitions or the default one.
+(If you pass an endless range anyway, the library closes it at the current
+instant for you — `occurred_at` is written by `clock_timestamp()`, so no row can
+be future-dated.)
+
+**Pass Ruby times, not SQL.** ActiveRecord binds a `Range` as literal timestamps,
+which prune at *plan* time. A SQL expression like `now() - interval '30 days'`
+defers pruning to run time, after the planner has already opened every partition.
+
+**The default is unbounded on purpose**, and there is no config-level default: a
+bound nobody asked for is invisible truncation. If you do bound it, **say so** —
+`bounded?` and `scope_description` are there for exactly that, and they are in
+`as_json` too:
+
+```erb
+<p>Showing <%= timeline.scope_description %>.</p>
+```
+
+`older_than_window?` answers "is there history before this window" with one
+indexed check per table — the difference between *"end of results"* and *"end of
+the window"*. It is **opt-in and never called for you**, because it deliberately
+looks below the bound; calling it on every page gives back the pruning you just
+bought. Call it once, at the bottom of the last page.
+
+### What the timeline covers
+
+The spine is a union, so an entry appears if the unit of work either **wrote**
+this record or was **about** it (an `audit_events` row whose `subject` is this
+record). That second half is what catches an action that wrote only children, one
+whose write landed in another table, one that wrote nothing at all, and every
+action on a record whose table is in `unaudited_tables`.
+
+The one thing it does not reach is an **unregistered** action that only wrote
+children — no event, and no change row here. That is a registry gap rather than a
+query one, and `bin/rails audit_log:reconcile` is what reports it. DESIGN §11.2b
+explains why chasing it through a child's foreign key would break more than it
+fixes.
 
 The engine's own **Timeline** tab is rendered from these same objects, so the
 contract cannot drift from what the auditor UI does.

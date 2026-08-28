@@ -23,6 +23,23 @@
     same published contract a host app renders on its own pages. It is here so the contract
     cannot drift from what the auditor UI actually does.
   </p>
+  <%# A narrowed timeline must never look like a complete one -- the rule the
+      drill-down states its own window under. %>
+  <p class="note small">
+    Searched <strong><%= @timeline_scope.scope_description %></strong>.
+    <% if @timeline_scope.bounded? %>
+      <%= link_to "Search all retained history",
+            record_history_path(record_type: @record_type, record_id: @record_id, view: "timeline") %>
+      — slower, and touches every partition.
+    <% else %>
+      <%= safe_join([30, 90, 365].map { |d|
+            link_to "last #{d} days",
+              record_history_path(record_type: @record_type, record_id: @record_id,
+                                  view: "timeline", days: d)
+          }, " · ") %>
+      — faster on a record with long history.
+    <% end %>
+  </p>
   <%= render "audit_log/records/timeline_entries", entries: @entries %>
   <%= render "audit_log/shared/pagination", pagy: @pagy, rows: @pagy.records %>
 <% elsif @view == "actions" %>

@@ -12,11 +12,23 @@ require "rails_helper"
 RSpec.describe AuditLog::Timeline do
   let(:staff) { create_user(name: "Raj Patel", role: "staff") }
 
+  # Pages the way a real screen does -- through AuditLog::Pagination rather than
+  # a hand-rolled Pagy call -- so the spine is exercised against FULL_PRECISION
+  # and the cursor-mismatch fallback, not just against Pagy's defaults.
+  class TimelinePager
+    include AuditLog::Pagination
+    attr_reader :params
+
+    def initialize(cursor = nil)
+      @params = { page: cursor }
+    end
+  end
+
   def timeline(record) = described_class.for(record)
 
-  def page_of(record, limit: 50)
-    tl = timeline(record)
-    tl.entries(tl.changes.limit(limit).to_a)
+  def page_of(record, limit: 50, **kwargs)
+    tl = described_class.for(record, **kwargs)
+    tl.entries(tl.spine.limit(limit).to_a)
   end
 
   describe "the grain" do
@@ -55,11 +67,11 @@ RSpec.describe AuditLog::Timeline do
     end
   end
 
-  # THE PAGE-BOUNDARY RULE. An entry is hydrated with every change row of its
-  # unit of work, including rows past the end of the page -- that is what keeps a
-  # unit of work whole at a cursor. The cost is that the next page starts at one
-  # of those older rows and would render the entry again.
-  describe "the page boundary" do
+  # The changes-only spine paged over change ROWS and grouped them, so one unit
+  # of work could straddle a cursor and needed a de-duplication pass. Keying the
+  # spine on the unit itself deletes that problem instead of managing it -- but
+  # the PROPERTY it protected still has to hold, so it is pinned here directly.
+  describe "paging the spine" do
     let!(:order) do
       as_actor(staff) do
         o = Order.create!(customer: create_customer, created_by: staff,
@@ -70,33 +82,114 @@ RSpec.describe AuditLog::Timeline do
       end
     end
 
-    it "keeps a unit of work whole when the page cuts through it" do
-      tl    = described_class.new(record_type: "Order", record_id: order.id)
-      entry = tl.entries(tl.changes.limit(1).to_a).first
+    it "collapses several writes in one request into a single spine row" do
+      tl = described_class.for(order)
+      expect(AuditLog::Change.for_record("Order", order.id).count).to be > 1
+      expect(tl.spine.to_a.size).to eq(1)
 
-      # The page held one row; the entry holds every row of that unit of work.
+      entry = tl.entries(tl.spine.to_a).first
       expect(entry.changes.size).to be > 1
       expect(entry.changed_columns).to include("notes")
     end
 
-    it "does not render the same unit of work twice across pages" do
-      tl   = described_class.new(record_type: "Order", record_id: order.id)
-      rows = tl.changes.to_a
+    it "pages without dropping or repeating a unit of work" do
+      as_actor(staff) { order.update!(notes: "another action") }
+      as_actor(staff) { order.submit! }
+      Order.where(id: order.id).update_all(notes: "out of band one")
+      Order.where(id: order.id).update_all(notes: "out of band two")
 
-      first  = tl.entries(rows.first(1))
-      second = tl.entries(rows.drop(1))
+      tl    = described_class.for(order)
+      all   = tl.spine.to_a.map(&:uow)
+      seen  = []
+      cursor = nil
 
-      expect(first.map(&:request_id)).to eq([rows.first.request_id])
-      # Every row on page 2 belongs to a unit of work already shown in full.
-      expect(second).to be_empty
+      10.times do
+        pagy = TimelinePager.new(cursor).paginate(tl.spine, limit: 2)
+        break if pagy.records.empty?
+
+        seen.concat(pagy.records.map(&:uow))
+        cursor = pagy.next
+        break if cursor.nil?
+      end
+
+      expect(all.size).to be >= 4
+      expect(seen.size).to eq(seen.uniq.size)      # nothing repeated
+      expect(seen.sort).to eq(all.sort)            # nothing dropped
     end
 
-    it "still renders an entry whose rows all fall inside one page" do
-      as_actor(staff) { order.update!(notes: "a separate action") }
+    # Each uncorrelated write is its own unit of work. Grouping on a bare
+    # request_id would collapse every NULL in the log into ONE row.
+    it "keeps each out-of-band write as its own unit" do
+      Order.where(id: order.id).update_all(notes: "oob a")
+      Order.where(id: order.id).update_all(notes: "oob b")
 
-      tl      = described_class.new(record_type: "Order", record_id: order.id)
-      entries = tl.entries(tl.changes.to_a)
-      expect(entries.map(&:request_id).uniq.size).to eq(2)
+      oob = described_class.for(order).spine.to_a.select(&:out_of_band?)
+      expect(oob.size).to eq(2)
+      expect(oob.map(&:uow).uniq.size).to eq(2)
+      expect(oob.map(&:change_id).compact.size).to eq(2)
+    end
+  end
+
+  # THE SECOND LEG. Every one of these is an action that named this record and
+  # wrote no change row TO it, so a changes-only spine drops all four.
+  describe "events that wrote no change row to this record" do
+    it "includes an action that wrote only children" do
+      order = as_actor(staff) do
+        Order.create!(customer: create_customer, created_by: staff,
+                      line_items_attributes: [{ product_id: create_product.id, quantity: 1 }])
+      end
+      before_count = page_of(order).size
+
+      # A line item is added and narrated; the order row itself never changes.
+      as_actor(staff) do
+        LineItem.create!(order: order, product: create_product, quantity: 2)
+        AuditLog.notify("order.updated", order_id: order.id,
+                                         reference: order.reference, line_count: 2)
+      end
+
+      entries = page_of(order)
+      expect(entries.size).to eq(before_count + 1)
+      added = entries.find { |e| e.action == "order.updated" }
+      expect(added).not_to be_nil
+      expect(added.changes).to be_empty              # nothing was written to the order
+      expect(added.also_touched.map(&:type)).to include("LineItem")
+    end
+
+    it "includes an action that wrote nothing at all" do
+      order = as_actor(staff) do
+        Order.create!(customer: create_customer, created_by: staff,
+                      line_items_attributes: [{ product_id: create_product.id, quantity: 1 }])
+      end
+      as_actor(staff) do
+        AuditLog.notify("order.shipped", order_id: order.id, reference: order.reference,
+                                         carrier: "UPS", tracking_number: "T1")
+      end
+
+      shipped = page_of(order).find { |e| e.action == "order.shipped" }
+      expect(shipped).not_to be_nil
+      expect(shipped.changes).to be_empty
+      expect(shipped.field_changes).to be_empty
+      expect(shipped.operations).to be_empty
+      expect(shipped.headline).to include("Shipped order")
+      expect(shipped.occurred_at).not_to be_nil     # from the spine, not from changes
+    end
+
+    # A record whose table is in config.unaudited_tables has NO trigger, so it
+    # has no change rows ever and a changes-only spine renders an empty page --
+    # even when events name it as their subject. Simulated with a type that has
+    # no audited table at all.
+    it "builds a timeline for a record that has no change rows whatsoever" do
+      as_actor(staff) do
+        AuditLog.notify("customer.created", customer_id: 987_654, name: "Unaudited Co")
+      end
+
+      tl = described_class.new(record_type: "Customer", record_id: 987_654)
+      expect(AuditLog::Change.for_record("Customer", 987_654).count).to eq(0)
+
+      entries = tl.entries(tl.spine.to_a)
+      expect(entries.size).to eq(1)
+      expect(entries.first.headline).to include("Unaudited Co")
+      expect(entries.first.kind).to eq(:narrative)
     end
   end
 
@@ -183,7 +276,7 @@ RSpec.describe AuditLog::Timeline do
       end
 
       tl         = described_class.new(record_type: "LineItem", record_id: order.line_items.first.id)
-      entry      = tl.entries(tl.changes.to_a).first
+      entry      = tl.entries(tl.spine.to_a).first
       product_fc = entry.field_changes.find { |fc| fc.column == "product_id" }
 
       expect(product_fc.to).to eq(product.id)          # the recorded id survives
@@ -302,11 +395,90 @@ RSpec.describe AuditLog::Timeline do
     end
   end
 
+  describe "the date bound" do
+    let!(:order) do
+      as_actor(staff) do
+        Order.create!(customer: create_customer, created_by: staff,
+                      line_items_attributes: [{ product_id: create_product.id, quantity: 1 }])
+      end
+    end
+
+    it "is unbounded by default, and says so" do
+      tl = described_class.for(order)
+      expect(tl).not_to be_bounded
+      expect(tl.scope_description).to eq("across all retained history")
+      expect(tl.window).to be_nil
+    end
+
+    it "narrows both legs, and a narrowed timeline never looks complete" do
+      tl = described_class.for(order, range: 30.days.ago..Time.current)
+      expect(tl).to be_bounded
+      expect(tl.scope_description).to match(/\Afrom \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}\z/)
+
+      sql = tl.spine.to_sql
+      # INSIDE each leg. On the outer aggregate the planner cannot push a
+      # predicate on max(occurred_at) back through the GROUP BY, so it would
+      # prune nothing.
+      expect(sql.scan(/occurred_at >= /).size).to eq(2)
+      expect(sql.scan(/occurred_at <= /).size).to eq(2)
+    end
+
+    # An endless range is closed at the current instant, which loses nothing:
+    # occurred_at is filled by clock_timestamp() and no row can be future-dated
+    # (utc_storage_spec). It is worth 3x in partitions touched.
+    it "closes an endless range at the current instant" do
+      tl = described_class.for(order, range: 30.days.ago..)
+      expect(tl.window.last).not_to be_nil
+      expect(tl.spine.to_sql.scan(/occurred_at <= /).size).to eq(2)
+    end
+
+    # Assert PRUNING from the plan, never that a specific index was chosen: on a
+    # small test database the planner correctly picks a seq scan regardless.
+    it "prunes partitions the bound excludes" do
+      conn = AuditLog::Change.connection
+      count = lambda do |tl|
+        plan = conn.select_values("EXPLAIN #{tl.spine.to_sql}").join("\n")
+        plan.scan(/on (audit_(?:changes|events)_\d{4}_\d{2})/).flatten.uniq.size
+      end
+
+      unbounded = count.call(described_class.for(order))
+      bounded   = count.call(described_class.for(order, range: 1.hour.ago..Time.current))
+
+      expect(unbounded).to be > 0
+      expect(bounded).to be < unbounded
+    end
+
+    it "excludes rows outside the window from the entries themselves" do
+      inside  = described_class.for(order, range: 1.hour.ago..Time.current)
+      outside = described_class.for(order, range: 10.years.ago..9.years.ago)
+
+      expect(inside.entries(inside.spine.to_a)).not_to be_empty
+      expect(outside.entries(outside.spine.to_a)).to be_empty
+    end
+
+    describe "#older_than_window?" do
+      # OPT-IN and never called from #entries: it looks below range.begin, which
+      # is the one thing the bound exists to avoid. Calling it per page would
+      # hand back the pruning the caller just bought.
+      it "reports history before the window, so 'end of results' can be honest" do
+        recent = described_class.for(order, range: 1.hour.ago..Time.current)
+        expect(recent.older_than_window?).to be(false)
+
+        future = described_class.for(order, range: 1.day.from_now..2.days.from_now)
+        expect(future.older_than_window?).to be(true)
+      end
+
+      it "is false on an unbounded timeline, which has no window to be older than" do
+        expect(described_class.for(order).older_than_window?).to be(false)
+      end
+    end
+  end
+
   describe "the spine" do
     it "returns an ordered, unlimited relation so the caller paginates it" do
       tl = described_class.new(record_type: "Order", record_id: 1)
-      expect(tl.changes.limit_value).to be_nil
-      expect(tl.changes.to_sql).to match(/ORDER BY.*occurred_at.*DESC/i)
+      expect(tl.spine.limit_value).to be_nil
+      expect(tl.spine.to_sql).to match(/ORDER BY.*occurred_at.*DESC/i)
     end
 
     it "takes the host's own record without keeping a reference to it" do

@@ -86,6 +86,10 @@ RSpec.describe "preview", type: :request do
                                                view: "actions"),
       "timeline"  => audit.record_history_path(record_type: "Order", record_id: orders[0].id,
                                                view: "timeline"),
+      # The BOUNDED state, so the disclosure note has a rendering somebody can
+      # look at. A disclosure that never renders is a disclosure nobody tested.
+      "timelinebd" => audit.record_history_path(record_type: "Order", record_id: orders[0].id,
+                                                view: "timeline", days: 30),
       # A PRODUCT, not an order: price.bulk_adjusted carries no subject: lambda,
       # so a product's narrative tab is empty above and populated below. The one
       # screen state that renders the correlated section on its own.

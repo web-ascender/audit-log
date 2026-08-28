@@ -1665,31 +1665,133 @@ make each of those rules a method call.
 
 **The grain is the unit of work, not the audit row.** A form submit that saves an order and forty
 line items is ONE entry — the order's own field changes on it, the forty line items beside it —
-rather than forty rows a reader reassembles. That is what a correlation id was for (§3). An
-uncorrelated write (`request_id IS NULL`, §9) correlates to nothing by definition and stands alone.
+rather than forty rows a reader reassembles. That is what a correlation id was for (§3).
 
-**Spine A: `audit_changes` is the backbone.** The record's own change rows, keyset-paged on
-`(record_type, record_id, occurred_at DESC)` — the same scan Screen A uses — then grouped.
+#### The spine is a union over both tables
 
-| | |
+An entry belongs on a record's timeline for either of two reasons, and both are real:
+
+| Leg | Predicate | Says |
+|---|---|---|
+| changes | `record_type/record_id` on `audit_changes` | this unit of work **wrote** the record |
+| events | `subject_type/subject_id` on `audit_events` | this unit of work was **about** the record |
+
+The second leg is not a nicety. Without it the timeline silently drops four things:
+
+1. **An action that wrote only children** — a line item added to an existing order, where the order
+   row itself never changes. The commonest shape there is: any aggregate root whose children change
+   more than it does.
+2. **An action whose write landed elsewhere** — `order.emailed`, writing a `deliveries` row.
+3. **An action that wrote nothing** — `order.exported`.
+4. **Every action on a record whose table is in `unaudited_tables`** — no trigger, therefore no
+   change rows ever, therefore a changes-only spine renders an empty page for a record that has a
+   full narrative history. A category, not an edge case.
+
+**What it still does not reach**, stated here rather than discovered later: an *unregistered* action
+that only wrote children. No event, because nobody registered one, and no change row for this
+record, because nothing here changed. Finding it would mean walking a child's change rows back to
+their parent — which works on an insert or a delete, where the whole row is in the diff, and fails
+on an update, where only the changed columns are, so `order_id` is usually absent. Closing it needs
+a live join to the child's business table, and not joining to business tables is what keeps these
+screens truthful about deleted records (§11.4). It is a **registry** gap, and `audit_log:reconcile`
+is the tool that reports it.
+
+#### The unit-of-work key, and the NULL trap it exists to avoid
+
+```sql
+SELECT uow, max(occurred_at) AS occurred_at FROM (
+  SELECT COALESCE(request_id::text, 'row:' || id) AS uow, occurred_at
+    FROM audit_changes WHERE record_type = ? AND record_id = ?   -- [+ bound]
+  UNION ALL
+  SELECT request_id::text AS uow, occurred_at
+    FROM audit_events   WHERE subject_type = ? AND subject_id = ? -- [+ bound]
+) legs GROUP BY uow
+```
+
+An out-of-band write has no `request_id` (§9) and each one is its own unit of work, so it takes a
+synthetic key rather than every uncorrelated write in the log collapsing into one `NULL` group.
+
+> ⚠️ **The key must be ONE non-null text column.** Keying on `(request_id, id)`, with a NULL in one
+> of the two on every row, makes the row-wise keyset predicate `(a, b) < (?, ?)` evaluate to NULL —
+> and therefore match nothing — from page two onward. The whole timeline goes blank after the first
+> page and nothing errors. This is the same NULL trap that makes
+> `where.not(subject_type:, subject_id:)` wrong in `RecordTimeline` (§11.2a); it is worth knowing
+> that it has now bitten this feature twice, in two different disguises.
+
+**One spine row is one entry, so there is no page-boundary rule.** An earlier changes-only spine
+paged over change *rows* and grouped them, so a unit of work could straddle a cursor and needed a
+de-duplication pass. Keying the spine on the unit itself deletes that problem rather than managing
+it — the union is not merely a coverage win, it is also a simplification.
+
+#### Paginating a subquery: three non-obvious requirements
+
+`Pagy::Keyset` does paginate this, verified across pages for no duplicates and no drops, but only
+if all three hold. All three are pinned by `timeline_spec`, so a Rails or Pagy upgrade that breaks
+one fails a spec rather than a screen.
+
+1. **`SpineRow.table_name` must be a real table, and the subquery must alias to that same name.**
+   Without a real table ActiveRecord raises `PG::UndefinedTable` on `spine::regclass` while merely
+   loading the class. The column that must be typed is `occurred_at`: Pagy serialises the cursor
+   from it, and a timestamptz arriving as a String cannot be rendered at microsecond precision —
+   which is exactly the bug `Pagination::FULL_PRECISION` exists to prevent.
+2. **`attribute :uow, :string`** declares the synthetic column, which no table has.
+3. **Order with `arel_table[:uow]`, never `order(uow: :desc)`.** A name that is not a real column
+   renders as an `Arel::Nodes::SqlLiteral`, and `Pagy::Keyset#extract_keyset` calls `.name` on
+   every order value: `undefined method 'name' for an instance of Arel::Nodes::SqlLiteral`.
+
+#### The date bound  **[added 2026-08-28]**
+
+`range:` bounds both legs and is the single biggest lever on cost. Measured with `EXPLAIN` against a
+36-month horizon — 72 monthly partitions across the two tables:
+
+| Bound | Partitions in the plan |
 |---|---|
-| Buys | completeness for every **write**. Nothing that modified this record can be missing, whatever path it took, because layer 1 captured it regardless of the registry. |
-| Costs | an event that named this record as its subject but wrote no change row *to it* does not appear. `order.emailed`, where the write lands in `deliveries`, is that shape. |
-| Mitigation | `RecordTimeline#events` and the Actions tab still list it. Closing the gap means unioning both tables into the spine, which changes the keyset — see below. |
+| unbounded | **72** |
+| `2.years.ago..Time.current` | 58 |
+| upper only, `..6.months.ago` | 52 |
+| `1.year.ago..Time.current` | 34 |
+| `90.days.ago..Time.current` | 16 |
+| `30.days.ago..Time.current` | **4** |
 
-**The page-boundary rule.** An entry is hydrated with *every* change row of its unit of work,
-including rows past the end of the page — that is what keeps a unit of work whole at a cursor
-instead of splitting it in half. The cost is that the next page begins at one of those older rows
-and would render the same entry again.
+Three findings in that table are worth more than the headline 18×:
 
-So: **an entry whose newest row for this record is newer than the page's own newest row was
-necessarily shown in full on an earlier page, and is dropped.** The check is local and stateless —
-no cursor bookkeeping to keep in sync — and it can only ever drop a duplicate. On the first page
-nothing is newer than the head; for the ordinary one-row-per-request entry the row *is* the max.
+**Pruning survives the union and the `GROUP BY`.** That was the open question; it does.
+
+**The lower bound is the lever.** An upper bound alone is nearly useless (52 of 72) because history
+extends backwards indefinitely — it can only eliminate partitions newer than the cutoff.
+
+**An endless range is closed at the current instant, and that loses nothing.** `30.days.ago..`
+leaves every months-ahead partition and the default partition in the plan (12); the same span closed
+at `Time.current` prunes to 4. It is safe because `occurred_at` is filled by the column DEFAULT
+`clock_timestamp()` and neither layer ever supplies it from Ruby (§4, asserted by
+`utc_storage_spec`), so no row can be future-dated.
+
+> ⚠️ **Bind Ruby Times, never a SQL expression.** `now() - interval '30 days'` reported 12
+> partitions in the plan but **60 subplans removed at run time** — the planner kept all 72 and the
+> executor discarded them. Only a bound timestamp prunes at PLAN time, which is where the relation
+> locks and opens are. ActiveRecord binds a Ruby `Range` as literals, so the natural API already
+> does the right thing; the warning exists to stop someone "optimising" it into SQL later.
+
+The bound goes **inside each leg**. On the outer aggregate the planner cannot push a predicate on
+`max(occurred_at)` back through the `GROUP BY`, so it would prune nothing.
+
+**The default is unbounded, and there is deliberately no config-level default.** A bound nobody
+asked for is invisible truncation, which is the failure this library exists to prevent — §11.6 says
+it first: *a bound that under-reports is worse than a slow query*. A caller opts in where the opting
+is visible, and `bounded?` / `scope_description` exist so the screen can say what it searched, the
+same disclosure `requests/show` renders for the drill-down.
+
+**`older_than_window?` is opt-in and is never called from `#entries`.** It answers "is there history
+before this window" — the difference between *"end of results"* and *"end of the window"* — with one
+indexed existence check per table. It is opt-in **because** it looks below `range.begin`, which is
+the one thing the bound exists to avoid: calling it on every page hands back the pruning the caller
+just bought. Call it once, at the bottom of the last page.
+
+#### The rest
 
 **`headline` returns nil rather than a generated sentence, and that nil is the contract.** The
-library does not compose *"Jane updated status and total"* from column names. Three reasons, and
-the third is the one that matters:
+library does not compose *"Jane updated status and total"* from column names. Three reasons, and the
+third is the one that matters:
 
 1. It would be this gem's phrasing, not the app author's.
 2. It would re-render differently after a gem upgrade, while a stored `summary` is frozen at emit
@@ -1699,40 +1801,29 @@ the third is the one that matters:
 
 Same discipline as `RecordLabel`'s chain ending in nil (§11.8). The host has i18n, knows what its
 models are called, and may have STI names the gem could never guess; it gets `operations`,
-`record_type` and `changed_columns` and writes its own sentence. `kind` (`:narrative` /
-`:change_only`) says which it is holding.
+`record_type` and `changed_columns`. `kind` (`:narrative` / `:change_only`) says which it holds.
+
+**An entry may legitimately have no change rows at all** — that is the whole point of the second leg
+— so `occurred_at` comes from the spine row, not from `max()` over an empty list.
 
 **`config.record_url` is nil by default and the default is not a placeholder.** Inferring
 `product_path` from `"Product"` is the same mistake as sniffing a `name` column for a label, and it
-fails at render time on a screen an auditor is reading. Silence is the opt-out; the value objects
-render fine without it. It serves actors too — an actor is a record.
+fails at render time on a screen an auditor is reading. Silence is the opt-out. It serves actors
+too — an actor is a record.
 
 **Authorization is deliberately not in this object.** The gem exposes everything and the host gates
-it, because "admins only" or "admin and staff" is a policy question about the host's own roles that
-no config lambda here would express better than the host's existing authorization layer. The
-auditor UI's `config.authorize` gates the auditor UI; a host-rendered timeline is the host's screen.
+it, because "admins only" is a policy question about the host's own roles that no config lambda here
+would express better than its existing authorization layer. `config.authorize` gates the auditor UI;
+a host-rendered timeline is the host's screen.
 
-**The engine renders this tab from the value objects**, not from its own relations. A presenter
-nothing in the gem consumes drifts from what the auditor UI actually does — the same argument that
-makes one `Coverage` back both the rake task and the shared example.
+**The CSV export is not the spine.** The timeline tab exports the record's *change rows*, because a
+spine row is a derived grouping this library invented and not something the database recorded, and
+the export is the evidence artifact (§11.4a).
 
-**Still open (Spine B).** Union both tables into the spine so a write-less event appears:
-
-```sql
-SELECT request_id, max(at) AS at FROM (
-  SELECT request_id, max(occurred_at) at FROM audit_changes
-    WHERE record_type = $1 AND record_id = $2 AND request_id IS NOT NULL GROUP BY request_id
-  UNION ALL
-  SELECT request_id, max(occurred_at) at FROM audit_events
-    WHERE subject_type = $1 AND subject_id = $2 GROUP BY request_id
-) u GROUP BY request_id ORDER BY at DESC, request_id DESC
-```
-
-Keyset on `(at, request_id)` is clean — one row per `request_id`, and a UUIDv7 is totally ordered
-and unique, so the cross-table `id` collision never arises (both tables have their own `bigserial`,
-so a naive merged cursor on `(occurred_at, id)` would have colliding tiebreakers). The work is
-getting `Pagy::Keyset` to apply its predicate to a `from(subquery)` relation; the aggregate cannot
-be filtered in `WHERE`.
+**The engine renders this tab from the value objects**, not from its own relations, and offers
+`?days=` so it exercises the bounded state too. A presenter nothing in the gem consumes drifts from
+what the auditor UI actually does — the same argument that makes one `Coverage` back both the rake
+task and the shared example, and a disclosure that never renders is a disclosure nobody has tested.
 
 ---
 
@@ -1791,7 +1882,7 @@ is the screen under-reporting without saying so.
 | Actor activity — "what did Jane do" | `audit_events` + `audit_changes` | `(actor_type, actor_id, occurred_at DESC)` on both | **required** |
 | Record history — "everything about Order #4821" | `audit_changes` | `(record_type, record_id, occurred_at DESC)` | optional, keyset-paged |
 | Record narrative — "what was *done* to Order #4821" | `audit_events` | `(subject_type, subject_id, occurred_at DESC)` | optional, keyset-paged |
-| Record timeline — both layers, host-facing | `audit_changes` spine + `audit_events` | `(record_type, record_id, occurred_at DESC)` | optional, keyset-paged |
+| Record timeline — both layers, host-facing | union of `audit_changes` + `audit_events` | `(record_type, record_id, occurred_at DESC)` and `(subject_type, subject_id, occurred_at DESC)` | optional (`range:`), keyset-paged |
 | Class activity — "all Order changes" | `audit_changes` | `(record_type, occurred_at DESC)` | **required** |
 | Field filter — "who touched `status`" | `audit_changes` | GIN `(changed_columns)` | **required** |
 | Action report — "all order.submitted" | `audit_events` | `(action, occurred_at DESC)` | **required** |
