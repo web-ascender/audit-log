@@ -1360,6 +1360,16 @@ Three properties are worth stating because each one is a way this could have gon
    rather than guessing when the cursor's keys do not match the ordering, and the recovery has to
    be visible — silently applying a mismatched cursor would drop rows off an audit screen.
 3. **The last page says "End of results."** A fixed cap could only imply it.
+4. **The cursor carries microseconds.** Pagy builds it with `to_json`, and ActiveSupport renders a
+   `Time` at `ActiveSupport::JSON::Encoding.time_precision` — which defaults to **3**, milliseconds.
+   `occurred_at` is `clock_timestamp()`, i.e. microseconds, and in practice every row carries
+   sub-millisecond digits. A truncated cursor names an instant slightly *earlier* than the row it
+   was minted from, so the next page's `occurred_at < cursor` skips everything in the gap and rows
+   vanish between pages — the precise failure this replaced the row caps to prevent, reintroduced
+   by a default. It surfaced as a one-in-eight flake, because it needs a row to land inside that
+   sub-millisecond window at a page boundary. Fixed with a `jsonify_keyset_attributes` lambda
+   scoped to the cursor, rather than by raising the global `time_precision`, which would change
+   every JSON response the host application renders.
 
 `config.page_size` (50) is a rendering choice with no cost curve behind it: there is no OFFSET to
 grow and no COUNT to compute. The dashboard keeps fixed limits deliberately — its lists are "10
