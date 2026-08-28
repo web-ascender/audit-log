@@ -487,6 +487,26 @@ end
 
 That is the whole per-model cost: one line, in the migration, next to the table it audits.
 
+**Next to the `create_table` is a review convention, not a requirement.**  **[clarified 2026-08-28]**
+The helper is a bare `CREATE TRIGGER`; it reads nothing from the `create_table` beside it, and the
+coverage check queries `pg_trigger` rather than the migration history. So an existing table is
+attached from a standalone migration just as well, and `rails generate audit_log:trigger orders`
+writes one. What such a table does *not* get is history for changes that already happened — the
+first `UPDATE` after attaching yields a complete `[old, new]` pair, and nothing before it exists.
+Record the attach date; the migration's own timestamp is the durable answer.
+
+Changing a table's exclusions or model name is **detach-then-attach**
+(`audit_log:trigger … --replace`), because `attach_audit_trigger` is deliberately *not* idempotent:
+the trigger name derives from the table alone, so a second attach collides with `42710` instead of
+letting two triggers coexist on one table and write two rows per change under different exclusion
+sets. It is not retroactive — rows already written keep the diffs they were written with.
+
+**The real constraint is the table's shape, and it fails late.** The trigger function assigns
+`rec_id bigint := NEW.id`, and `audit_changes.record_id` is `bigint NOT NULL`. An `id: false` join
+table, a `uuid` primary key, or a primary key not named `id` therefore fails on the **first write
+after attaching**, not at migration time. §5.3 covers the tables the trigger cannot handle as
+written. The generator warns about this and cannot check it: it has no connection to the table.
+
 Automatic-by-default was considered and rejected. Auditing *every* table would sweep in
 `solid_cache_entries`, `solid_queue_jobs`, `sessions`, and every join table — high-churn tables
 with no compliance value that would dominate the audit volume and bury real findings. The
@@ -1963,9 +1983,30 @@ the trigger read a third GUC `app.tenant_id` alongside the other two. Roughly ze
 The failure mode to design against is **silent under-auditing**, so tests assert coverage, not just
 behavior.
 
+> **They run on every push.**  **[added 2026-08-28]** A forcing function that runs when someone
+> remembers is not one. CI executes the suite against `spec/dummy` on PostgreSQL 18, on two Ruby
+> legs: the floor `required_ruby_version` claims, and the version the library is developed on. The
+> floor leg is not ceremony — it was added claiming 3.2, failed on `SecureRandom.uuid_v7` being
+> 3.3+, and so caught a gemspec that would have broken every correlated write in an adopting app.
+>
+> Three CI findings are recorded here because each was invisible on a developer machine and each
+> was a real defect rather than an environment quirk: a `pg_dump` client older than the server
+> refuses to dump at all (and `schema_format = :sql` puts `pg_dump` on the migration path); the raw
+> second connection in `partition_lifecycle_spec` read every credential *except* the password, which
+> only fails against a server that asks; and `db:prepare` seeds a database it had to create, which
+> collided with a seeded user and would have quietly changed what row-counting specs measure.
+>
+> **A `Rails 8.0` leg is still missing**, and the gap is exactly the one the Ruby matrix closed:
+> `Rails.event` does not exist there, so `AuditLog.notify`'s documented fallback path (§7) is
+> untested at the floor the gemspec claims.
+
 - **Coverage guard:** a spec that enumerates every table in the schema, subtracts an explicit
   opt-out list, and fails if any remaining table lacks an `_audit` trigger. Adding a table without
-  a decision about auditing it should break the build.
+  a decision about auditing it should break the build. **[revised 2026-08-28]** Implemented as
+  `AuditLog::Coverage` plus shared examples in `audit_log/rspec`, so a host app writes three lines
+  instead of copying the spec, and `rake audit_log:coverage` shares the same object — the task and
+  the spec cannot disagree about what counts as covered. Copying it, which the install instructions
+  used to advise, is how a forcing function ends up enforcing a rule the library no longer holds.
 - **Bypass-path tests:** assert that `update_all`, `delete_all`, `insert_all`, `upsert_all`, and
   `dependent: :delete_all` each produce `audit_changes` rows. These are the cases paper_trail
   misses and the entire justification for this design — they must be regression-tested.

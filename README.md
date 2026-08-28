@@ -1,5 +1,7 @@
 # AuditLog
 
+[![CI](https://github.com/web-ascender/audit-log/actions/workflows/ci.yml/badge.svg)](https://github.com/web-ascender/audit-log/actions/workflows/ci.yml)
+
 A two-layer, compliance-grade audit log for Rails 8 + PostgreSQL. Implements
 [`DESIGN.md`](DESIGN.md) — the design record, which sits next to this file and is
 the authority on *why* any of this is shaped the way it is.
@@ -71,9 +73,19 @@ paging, and offset paging on a newest-first view of an append-only table
 duplicates rows across a page boundary after a single concurrent write. See
 [DESIGN §11.0 Rule 2](DESIGN.md).
 
-PostgreSQL is required and not swappable — the whole of layer 1 is a plpgsql
-trigger writing jsonb into range-partitioned tables. `pg` is deliberately *not* a
-dependency, so your app picks its own build.
+### Requirements
+
+| | | Why it is a floor and not a preference |
+|---|---|---|
+| Ruby | **>= 3.3** | `SecureRandom.uuid_v7`, which is `Context.new_request_id`. On 3.2 every correlated write raises. UUIDv7 gives the `audit_changes(request_id)` index insert locality, and its embedded timestamp is what bounds the drill-down. DESIGN §2.1. |
+| Rails | **`~> 8.0`** | 8.0 floor for `Rails.event` (with a fallback); ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. DESIGN §2.2. |
+| PostgreSQL | **18** | Layer 1 *is* a plpgsql trigger writing jsonb into range-partitioned tables. Not swappable for another database. DESIGN §20. |
+
+`pg` is deliberately *not* a dependency, so your app picks its own build.
+
+Ruby **3.3.0 exactly** is unusable with Rails 8.1, for a reason unrelated to this
+gem: actionview 8.1.3.1 contains `yield(*, **)` inside a block, which 3.3.0's
+parser rejects, while Rails still declares `>= 3.2.0`. Any later 3.3 patch is fine.
 
 ### Then run the generator
 

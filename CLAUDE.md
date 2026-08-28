@@ -57,9 +57,9 @@ Update it when you change behaviour.
 | | |
 |---|---|
 | Ruby | **>= 3.3** — the floor is `SecureRandom.uuid_v7` (DESIGN §2.1), not a preference. 3.3.0 exactly also cannot run Rails 8.1, for a reason of Rails' own. Developed on 4.0.6. |
-| Rails | >= 8.0 (gemspec); developed on 8.1.3.1 |
+| Rails | **`~> 8.0`** — floor 8.0 (DESIGN §2.2), and a real ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. Developed on 8.1.3.1. |
 | PostgreSQL | **18.6 on port 5438** — not the workspace default 5437 |
-| Tests | RSpec against `spec/dummy` (235 examples) |
+| Tests | RSpec against `spec/dummy` (257 examples), on every push via GitHub Actions |
 | Runtime deps | `rails`, `pagy` (keyset paging), `csv` (export). **`pg` deliberately is not one** — the host app picks its build. |
 
 ```bash
@@ -413,7 +413,7 @@ one. Do not reintroduce it.
 ## Testing
 
 ```bash
-bundle exec rspec                         # 235 examples, against spec/dummy
+bundle exec rspec                         # 257 examples, against spec/dummy
 bundle exec rspec spec/audit_log          # the library proper
 bundle exec rspec spec/requests           # the auditor UI and the CSV export
 bundle exec rspec spec/preview.rb         # dev tool: renders 13 screens to spec/dummy/public/
@@ -465,6 +465,45 @@ Two testing traps already hit here:
   `enable_seqscan = off` only proves *some* index was used. Assert partition
   pruning from the plan and index definitions from `pg_indexes`; leave
   plan-shape-at-volume to `audit_log:benchmark`.
+
+## CI
+
+`.github/workflows/ci.yml`, on every push and pull request. It exists because the
+forcing functions above force nothing if they only run when someone remembers.
+
+Two parallel legs, and the pairing is deliberate:
+
+| Leg | Why |
+|---|---|
+| Ruby **3.3** | the floor `required_ruby_version` claims. Testing only the development Ruby leaves that claim unverified — and it *was* wrong: the gemspec said 3.2 until this leg failed on `SecureRandom.uuid_v7` being 3.3+. |
+| Ruby **4.0.6** | what the library is developed on |
+
+If the floor leg fails, the honest responses are to fix the code or **raise the
+floor**. Dropping the leg is not one of them.
+
+Three things about it are load-bearing rather than boilerplate:
+
+- **A PostgreSQL 18 *client*, not just an 18 server.** The runner image ships
+  `postgresql-client-16`, and `pg_dump` refuses to dump a newer server. That is
+  not a CI detail here: `schema_format = :sql` puts `pg_dump` on the ordinary
+  migration path, and the engine's `PGTZ` initializer exists to control what it
+  renders. Both server and client versions are asserted, separately, because they
+  fail differently.
+- **`db:create db:migrate`, never `db:prepare`.** `db:prepare` seeds a database it
+  had to create. `spec/dummy` has no seeds, but the reference app does, and there
+  `db:prepare` collided on a seeded email and would have silently changed what
+  row-counting specs measure. Use `db:test:prepare` in an app that has seeds.
+- **`gem build` must be warning-free, and `LICENSE.txt` must be inside the
+  packaged gem.** `gem build` is the only packaging step this proprietary gem ever
+  runs. The warning gate has already earned its keep: it caught the open-ended
+  `rails >= 8.0` dependency, and only on the 3.3 leg, because that rubygems is
+  stricter than 4.0.6's. If a future rubygems adds an advisory warning, fix the
+  gemspec or consciously narrow the check — do not delete it.
+
+**Unverified claim, deliberately left standing:** `rails ~> 8.0` admits 8.0, but CI
+tests 8.1.3.1 only. The gap is the exact one the Ruby matrix closed, so expect a
+Rails 8.0 leg to find something — `Rails.event` does not exist there, and
+`AuditLog.notify`'s fallback path is consequently untested.
 
 ## Deliberately not implemented
 
