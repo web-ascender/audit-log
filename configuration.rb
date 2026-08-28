@@ -14,10 +14,22 @@ module AuditLog
       reset_password_token reset_password_sent_at
     ].freeze
 
-    # Only databases that actually contain audited tables get the correlation
-    # round trip on transaction start. Naming Solid Queue's database here would
-    # add a round trip to every poll and claim -- plan §6.4.
-    attr_accessor :stamped_databases
+    # Databases whose connections carry the audit correlation context -- the
+    # audit.request_id and audit.actor_* settings the trigger reads.
+    #
+    # Named for what it gates, because what it does NOT gate is the thing readers
+    # get wrong: this decides who pays for correlation, never what is audited.
+    # Auditing is opt-in per TABLE, through attach_audit_trigger. A database left
+    # out of this list is still audited exactly as before -- every trigger still
+    # fires and every row is still written; those rows simply arrive with a NULL
+    # request_id and NULL actor, indistinguishable from a console session. The
+    # trigger's only early exit is audit.bypass.
+    #
+    # Solid Queue's database is deliberately absent. TransactionStamp is prepended
+    # onto the adapter CLASS, so it is live on every connection in the process
+    # regardless of database; without this list it would fire on every poll, claim
+    # and heartbeat -- the busiest transaction path in the system. Plan §6.4.
+    attr_accessor :correlated_databases
 
     # String, resolved lazily: the engine's controllers inherit from this, which
     # is how they pick up the host app's layout, authentication, and helpers.
@@ -160,7 +172,7 @@ module AuditLog
     attr_accessor :raise_on_subscriber_error
 
     def initialize
-      @stamped_databases        = %w[primary]
+      @correlated_databases     = %w[primary]
       @parent_controller        = "ApplicationController"
       @authorize                = ->(_controller) {}
       @actor_resolver           = ->(controller) { controller.try(:current_user) }

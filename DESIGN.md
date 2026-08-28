@@ -925,8 +925,9 @@ The same applies to `solid_cache_entries` and `solid_cable_messages` if those ar
 default posture and it matters here for a reason beyond convention: `Audit::TransactionStamp`
 prepends `begin_db_transaction` on the *PostgreSQL adapter class*, so without a guard it fires on
 every Solid Queue connection too — adding a round trip to each poll and claim on the busiest
-transaction path in the system. The guard in §6.1 (`STAMPED_DATABASES`) reduces that to a string
-comparison. Verify it with a benchmark in Phase 2: Solid Queue's polling frequency makes this the
+transaction path in the system. The guard sketched in §6.1 as `STAMPED_DATABASES` — shipped as
+`config.correlated_databases`, renamed because the constant read as though it decided what was
+audited, which it does not — reduces that to a string comparison. Verify it with a benchmark in Phase 2: Solid Queue's polling frequency makes this the
 one place where a stray round trip is actually measurable.
 
 If the queue shares the primary database instead, the exclusion list in (1) still keeps the audit
