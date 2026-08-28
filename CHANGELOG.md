@@ -15,3 +15,6 @@ implementation and now consumes this gem.
 - `lib/audit_log.rb` autoloads by feature name rather than absolute path, now
   that the gemspec puts `lib/` on the load path.
 - Added `rails generate audit_log:install` and `audit_log:trigger`.
+- Proprietary and internal: `LICENSE.txt` replaces the MIT placeholder, the
+  gemspec declares `LicenseRef-Proprietary`, and `allowed_push_host` is set to a
+  non-host so `gem push` fails locally rather than publishing to rubygems.org.

@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+# Copyright (c) 2026 Web Ascender. All rights reserved.
+# CONFIDENTIAL AND PROPRIETARY PROPERTY. See LICENSE.txt.
+
 require_relative "lib/audit_log/version"
 
 Gem::Specification.new do |spec|
@@ -22,13 +25,26 @@ Gem::Specification.new do |spec|
     CSV export, and a mountable auditor UI.
   TEXT
 
-  spec.homepage = "https://github.com/kevinsouthworth/audit_log"
-  spec.license  = "MIT"
-
   spec.required_ruby_version = ">= 3.2.0"
+  spec.license = "LicenseRef-Proprietary"
 
-  # No homepage_uri: rubygems warns when it duplicates source_code_uri and shows
-  # only one of them anyway.
+  # PROPRIETARY AND INTERNAL. `LicenseRef-Proprietary` is SPDX's own convention
+  # for a licence that is not on its list -- so this states "custom terms, read
+  # LICENSE.txt" to a licence scanner, rather than either claiming an open-source
+  # licence it is not or leaving the field empty, which rubygems warns about and
+  # a reader cannot distinguish from an oversight.
+  #
+  # allowed_push_host is the load-bearing line. Set to a value that is not a real
+  # host, it makes `gem push` FAIL rather than publishing to rubygems.org --
+  # which is the failure mode LICENSE.txt exists to prevent, and the one that
+  # cannot be undone once it happens. Distribute by path or by a private source,
+  # never by push.
+  spec.metadata["allowed_push_host"] = "none: internal use only, see LICENSE.txt"
+
+  # A PRIVATE repo in the company GitHub organisation. Recorded because it is the
+  # canonical source location, not because it is fetchable by anyone who reads
+  # this metadata -- which is exactly why allowed_push_host above must stay set.
+  spec.homepage = "https://github.com/web-ascender/audit-log"
   spec.metadata["source_code_uri"] = spec.homepage
   spec.metadata["changelog_uri"]   = "#{spec.homepage}/blob/main/CHANGELOG.md"
 

@@ -4,10 +4,20 @@ A two-layer, compliance-grade audit log for Rails 8 + PostgreSQL. Implements
 [`DESIGN.md`](DESIGN.md) — the design record, which sits next to this file and is
 the authority on *why* any of this is shaped the way it is.
 
-This directory plus `lib/audit_log.rb` are the **entire library**. Nothing in it
-references an application constant, an authentication gem, or a model name —
-every coupling point is a lambda on `AuditLog.config`. It is structured as a
-`Rails::Engine` so that extracting it into a gem is a `gemspec` away.
+> **Copyright (c) 2026 Web Ascender. All rights reserved.**
+> **CONFIDENTIAL AND PROPRIETARY PROPERTY.** This software is for internal
+> company use on company projects only. Unauthorized copying, modification, or
+> distribution via the public internet or any cloud environment is strictly
+> prohibited. See [`LICENSE.txt`](LICENSE.txt).
+>
+> The gemspec sets `allowed_push_host` to a non-host on purpose, so `gem push`
+> fails instead of publishing to rubygems.org. Install from the private repo or a
+> path, never from a public source.
+
+Nothing in this gem references an application constant, an authentication gem, or
+a model name — every coupling point is a lambda on `AuditLog.config`. That is
+what lets one library serve every internal app without knowing anything about any
+of them.
 
 ---
 
