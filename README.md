@@ -117,6 +117,217 @@ Nothing. No `has_audit_log`, no `include Auditable`, no callback, no base class.
 An audited model is an ordinary `ApplicationRecord`. The one line of per-model
 cost lives in the migration, next to the table it audits.
 
+### Emitting events from a controller action
+
+Steps 5 and 6 turned layer 1 on; step 7 gave it an actor. Every row your
+controllers touch is already being recorded, field by field, with no code in the
+controller at all. Layer 2 is the *sentence* over the top of that — and it takes
+two pieces, in two files:
+
+| | Lives in | Does |
+|---|---|---|
+| `AuditLog::Registry.register` | `config/initializers/audit_log.rb` | declares the action and renders its human summary |
+| `AuditLog.notify` | the controller, model or job | emits it, carrying the payload that summary reads |
+
+**A `notify` with no registry entry is a silent no-op** — the event reaches any
+observability subscriber and never becomes an `audit_events` row. That is how
+analytics stays out of the audit tables (`registry.rb`), and it is also the
+first thing to check when an action does not show up on `/audit`.
+
+You never pass the actor, IP, source, timestamp or `request_id`. All five come
+from `AuditLog::Current`, which `ControllerContext` populated in a
+`before_action` — the payload is only the domain detail.
+
+#### The ordinary case: create, update, destroy
+
+```ruby
+class InvoicesController < ApplicationController
+  before_action :set_invoice, only: %i[update void]
+
+  def create
+    @invoice = Invoice.new(invoice_params)
+
+    # Emit INSIDE the success branch. An event for a save that failed
+    # validation is a lie the audit log cannot take back.
+    if @invoice.save
+      AuditLog.notify("invoice.created",
+        invoice_id: @invoice.id,
+        number:     @invoice.number,
+        customer:   @invoice.customer.name,
+        total_cents: @invoice.total_cents)
+      redirect_to @invoice, notice: "Invoice created."
+    else
+      render :new, status: :unprocessable_entity
+    end
+  end
+
+  def update
+    if @invoice.update(invoice_params)
+      # `saved_changes` is a good payload: it says WHICH fields moved without
+      # duplicating layer 1's before/after values, which audit_changes already
+      # holds against this same request_id.
+      AuditLog.notify("invoice.updated",
+        invoice_id: @invoice.id,
+        number:     @invoice.number,
+        fields:     @invoice.saved_changes.keys - %w[updated_at])
+      redirect_to @invoice, notice: "Invoice updated."
+    else
+      render :edit, status: :unprocessable_entity
+    end
+  end
+
+  def void
+    # Read anything the summary needs BEFORE the row goes away.
+    number = @invoice.number
+
+    @invoice.destroy!
+    AuditLog.notify("invoice.voided",
+      invoice_id: @invoice.id, number: number,
+      reason: params[:reason].presence || "no reason given")
+    redirect_to invoices_path, notice: "Invoice voided."
+  end
+end
+```
+
+The matching half, in `config/initializers/audit_log.rb`. The payload keys and
+the lambda's `p[...]` reads are the contract between the two files — nothing
+checks it for you, and a typo renders an empty gap in a sentence:
+
+```ruby
+AuditLog::Registry.register "invoice.created",
+  description: "An invoice was raised against a customer.",
+  subject: ->(p) { ["Invoice", p[:invoice_id]] },
+  summary: lambda { |p|
+    "Raised invoice #{p[:number]} for #{p[:customer]} — " \
+      "#{ActiveSupport::NumberHelper.number_to_currency(p[:total_cents].to_i / 100.0)}"
+  }
+
+AuditLog::Registry.register "invoice.updated",
+  subject: ->(p) { ["Invoice", p[:invoice_id]] },
+  summary: ->(p) { "Edited invoice #{p[:number]} (#{Array(p[:fields]).join(', ')})" }
+
+AuditLog::Registry.register "invoice.voided",
+  description: "An invoice was destroyed, cascading to its line items.",
+  subject: ->(p) { ["Invoice", p[:invoice_id]] },
+  summary: ->(p) { "Voided invoice #{p[:number]} (#{p[:reason]})" }
+```
+
+`subject:` names the aggregate root the action was about. It is indexed
+(`subject_type, subject_id, occurred_at DESC`) and it is how `redact_record!`
+finds an action's rows — **an entry whose summary can carry personal data should
+always set it**, or a later erasure request will not reach it (DESIGN §13). Omit
+it only for an action with no single subject, such as a bulk price change.
+
+The summary is rendered **once, at emit time**, and stored. Editing one of these
+lambdas changes what future rows say, never what past rows said — a copy edit
+must not alter the historical record.
+
+#### An action that spans several writes
+
+Put the `notify` in the model or service, inside the same transaction as the
+work, and let the controller stay a controller:
+
+```ruby
+# app/controllers/invoices_controller.rb
+def issue
+  @invoice.issue!(by: current_user)
+  redirect_to @invoice, notice: "Invoice issued."
+end
+
+# app/models/invoice.rb
+def issue!(by:)
+  transaction do
+    update!(status: "issued", issued_at: Time.current)
+    line_items.each { |item| item.update!(unit_price_cents: item.product.price_cents) }
+    customer.update!(balance_cents: customer.balance_cents + total_cents)
+
+    # One notify for the whole action, not one per row: layer 1 already wrote a
+    # row per row. Inside the transaction, so a rollback discards the sentence
+    # along with the changes it describes.
+    AuditLog.notify("invoice.issued",
+      invoice_id: id, number: number, line_count: line_items.size,
+      total_cents: total_cents, approver: by.to_label)
+  end
+end
+```
+
+Two reasons it belongs there rather than in the controller: the same action
+invoked from a console session or a rake task still gets its narrative, and the
+event cannot commit without the writes it claims happened.
+
+`approver:` is in the payload only because it may differ from the actor — the
+person who clicked is already on the row. Do not re-send `current_user` as a
+payload key; it is duplication that can later disagree with `actor_label`.
+
+#### An action whose writes skip Active Record
+
+Nothing changes. Emit the event exactly as above — layer 1 catches the rows from
+the database side:
+
+```ruby
+def bulk_adjust
+  percent = params[:percent].to_i.clamp(-50, 50)
+  # No callbacks, no instantiation, no Active Record involvement at all.
+  count = Product.where(active: true)
+                 .update_all("price_cents = (price_cents * #{100 + percent}) / 100")
+
+  AuditLog.notify("price.bulk_adjusted", percent: percent, count: count)
+  redirect_to products_path, notice: "Adjusted #{count} prices."
+end
+```
+
+The `audit_changes` rows and this `audit_events` row share the request's
+`request_id`, so the drill-down shows the sentence with all `count` diffs
+under it.
+
+#### An action that only enqueues work
+
+Do not emit anything for the enqueue. Once `ApplicationJob` includes
+`AuditLog::JobContext` (step 8), the job inherits this request's actor and
+records this request as its `caused_by_request_id`; the job emits its own event
+when the work actually happens:
+
+```ruby
+def ship
+  InvoiceDeliveryJob.perform_later(@invoice)
+  redirect_to @invoice, notice: "Delivery queued."
+end
+```
+
+An event emitted here would claim the invoice was delivered at the moment
+somebody clicked a button, which is not what happened.
+
+#### Payload rules
+
+- **Pass primitives — ids, strings, numbers, arrays.** The payload is stored
+  verbatim in the `metadata` jsonb column. Passing an Active Record object
+  serialises every one of its attributes into the audit log, PII included.
+- **Include what the sentence needs plus the evidence behind it**, and nothing
+  else. `metadata` renders on the action screen as the structured backing for
+  the summary.
+- **Never put a secret, token or password in a payload.**
+  `config.default_excluded_columns` keeps `encrypted_password` and the reset
+  tokens out of layer 1's diffs. It does not filter a layer 2 payload — that is
+  exactly what the call site passed, and nothing else inspects it.
+- **Getting something back out is blunt.** `AuditLog::Redaction` empties an
+  event's `metadata` wholesale and replaces its `summary` with the marker, so
+  one careless key costs that subject its entire narrative. It also matches on
+  `subject_type` / `subject_id`, which means an action registered without a
+  `subject:` cannot be reached by a record-level erasure at all.
+- **`nil` values are dropped** (`payload.compact`), so a key that is sometimes
+  absent will be absent from `metadata`, not present as `null`.
+- **Do not rescue around `notify`.** The engine sets
+  `Rails.event.raise_on_error = true` on purpose: a failed audit write must not
+  vanish while the change it described commits anyway.
+
+#### Finding the actions you have not registered yet
+
+Skipping a `notify` is legal — the change is still fully audited at the record
+level, it just appears under the generic record view with no name on it. That is
+what `bin/rails audit_log:reconcile` reports: correlated changes with no
+registered action. Run it after adding controllers, and let it tell you which
+narratives are still missing.
+
 ---
 
 ## Files
