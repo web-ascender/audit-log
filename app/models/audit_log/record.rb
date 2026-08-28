@@ -28,5 +28,44 @@ module AuditLog
     def readonly?
       persisted?
     end
+
+    # The rows of THIS table produced by a page of audit rows from EITHER table,
+    # grouped by request_id, in one query rather than N. Both tables carry
+    # request_id and occurred_at, so this lives on the shared base: a page of
+    # events hydrates its change rows, and a page of change rows hydrates its
+    # events, through one implementation.
+    #
+    # It is what turns a 40-record nested-attributes save into ONE expandable
+    # entry instead of 40 rows an auditor has to reassemble.
+    #
+    # THE DATE BOUND IS NOT OPTIONAL, for the reason AuditLog::RequestDrillDown
+    # exists to explain: `WHERE request_id IN (...)` mentions occurred_at not at
+    # all, so partition elimination is syntactically impossible and the query
+    # touches every partition -- six today, 84 at a 7-year horizon, on every page
+    # render of every screen that drills down. The rows being expanded carry
+    # their own occurred_at, so the bound costs nothing and infers nothing.
+    #
+    # The window is the page's own span widened by drill_down_slack on each side,
+    # which is strictly more generous than the +/-slack RequestDrillDown applies
+    # to a single event. A row escapes it only by sharing a request_id with a row
+    # on this page while occurring more than a day from every row on it -- and a
+    # request_id's lifetime is one request or one job execution, because jobs
+    # deliberately do not inherit their enqueuer's id (plan 6.4).
+    #
+    # `rows` needs only to respond to request_id and occurred_at, which is why a
+    # page of Changes and a page of Events both work.
+    def self.grouped_by_request(rows, slack: nil)
+      rows = Array(rows)
+      return {} if rows.empty?
+
+      scope = where(request_id: rows.filter_map(&:request_id).uniq)
+      times = rows.filter_map(&:occurred_at)
+      if times.any?
+        slack ||= AuditLog.config.drill_down_slack
+        scope = scope.where(occurred_at: (times.min - slack)..(times.max + slack))
+      end
+
+      scope.order(:occurred_at, :id).group_by(&:request_id)
+    end
   end
 end

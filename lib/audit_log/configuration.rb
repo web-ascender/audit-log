@@ -99,6 +99,32 @@ module AuditLog
     # convention that silently mislabels is worse than one that says nothing.
     attr_accessor :association_targets
 
+    # ->(type, id) { } -> a path/URL string, or nil.
+    #
+    # Where the HOST app shows the record `type`/`id` names, for a timeline it
+    # renders on its own pages: the "also touched" list, and the actor on an
+    # entry. Nothing in this library calls it for its own screens -- the auditor
+    # UI links into the auditor UI.
+    #
+    # It defaults to nil and the default is not a placeholder. This gem does not
+    # know the host's routes, and inferring one from a class name
+    # ("Product" -> product_path) is the same mistake as sniffing a `name` column
+    # for a label: a confident wrong link on an audit screen is worse than no
+    # link, and it fails at RENDER time on a screen an auditor is reading. Same
+    # discipline as AuditLog::RecordLabel's chain ending in nil -- silence is the
+    # opt-out, and the value objects render fine without it.
+    #
+    # Return nil for a type the app has no page for, and for a record the current
+    # viewer may not open: this library does not know who is looking.
+    #
+    #   config.record_url = lambda do |type, id|
+    #     case type
+    #     when "Order"   then Rails.application.routes.url_helpers.order_path(id)
+    #     when "Product" then Rails.application.routes.url_helpers.product_path(id)
+    #     end
+    #   end
+    attr_accessor :record_url
+
     # Classes permitted to call AuditLog.without_logging. Empty array means the
     # bypass is unavailable, which is the right default.
     attr_accessor :bypass_allowlist
@@ -190,6 +216,7 @@ module AuditLog
       @association_targets      = {}
       @bypass_allowlist         = []
       @default_excluded_columns = DEFAULT_EXCLUDED_COLUMNS.dup
+      @record_url               = nil
       @page_size                = 50
       @partition_months_ahead   = 3
       @drill_down_slack         = 24.hours

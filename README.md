@@ -562,6 +562,120 @@ a "recent activity" list that quietly stops short is worse than no list.
 
 ---
 
+## Building an activity history in your own app
+
+The auditor UI is for auditors. For an *"activity history"* on your own
+`orders/show`, in your own markup, use `AuditLog::Timeline` — a paginated list of
+**units of work**, each one carrying its narrative, that record's field changes,
+and the other records the same action touched.
+
+```ruby
+# app/controllers/orders_controller.rb
+def show
+  @order    = Order.find(params[:id])
+  timeline  = AuditLog::Timeline.for(@order)
+  @pagy     = pagy_keyset(timeline.changes)      # or any keyset pager
+  @entries  = timeline.entries(@pagy.records)
+end
+```
+
+```erb
+<% @entries.each do |entry| %>
+  <li>
+    <time><%= l entry.occurred_at, format: :short %></time>
+
+    <%# A registered action stored this sentence at emit time. nil when none did. %>
+    <% if entry.headline %>
+      <%= entry.headline %>
+    <% else %>
+      <%= t(".#{entry.operations.first}", model: Order.model_name.human) %>
+      <%= entry.changed_columns.map { |c| Order.human_attribute_name(c) }.to_sentence %>
+    <% end %>
+
+    <span><%= entry.actor.display %></span>
+
+    <% entry.field_changes.each do |fc| %>
+      <div><%= fc.column %>: <%= fc.from %> → <%= fc.to %></div>
+    <% end %>
+
+    <% if entry.also_touched.any? %>
+      <details>
+        <summary><%= entry.also_touched.size %> other records</summary>
+        <% entry.also_touched.each do |touched| %>
+          <div><%= link_to touched.to_s, touched.url || "#" %></div>
+        <% end %>
+      </details>
+    <% end %>
+  </li>
+<% end %>
+```
+
+### Why objects and not relations
+
+The auditor screens encode rules that are invisible from outside the gem: a diff
+value's three nil shapes mean different things, a nil actor renders "System" but
+is never *stored* that way, a redacted payload and an absent one are the same
+empty jsonb, an association label annotates a recorded id and must never replace
+it. Handed a relation, every app re-derives those and some get them wrong on a
+screen that looks fine. The value objects make each one a method call.
+
+| Object | Reads |
+|---|---|
+| `Entry` | `kind` (`:narrative` / `:change_only`), `headline`, `action`, `source`, `actor`, `occurred_at`, `operations`, `changed_columns`, `field_changes`, `also_touched`, `metadata`, `redacted?`, `out_of_band?` |
+| `FieldChange` | `column`, `from`, `to`, `cleared?`, `set?`, `from_label` / `to_label`, `association?` |
+| `TouchedRecord` | `type`, `id`, `identifier`, `label`, `label_failed?`, `operations`, `columns`, `url`, `to_s` |
+| `Actor` | `type`, `id`, `label`, `display`, `system?`, `linkable?`, `url` |
+
+Every one has `as_json`, so a JSON API or a JS frontend gets the same contract.
+
+### Four things to know
+
+**`headline` is nil when no registered action covered the write, and the library
+will not invent one.** A sentence composed from column names would be *this
+gem's* phrasing rather than yours, would re-render differently after a gem
+upgrade, and on the page would be indistinguishable from a `summary` that was
+frozen at emit time. You have i18n and know what your models are called — and if
+they are STI, names this gem could never guess. `kind` tells you which you are
+holding. Register more actions and more entries become `:narrative`.
+
+**Never drop the id from a `TouchedRecord`.** `to_s` renders
+`Grommet 10mm (Product #51)` on purpose: the label is resolved *live* from the
+record's current row, the id is what the log recorded. Showing only the label
+lets a rename rewrite what your timeline says happened.
+
+**Set `config.record_url` if you want links.** It is nil by default and that is
+not a placeholder — this gem does not know your routes, and it will not guess
+`product_path` from `"Product"`. Return nil for a type you have no page for.
+
+```ruby
+config.record_url = lambda do |type, id|
+  case type
+  when "Order"   then Rails.application.routes.url_helpers.order_path(id)
+  when "Product" then Rails.application.routes.url_helpers.product_path(id)
+  end
+end
+```
+
+**Authorization is yours.** The timeline exposes everything the log holds —
+diffs, actors, other customers' records touched by the same action. That is a
+staff-grade view. `config.authorize` gates the *auditor UI*; this is your screen,
+so gate it with your own policy layer.
+
+### What Spine A does and does not cover
+
+The timeline is anchored on `audit_changes`, so **no write to this record can be
+missing from it**, whatever path it took — `update_all`, raw SQL and cascading
+deletes included. The gap is the other direction: an action that named this
+record as its subject but wrote no change row *to it* (`order.emailed`, where the
+write lands in `deliveries`) does not appear. Those are on the engine's Actions
+tab and in `AuditLog::RecordTimeline#events`. DESIGN §11.2b has the reasoning and
+the union query that would close it.
+
+The engine's own **Timeline** tab is rendered from these same objects, so the
+contract cannot drift from what the auditor UI does.
+
+---
+
 ## Making association ids readable (optional)
 
 A field-level diff records what the database recorded, which is an id:
@@ -681,6 +795,7 @@ application that has opted nothing in pays nothing.
 | `db/sql/audit_tables.sql` | The two partitioned tables and their indexes. |
 | `db/sql/audit_row_change.sql` | The trigger function. The heart of layer 1. |
 | `app/queries/` | One object per auditor question (`ActorActivity`, `RecordHistory`, `RecordTimeline`, `ActionReport`, `Reconciler`, `Coverage`), plus `LabelResolver` — the per-request association-label cache. |
+| `app/queries/audit_log/timeline*` | The **host-facing** contract: units of work as value objects (`Entry`, `FieldChange`, `TouchedRecord`, `Actor`), for an activity history in your own app. |
 | `app/controllers/`, `app/views/` | The auditor UI. `shared/_event_payload` renders `audit_events.metadata` in three states — present, absent, redacted. |
 | `lib/audit_log/rspec.rb` | Shared examples a host app uses instead of copying a spec. Not loaded by `lib/audit_log.rb` — rspec is the host's test dependency. |
 | `lib/generators/audit_log/` | `audit_log:install` and `audit_log:trigger`, with templates. |
@@ -737,6 +852,7 @@ sections most likely to matter, and the shape of the mistake each one prevents:
 | `event_subscriber.rb`, `record.rb` | §7, §12 | `readonly?` keyed on `true` breaks **inserts**, silently disabling layer 2 |
 | `partitions.rb`, the SQL, migrations | §8 | every boundary is UTC midnight, and the three manual operations must not overlap |
 | a query object or a screen | §11 | mandatory date bounds are what make the screens prune |
+| `timeline.rb` or its value objects | §11.2b | it is a PUBLISHED contract host apps render — and `headline` returning nil, not a generated sentence, is part of it |
 | `record_timeline.rb`, the record screen | §11.2a | `where.not(subject_type:, subject_id:)` is NULL-unsafe and silently drops every event with no subject — which is the exact population the correlated section exists to show |
 | `pagination.rb` or a screen's scope | §11.0 | the cursor must carry microseconds, or rows vanish between pages — and a `.limit` below the controller is a silent truncation |
 | `csv_export.rb` | §11.4a | an export with a row cap reintroduces exactly what the paging removed |

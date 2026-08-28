@@ -59,14 +59,14 @@ Update it when you change behaviour.
 | Ruby | **>= 3.3** — the floor is `SecureRandom.uuid_v7` (DESIGN §2.1), not a preference. 3.3.0 exactly also cannot run Rails 8.1, for a reason of Rails' own. Developed on 4.0.6. |
 | Rails | **`~> 8.0`** — floor 8.0 (DESIGN §2.2), and a real ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. Developed on 8.1.3.1. |
 | PostgreSQL | **18.6 on port 5438** — not the workspace default 5437 |
-| Tests | RSpec against `spec/dummy` (275 examples), on every push via GitHub Actions |
+| Tests | RSpec against `spec/dummy` (297 examples), on every push via GitHub Actions |
 | Runtime deps | `rails`, `pagy` (keyset paging), `csv` (export). **`pg` deliberately is not one** — the host app picks its build. |
 
 ```bash
 bundle install
 cd spec/dummy && RAILS_ENV=test bundle exec bin/rails db:create db:migrate
 bundle exec rspec                       # from the gem root
-bundle exec rspec spec/preview.rb       # renders all 15 engine screens to spec/dummy/public/
+bundle exec rspec spec/preview.rb       # renders all 16 engine screens to spec/dummy/public/
 ```
 
 `spec/dummy/db/structure.sql` is **git-ignored on purpose**. For a disposable app
@@ -184,6 +184,52 @@ Do not "fix" these without reading the linked reasoning first.
   resolves on demand, so a screen that forgets to warm is slower and never wrong.
   Do not restructure it into something a new screen can silently skip. **CSV export
   is deliberately unlabelled** — it is the evidence artifact and ships recorded ids.
+- **`AuditLog::Timeline` is a PUBLISHED CONTRACT host apps render, not an
+  internal query object.** Its value objects (`Entry`, `FieldChange`,
+  `TouchedRecord`, `Actor`) exist because the auditor screens encode rules that
+  are invisible from outside the gem — the three nil shapes of a diff value, the
+  nil-actor fallback, the redaction marker, the four `LabelResolver` outcomes,
+  the never-drop-the-id rule. Handed a relation, every host app re-derives those
+  and some get them wrong on a screen that looks fine. Changing a method name or
+  a return shape here breaks apps you cannot see. DESIGN §11.2b.
+- **`Entry#headline` returns nil when no registered action covered the write, and
+  that nil is the contract — do NOT add a generated sentence.** A phrasing
+  composed from column names would be this gem's wording rather than the app
+  author's, would re-render differently after a gem upgrade, and — the part that
+  matters — would be indistinguishable on the page from a `summary` frozen at
+  emit time, which is immutable history. Same discipline as `RecordLabel`'s chain
+  ending in nil. The host has i18n, knows its model names, and may have STI names
+  the gem could never guess; it gets `operations`, `record_type` and
+  `changed_columns`. `kind` (`:narrative` / `:change_only`) says which it holds.
+- **The timeline's grain is the unit of work, and its page-boundary rule is
+  load-bearing.** An entry is hydrated with EVERY change row of its request,
+  including rows past the end of the page — that is what stops a cursor splitting
+  one save in half. The cost is that the next page starts on one of those older
+  rows and would render the entry twice, so an entry whose newest row for this
+  record is newer than the page's own newest row was already shown in full and is
+  dropped. The check is local and stateless and can only ever drop a duplicate.
+  Removing it double-renders; removing the full hydration truncates an entry at
+  a page edge. `timeline_spec` pins both.
+- **`config.record_url` defaults to nil and the default is not a placeholder.**
+  Inferring `product_path` from `"Product"` is the same mistake as sniffing a
+  `name` column for a label, and it fails at render time on a screen an auditor
+  is reading. Silence is the opt-out. It serves actors too — an actor is a record,
+  so there is deliberately no second `actor_url` lambda.
+- **`TouchedRecord#to_s` keeps the id and must go on doing so.** `Grommet 10mm
+  (Product #51)`, never `Grommet 10mm`. The label is resolved live from current
+  state; the id is what the log recorded (DESIGN §11.8). A host building a pretty
+  timeline will want to drop it, which is exactly why the pretty method is the
+  one that keeps it.
+- **The engine's Timeline tab renders the value objects, not relations.** That is
+  the dogfooding: a presenter nothing in the gem consumes drifts from what the
+  auditor UI actually does — the same argument that makes one `Coverage` back both
+  the rake task and the shared example. Do not "simplify" it back to rendering
+  `AuditLog::Change` directly.
+- **Authorization is deliberately absent from `Timeline`.** The gem exposes
+  everything and the host gates it: "admins only" is a policy question about the
+  host's roles that no config lambda here would express better than the host's
+  own authorization layer. `config.authorize` gates the auditor UI; a
+  host-rendered timeline is the host's screen. Do not add a half-policy here.
 - **The record history screen has two tabs, and the narrative one has two
   SECTIONS that must not be merged.** `AuditLog::RecordTimeline#events` is the
   actions that named this record as their `subject` (indexed, uncapped);
@@ -202,8 +248,10 @@ Do not "fix" these without reading the linked reasoning first.
   population the feature is for while the screen still renders fine. It is spelled
   `(subject_type, subject_id) IS DISTINCT FROM (?::text, ?::bigint)`, which is
   null-safe in both columns; `record_timeline_spec` pins it.
-- **`AuditLog::Change.grouped_by_request` is date-bounded, and that bound is not
-  optional.** `WHERE request_id IN (...)` names `occurred_at` not at all, so the
+- **`AuditLog::Record.grouped_by_request` is date-bounded, and that bound is not
+  optional.** It lives on the shared base, not on `Change`, because both tables
+  carry `request_id` and `occurred_at`: a page of events hydrates its changes and
+  a page of changes hydrates its events through one implementation. `WHERE request_id IN (...)` names `occurred_at` not at all, so the
   planner eliminates no partition — the same argument `RequestDrillDown`'s
   doc-comment makes at length. The window comes from the page's own events, so it
   infers nothing. This is ONE method because the actor screen and the record
@@ -416,7 +464,7 @@ Two loaders, and only one of them reloads:
 
 | Path | Loader | Reloads? |
 |---|---|---|
-| `app/**` (controllers, views, helpers, models, queries) | Zeitwerk, via the engine | **yes** |
+| `app/**` (controllers, views, helpers, models, queries, timeline value objects) | Zeitwerk, via the engine | **yes** |
 | `lib/audit_log/*.rb` | `Kernel#autoload` from `lib/audit_log.rb` | **no** — once per process |
 
 **Restart after editing anything under `lib/audit_log/`** — `configuration.rb`,
@@ -439,10 +487,10 @@ one. Do not reintroduce it.
 ## Testing
 
 ```bash
-bundle exec rspec                         # 275 examples, against spec/dummy
+bundle exec rspec                         # 297 examples, against spec/dummy
 bundle exec rspec spec/audit_log          # the library proper
 bundle exec rspec spec/requests           # the auditor UI and the CSV export
-bundle exec rspec spec/preview.rb         # dev tool: renders 15 screens to spec/dummy/public/
+bundle exec rspec spec/preview.rb         # dev tool: renders 16 screens to spec/dummy/public/
 ```
 
 `spec/preview.rb` is deliberately not `_spec.rb`, so it is not auto-collected.
@@ -469,6 +517,7 @@ property from different angles — **that nothing goes missing without saying so
 | `redaction_spec` | redaction removes structure, not just values |
 | `association_labels_spec` | a label replaces a stored id, or a failed lookup reads as an absent one |
 | `record_timeline_spec` | an unsubjected action vanishes from a record's narrative, or a capped section does not admit it is capped |
+| `timeline_spec` | the published host-facing contract changes shape, an entry splits or double-renders at a page edge, or `headline` starts inventing sentences |
 | `install_generator_spec` | the ControllerContext include lands ahead of authentication, or a skipped step reports success |
 
 A change that makes any of those pass *more easily* is a regression.

@@ -36,23 +36,33 @@ module AuditLog
     def history
       @record_type = params[:record_type]
       @record_id   = params[:record_id]
-      @view        = params[:view] == "actions" ? "actions" : "changes"
+      @view        = VIEWS.include?(params[:view]) ? params[:view] : "changes"
 
       scope = view_scope
       return stream_csv(AuditLog::CsvExport.for(scope),
                         "audit-#{@record_type}-#{@record_id}-#{@view}") if request.format.csv?
 
       @pagy = paginate(scope)
-      if @view == "actions"
+      case @view
+      when "actions"
         @events             = @pagy.records
         @changes_by_request = timeline.changes_for(@events)
         @correlated         = timeline.correlated(limit: correlation_scan)
+      when "timeline"
+        # The engine renders the host-facing value objects rather than its own
+        # relations, on purpose: this screen IS the test that the published
+        # contract can build a real view. A presenter nothing in the gem consumes
+        # drifts from what the auditor UI actually does -- the same argument that
+        # makes Coverage back both the rake task and the shared example.
+        @entries = record_timeline.entries(@pagy.records)
       else
         @changes = @pagy.records
       end
     end
 
     private
+
+    VIEWS = %w[changes actions timeline].freeze
 
     # How much of the record's change history the correlated section reads. The
     # default is one page; the screen offers to widen it, because a cap an
@@ -67,6 +77,17 @@ module AuditLog
       scan.clamp(1, CORRELATION_SCAN_MAX)
     end
 
+    # Shares ONE LabelResolver with the view. `audit_labels` is `@audit_labels
+    # ||= LabelResolver.new` in the helper, and a view sees the controller's
+    # ivars -- so seeding it here means the entries and anything else the page
+    # renders resolve against one warmed cache rather than two.
+    def record_timeline
+      @audit_labels    ||= AuditLog::LabelResolver.new
+      @record_timeline ||= AuditLog::Timeline.new(
+        record_type: @record_type, record_id: @record_id, labels: @audit_labels
+      )
+    end
+
     def timeline
       @timeline ||= AuditLog::RecordTimeline.new(
         record_type: @record_type, record_id: @record_id
@@ -79,6 +100,7 @@ module AuditLog
     # more precision than the request_id link supports.
     def view_scope
       return timeline.events if @view == "actions"
+      return record_timeline.changes if @view == "timeline"
 
       AuditLog::RecordHistory.new(
         record_type: @record_type, record_id: @record_id

@@ -6,9 +6,26 @@
         class: ("on" if @view == "changes") %>
   <%= link_to "Actions", record_history_path(record_type: @record_type, record_id: @record_id, view: "actions"),
         class: ("on" if @view == "actions") %>
+  <%= link_to "Timeline", record_history_path(record_type: @record_type, record_id: @record_id, view: "timeline"),
+        class: ("on" if @view == "timeline") %>
 </div>
 
-<% if @view == "actions" %>
+<% if @view == "timeline" %>
+  <p class="note">
+    Both layers, interleaved, at the grain a person reads: one entry per
+    <strong>unit of work</strong> rather than one per audit row, so a save that wrote this
+    record and forty children is one entry and not forty. Anchored on
+    <code>audit_changes</code>, so no write to this record can be missing — an action that
+    named this record but wrote nothing to it lives on the <strong>Actions</strong> tab.
+  </p>
+  <p class="note small">
+    This screen is built entirely from <code>AuditLog::Timeline</code>'s value objects — the
+    same published contract a host app renders on its own pages. It is here so the contract
+    cannot drift from what the auditor UI actually does.
+  </p>
+  <%= render "audit_log/records/timeline_entries", entries: @entries %>
+  <%= render "audit_log/shared/pagination", pagy: @pagy, rows: @pagy.records %>
+<% elsif @view == "actions" %>
   <p class="note">
     The narrative layer for this record — the actions that named it as their
     <code>subject</code>. Readable, but complete only for actions that have a

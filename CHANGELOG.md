@@ -2,6 +2,65 @@
 
 ## Unreleased
 
+### A host-facing activity timeline  **[2026-08-28]**
+
+The auditor UI is for auditors. `AuditLog::Timeline` is the other audience: a
+host application rendering an "activity history" on its own `orders/show`, in its
+own markup, for its own staff.
+
+- **`AuditLog::Timeline.for(record)`** — a paginated list of **units of work**,
+  not audit rows. A form submit that saves an order and forty line items is ONE
+  entry, with the order's field changes on it and the forty line items beside it.
+  `#changes` is the ordered, unlimited spine the caller paginates; `#entries(page)`
+  turns a page into value objects with three queries regardless of page size.
+- **Value objects, not relations: `Entry`, `FieldChange`, `TouchedRecord`,
+  `Actor`,** each with `as_json`. This is the point of the feature. The auditor
+  screens encode rules invisible from outside the gem — the three nil shapes of a
+  diff value, the nil actor that renders "System" but is never stored that way,
+  the redaction marker as the only trace of an erasure, `LabelResolver`'s four
+  outcomes, the id that must never be dropped from a label. Handed a relation,
+  every host app re-derives those and some get them wrong on a screen that looks
+  fine. Now each is a method call.
+- **`config.record_url`** — `->(type, id) { }` returning a path or nil, for the
+  "also touched" list and the actor. nil by default, and deliberately never
+  inferred from a class name: a wrong link on an audit screen is worse than none.
+  Serves actors too, so there is no second lambda.
+- **A third "Timeline" tab on the record screen**, rendered entirely from those
+  value objects rather than the engine's own relations. A presenter nothing in
+  the gem consumes drifts from what the auditor UI does.
+
+Three decisions worth stating, since each looks like something to improve:
+
+- **`Entry#headline` returns nil when nothing registered covered the write.** The
+  library does not compose "Jane updated status and total" from column names.
+  That would be this gem's phrasing rather than the app author's, would
+  re-render differently after a gem upgrade, and would be indistinguishable on
+  the page from a `summary` frozen at emit time — a recomputed sentence wearing
+  the costume of immutable history. The host has i18n and its own model names;
+  it gets `operations`, `record_type` and `changed_columns`, and `kind` says
+  which it is holding.
+- **The page-boundary rule.** An entry is hydrated with every change row of its
+  unit of work, including rows past the end of the page, so a cursor never splits
+  one save in half. The next page therefore starts on one of those older rows, so
+  an entry whose newest row is newer than the page's own head was already shown
+  in full and is dropped. Local, stateless, and can only ever drop a duplicate.
+- **No authorization in the object.** It exposes everything and the host gates
+  it. "Admins only" is a question about the host's roles that no lambda here
+  would express better than its existing policy layer.
+
+Spine A: the timeline is anchored on `audit_changes`, so no **write** to a record
+can be missing from it whatever path it took. An event that named the record but
+wrote no change row to it (`order.emailed`) does not appear, stays on the Actions
+tab, and DESIGN §11.2b carries the union query that would close it — including why
+a merged keyset needs `(max(occurred_at), request_id)` rather than
+`(occurred_at, id)`: both tables have their own `bigserial`, so the naive cursor
+has colliding tiebreakers.
+
+Also: `Change.grouped_by_request` moved up to `AuditLog::Record`. Both tables
+carry `request_id` and `occurred_at`, so a page of events hydrates its changes and
+a page of changes hydrates its events through one bounded implementation.
+
+
 ### Narrative history for a single record  **[2026-08-28]**
 
 `audit_events` has carried `subject_type` / `subject_id` and an index on

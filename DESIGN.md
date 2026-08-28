@@ -1649,6 +1649,93 @@ recognise falls back to them rather than to the capped list.
 
 ---
 
+### 11.2b The host-facing timeline — `AuditLog::Timeline`  **[added 2026-08-28]**
+
+Everything above is the auditor's UI. This is the other audience: a host application putting an
+*"activity history"* on its own `orders/show`, in its own markup, for its own staff.
+
+**Why value objects and not relations.** The auditor screens encode rules that are invisible from
+outside the gem — that a diff value's three nil shapes mean different things (§11.2), that a nil
+actor renders "System" but is never stored that way (§6.2), that a redacted payload and an absent
+one are the same empty jsonb and only the marker separates them (§13), that an association label
+annotates a recorded id and must never replace it (§11.8), that `LabelResolver` has four outcomes
+and not two. Ship the relations alone and every host app re-derives those. Some get them wrong, on
+a screen that looks fine. `Timeline::Entry`, `FieldChange`, `TouchedRecord` and `Actor` exist to
+make each of those rules a method call.
+
+**The grain is the unit of work, not the audit row.** A form submit that saves an order and forty
+line items is ONE entry — the order's own field changes on it, the forty line items beside it —
+rather than forty rows a reader reassembles. That is what a correlation id was for (§3). An
+uncorrelated write (`request_id IS NULL`, §9) correlates to nothing by definition and stands alone.
+
+**Spine A: `audit_changes` is the backbone.** The record's own change rows, keyset-paged on
+`(record_type, record_id, occurred_at DESC)` — the same scan Screen A uses — then grouped.
+
+| | |
+|---|---|
+| Buys | completeness for every **write**. Nothing that modified this record can be missing, whatever path it took, because layer 1 captured it regardless of the registry. |
+| Costs | an event that named this record as its subject but wrote no change row *to it* does not appear. `order.emailed`, where the write lands in `deliveries`, is that shape. |
+| Mitigation | `RecordTimeline#events` and the Actions tab still list it. Closing the gap means unioning both tables into the spine, which changes the keyset — see below. |
+
+**The page-boundary rule.** An entry is hydrated with *every* change row of its unit of work,
+including rows past the end of the page — that is what keeps a unit of work whole at a cursor
+instead of splitting it in half. The cost is that the next page begins at one of those older rows
+and would render the same entry again.
+
+So: **an entry whose newest row for this record is newer than the page's own newest row was
+necessarily shown in full on an earlier page, and is dropped.** The check is local and stateless —
+no cursor bookkeeping to keep in sync — and it can only ever drop a duplicate. On the first page
+nothing is newer than the head; for the ordinary one-row-per-request entry the row *is* the max.
+
+**`headline` returns nil rather than a generated sentence, and that nil is the contract.** The
+library does not compose *"Jane updated status and total"* from column names. Three reasons, and
+the third is the one that matters:
+
+1. It would be this gem's phrasing, not the app author's.
+2. It would re-render differently after a gem upgrade, while a stored `summary` is frozen at emit
+   time and never changes.
+3. On the page it would be **indistinguishable from a summary that was frozen at emit time** — a
+   recomputed sentence wearing the costume of immutable history.
+
+Same discipline as `RecordLabel`'s chain ending in nil (§11.8). The host has i18n, knows what its
+models are called, and may have STI names the gem could never guess; it gets `operations`,
+`record_type` and `changed_columns` and writes its own sentence. `kind` (`:narrative` /
+`:change_only`) says which it is holding.
+
+**`config.record_url` is nil by default and the default is not a placeholder.** Inferring
+`product_path` from `"Product"` is the same mistake as sniffing a `name` column for a label, and it
+fails at render time on a screen an auditor is reading. Silence is the opt-out; the value objects
+render fine without it. It serves actors too — an actor is a record.
+
+**Authorization is deliberately not in this object.** The gem exposes everything and the host gates
+it, because "admins only" or "admin and staff" is a policy question about the host's own roles that
+no config lambda here would express better than the host's existing authorization layer. The
+auditor UI's `config.authorize` gates the auditor UI; a host-rendered timeline is the host's screen.
+
+**The engine renders this tab from the value objects**, not from its own relations. A presenter
+nothing in the gem consumes drifts from what the auditor UI actually does — the same argument that
+makes one `Coverage` back both the rake task and the shared example.
+
+**Still open (Spine B).** Union both tables into the spine so a write-less event appears:
+
+```sql
+SELECT request_id, max(at) AS at FROM (
+  SELECT request_id, max(occurred_at) at FROM audit_changes
+    WHERE record_type = $1 AND record_id = $2 AND request_id IS NOT NULL GROUP BY request_id
+  UNION ALL
+  SELECT request_id, max(occurred_at) at FROM audit_events
+    WHERE subject_type = $1 AND subject_id = $2 GROUP BY request_id
+) u GROUP BY request_id ORDER BY at DESC, request_id DESC
+```
+
+Keyset on `(at, request_id)` is clean — one row per `request_id`, and a UUIDv7 is totally ordered
+and unique, so the cross-table `id` collision never arises (both tables have their own `bigserial`,
+so a naive merged cursor on `(occurred_at, id)` would have colliding tiebreakers). The work is
+getting `Pagy::Keyset` to apply its predicate to a `from(subquery)` relation; the aggregate cannot
+be filtered in `WHERE`.
+
+---
+
 ### 11.3 Q3 — "All `order.submitted` events, who triggered them, by date range"
 
 The easiest of the three: fully served by `audit_events` with no join at all, because
@@ -1704,6 +1791,7 @@ is the screen under-reporting without saying so.
 | Actor activity — "what did Jane do" | `audit_events` + `audit_changes` | `(actor_type, actor_id, occurred_at DESC)` on both | **required** |
 | Record history — "everything about Order #4821" | `audit_changes` | `(record_type, record_id, occurred_at DESC)` | optional, keyset-paged |
 | Record narrative — "what was *done* to Order #4821" | `audit_events` | `(subject_type, subject_id, occurred_at DESC)` | optional, keyset-paged |
+| Record timeline — both layers, host-facing | `audit_changes` spine + `audit_events` | `(record_type, record_id, occurred_at DESC)` | optional, keyset-paged |
 | Class activity — "all Order changes" | `audit_changes` | `(record_type, occurred_at DESC)` | **required** |
 | Field filter — "who touched `status`" | `audit_changes` | GIN `(changed_columns)` | **required** |
 | Action report — "all order.submitted" | `audit_events` | `(action, occurred_at DESC)` | **required** |

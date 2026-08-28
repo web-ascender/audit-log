@@ -126,6 +126,20 @@ RSpec.describe "the auditor UI", type: :request do
       expect(response.body).to include("scan=8")
     end
 
+    # The engine renders this tab from AuditLog::Timeline's value objects rather
+    # than its own relations, so this example is the guard that the published
+    # host-facing contract can actually build a view. A presenter nothing in the
+    # gem consumes drifts from what the auditor UI does.
+    it "renders the timeline tab from the host-facing value objects" do
+      get audit.record_history_path(record_type: "Order", record_id: @order.id, view: "timeline")
+      expect(response).to have_http_status(:ok)
+      expect(response.body).to include("Submitted order")
+      expect(response.body).to include("unit of work")
+      # One entry per unit of work, not one per audit row.
+      expect(response.body.scan(/class="entry /).size)
+        .to eq(AuditLog::Change.for_record("Order", @order.id).distinct.count(:request_id))
+    end
+
     it "exports whichever tab of a record's history is open" do
       get audit.record_history_path(record_type: "Order", record_id: @order.id,
                                     view: "actions", format: :csv)

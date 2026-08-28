@@ -1,0 +1,96 @@
+<%# Rendered ENTIRELY from AuditLog::Timeline's value objects -- no relation, no
+    audit_log helper that reads a Change or an Event directly. That is the point
+    of the screen: if a host app cannot build this view from the published
+    contract, neither can we, and we find out here rather than in their app. %>
+<ol class="timeline">
+  <% entries.each do |entry| %>
+    <li class="entry kind-<%= entry.kind %><%= " redacted" if entry.redacted? %>">
+      <div class="when">
+        <%= audit_time(entry.occurred_at) %>
+        <% if entry.out_of_band? %>
+          <span class="badge out-of-band">out of band</span>
+        <% else %>
+          <%= link_to audit_short_id(entry.request_id), request_path(entry.request_id),
+                class: "mono", title: entry.request_id %>
+        <% end %>
+        <%= audit_source_badge(entry.source) if entry.source %>
+      </div>
+
+      <p class="headline">
+        <%# A registered action stored this sentence at emit time. `headline` is
+            nil when none did, and the library deliberately does NOT invent one:
+            the host has i18n and knows what its models are called, so it gets
+            the raw materials instead. This screen composes the fallback from the
+            same public methods a host app would use. %>
+        <% if entry.headline %>
+          <%= link_to entry.action, action_path(entry.action), class: "mono" %>
+          <span class="summary"><%= entry.headline %></span>
+        <% else %>
+          <span class="summary muted">
+            <%= entry.operations.map { |op| AuditLog::Change::OPERATION_NAMES.fetch(op, op) }.join(", ") %>
+            <%= entry.record_type %>
+            <% if entry.changed_columns.any? %>
+              — <%= safe_join(entry.changed_columns.map { |c| tag.code(c, class: "col-chip") }, " ") %>
+            <% end %>
+          </span>
+          <span class="hint">no registered action</span>
+        <% end %>
+      </p>
+
+      <p class="who">
+        <% if entry.actor.linkable? %>
+          <%= link_to entry.actor.display, actor_path(entry.actor.id, actor_type: entry.actor.type) %>
+        <% else %>
+          <span class="muted" title="No actor recorded"><%= entry.actor.display %></span>
+        <% end %>
+      </p>
+
+      <% if entry.field_changes.any? %>
+        <ul class="fields">
+          <% entry.field_changes.each do |fc| %>
+            <li>
+              <code class="col-chip"><%= fc.column %></code>
+              <%= audit_value(fc.from, label: fc.from_label) %>
+              <span class="arrow">→</span>
+              <%= audit_value(fc.to, cleared: fc.cleared?, label: fc.to_label) %>
+            </li>
+          <% end %>
+        </ul>
+      <% end %>
+
+      <% if entry.also_touched.any? %>
+        <details class="also">
+          <summary><%= pluralize(entry.also_touched.size, "other record") %> changed in this action</summary>
+          <ul class="record-list">
+            <% entry.also_touched.each do |touched| %>
+              <li>
+                <%# to_s, never `label` alone: the id is what the log recorded and
+                    the label is resolved live from current state. DESIGN §11.8. %>
+                <%= link_to touched.to_s,
+                      record_history_path(record_type: touched.type, record_id: touched.id) %>
+                <% if touched.label_failed? %>
+                  <span class="assoc-failed">(label unavailable)</span>
+                <% end %>
+                <%= safe_join(touched.columns.map { |c| tag.code(c, class: "col-chip") }, " ") %>
+              </li>
+            <% end %>
+          </ul>
+        </details>
+      <% end %>
+
+      <% if entry.metadata.any? %>
+        <details class="payload">
+          <summary><%= pluralize(entry.metadata.size, "payload field") %></summary>
+          <dl>
+            <% entry.metadata.sort.each do |key, value| %>
+              <dt><%= key %></dt><dd><%= audit_metadata_value(value) %></dd>
+            <% end %>
+          </dl>
+        </details>
+      <% end %>
+    </li>
+  <% end %>
+  <% if entries.empty? %>
+    <li class="empty">Nothing recorded for this record.</li>
+  <% end %>
+</ol>

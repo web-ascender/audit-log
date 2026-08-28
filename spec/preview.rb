@@ -84,6 +84,8 @@ RSpec.describe "preview", type: :request do
       "history"   => audit.record_history_path(record_type: "Order", record_id: orders[0].id),
       "narrative" => audit.record_history_path(record_type: "Order", record_id: orders[0].id,
                                                view: "actions"),
+      "timeline"  => audit.record_history_path(record_type: "Order", record_id: orders[0].id,
+                                               view: "timeline"),
       # A PRODUCT, not an order: price.bulk_adjusted carries no subject: lambda,
       # so a product's narrative tab is empty above and populated below. The one
       # screen state that renders the correlated section on its own.
