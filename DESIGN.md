@@ -1587,6 +1587,68 @@ parsing needed for the summary column, only for the expanded detail.
 
 ---
 
+### 11.2a Q2, narrative half — "What was *done* to Order #4821, in words?"  **[added 2026-08-28]**
+
+Screens A and B above answer Q2 from `audit_changes`: complete by construction, field-level, and
+the compliance-grade answer. They are not the answer to *"what happened to this order"* as a human
+would ask it. That one is a list of sentences, and it lives in `audit_events`.
+
+The storage for it has been here since the first migration and nothing read it. `subject_type` /
+`subject_id` (§4) is what a Registry entry's `subject:` lambda populates, and
+`(subject_type, subject_id, occurred_at DESC)` is indexed specifically for this lookup — but until
+`AuditLog::RecordTimeline`, `AuditLog::Redaction` was its only consumer. The gap was in this
+document too: §11.4's table listed the record screen as `audit_changes` alone.
+
+```ruby
+AuditEvent.where(subject_type: "Order", subject_id: order.id)
+          .order(occurred_at: :desc, id: :desc)
+```
+
+Unbounded in range for the same reason Screen A is: a single record has bounded history. Keyset
+paged, so unbounded does not mean unlimited.
+
+**Two populations, and merging them would lie.** An action can touch a record without naming it:
+
+| | Named this record as `subject` | Wrote to it under some other subject, or none |
+|---|---|---|
+| Example | `order.submitted` | `price.bulk_adjusted`, a nested save whose subject is the parent, an entry registered with no `subject:` |
+| Found by | the subject index | matching `request_id` against the record's own `audit_changes` rows |
+| Cost | one index scan | two steps — and the second needs a date bound |
+| Complete? | for registered actions that set `subject:` | only within the change rows it scanned |
+
+They render as two sections, not one merged list, because the difference between *"this action was
+about this record"* and *"this action happened to write to this record"* is a real difference in
+what the log is claiming — and because only the second is capped. A merged list would present both
+claims identically and hide the cap in the middle of it.
+
+**The correlated half carries two bounds, both disclosed.**
+
+*A date bound*, because `WHERE request_id IN (...)` prunes no partitions — §11.6's whole argument,
+applied to a second query. The record's own change rows supply both the ids and a real window, so
+the bound infers nothing.
+
+*A scan cap*, because the ids come from the record's change history and that history is unbounded.
+The cap is stated on the screen as what it actually is — *"read from the 50 most recent change rows
+for this record"*, a claim an auditor can check — and it is escapable with `?scan=`, the same
+treatment §11.6 gives the drill-down's window. An unqualified "recent activity" heading over a
+silently truncated list is the failure this library exists to prevent, in miniature.
+
+> ⚠️ **`where.not(subject_type: t, subject_id: i)` is the wrong exclusion and fails silently.**
+> It compiles to `NOT (subject_type = t AND subject_id = i)`, which evaluates to NULL — and so
+> excludes the row — whenever `subject_type IS NULL`. An action registered without a `subject:`
+> lambda is exactly that row, and it is the single most important thing the correlated section is
+> there to surface: the natural spelling drops the entire population the section exists for, and
+> the screen still renders. Use the row-wise `(subject_type, subject_id) IS DISTINCT FROM (?, ?)`,
+> which is null-safe in both columns.
+
+**What this does not change.** The narrative tab is a reading aid, not a compliance answer. An
+action with no Registry entry, or one registered without `subject:`, is invisible to the first
+section and reachable by the second only if it wrote a change row inside the scan window. The
+change rows remain the complete record and stay the landing tab, and a `?view=` the URL does not
+recognise falls back to them rather than to the capped list.
+
+---
+
 ### 11.3 Q3 — "All `order.submitted` events, who triggered them, by date range"
 
 The easiest of the three: fully served by `audit_events` with no join at all, because
@@ -1640,7 +1702,8 @@ is the screen under-reporting without saying so.
 | Screen | Driven by | Index | Date bound |
 |---|---|---|---|
 | Actor activity — "what did Jane do" | `audit_events` + `audit_changes` | `(actor_type, actor_id, occurred_at DESC)` on both | **required** |
-| Record history — "everything about Order #4821" | `audit_changes` | `(record_type, record_id, occurred_at DESC)` | optional, cap rows |
+| Record history — "everything about Order #4821" | `audit_changes` | `(record_type, record_id, occurred_at DESC)` | optional, keyset-paged |
+| Record narrative — "what was *done* to Order #4821" | `audit_events` | `(subject_type, subject_id, occurred_at DESC)` | optional, keyset-paged |
 | Class activity — "all Order changes" | `audit_changes` | `(record_type, occurred_at DESC)` | **required** |
 | Field filter — "who touched `status`" | `audit_changes` | GIN `(changed_columns)` | **required** |
 | Action report — "all order.submitted" | `audit_events` | `(action, occurred_at DESC)` | **required** |

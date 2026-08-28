@@ -83,6 +83,57 @@ RSpec.describe "the auditor UI", type: :request do
       expect(response.body).to include("Order ##{@order.id}")
     end
 
+    # The change rows are the compliance-grade answer, so they stay the landing
+    # tab. A ?view= a hostile URL invented must not silently select something
+    # else -- it falls back to the complete layer, never to the capped one.
+    it "defaults a record's history to the change rows" do
+      get audit.record_history_path(record_type: "Order", record_id: @order.id, view: "nonsense")
+      expect(response.body).to include("straight from the database triggers")
+    end
+
+    it "renders the narrative tab for one record, from the subject index" do
+      get audit.record_history_path(record_type: "Order", record_id: @order.id, view: "actions")
+      expect(response).to have_http_status(:ok)
+      expect(response.body).to include("Submitted order")
+      expect(response.body).to include("Also touched this record")
+    end
+
+    # price.bulk_adjusted is registered with no subject: lambda and writes with
+    # update_all. A record timeline built on the subject index alone loses it
+    # entirely -- which is the whole reason the second section exists.
+    it "surfaces an action that touched a record without naming it as subject" do
+      product = create_product(price_cents: 1_000)
+      as_actor(staff) do
+        count = Product.where(id: product.id).update_all(price_cents: 1_100)
+        AuditLog.notify("price.bulk_adjusted", percent: 10, count: count)
+      end
+
+      get audit.record_history_path(record_type: "Product", record_id: product.id, view: "actions")
+      expect(response).to have_http_status(:ok)
+      expect(response.body).to include("price.bulk_adjusted")
+    end
+
+    # A capped list that does not say it is capped is the failure mode this
+    # library is built to avoid. The cap is also escapable.
+    it "discloses the correlated section's scan budget when it runs out" do
+      product = create_product(price_cents: 1_000)
+      as_actor(staff) { 3.times { |i| product.update!(price_cents: 2_000 + i) } }
+
+      get audit.record_history_path(record_type: "Product", record_id: product.id,
+                                    view: "actions", scan: 2)
+      expect(response.body).to include("2</strong> most recent")
+      expect(response.body).to include("more history than that")
+      expect(response.body).to include("scan=8")
+    end
+
+    it "exports whichever tab of a record's history is open" do
+      get audit.record_history_path(record_type: "Order", record_id: @order.id,
+                                    view: "actions", format: :csv)
+      expect(response).to have_http_status(:ok)
+      expect(response.headers["Content-Disposition"]).to include("Order-#{@order.id}-actions")
+      expect(response.body).to include("order.submitted")
+    end
+
     # The bug this guards: the action links were the id's first 8 characters,
     # which in a UUIDv7 are timestamp bits with ~65 seconds of resolution. Two
     # actions on one record seconds apart -- the ordinary case on a history

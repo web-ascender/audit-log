@@ -26,7 +26,10 @@ RSpec.describe "CSV export", type: :request do
 
     expect(response).to have_http_status(:ok)
     expect(response.media_type).to eq("text/csv")
-    expect(response.headers["Content-Disposition"]).to match(/attachment; filename="audit-Order-#{@order.id}-\d{8}T\d{6}Z\.csv"/)
+    # The filename carries the TAB. One record's history exports two different
+    # populations from one URL, and two evidence artifacts that differ in content
+    # must not arrive under one name.
+    expect(response.headers["Content-Disposition"]).to match(/attachment; filename="audit-Order-#{@order.id}-changes-\d{8}T\d{6}Z\.csv"/)
     expect(csv_from(response).headers).to include("occurred_at", "operation", "diff", "actor_label")
   end
 

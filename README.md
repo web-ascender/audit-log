@@ -514,6 +514,54 @@ narratives are still missing.
 
 ---
 
+## Reading one record's history
+
+Two tabs on `/audit/records/:record_type/:record_id/history`, one per layer,
+because they answer different questions and neither substitutes for the other.
+
+**Changes** (the default) is `audit_changes` — every INSERT, UPDATE and DELETE
+against this record, field by field, complete regardless of how the write was
+issued. This is the compliance-grade answer and the reason it is the landing tab.
+
+**Actions** is `audit_events` — the same history as sentences. It has two
+sections, and the split is deliberate:
+
+- **The actions that named this record as their `subject`.** Served by
+  `(subject_type, subject_id, occurred_at DESC)`, keyset-paged, uncapped. Complete
+  for actions that have a `Registry` entry *and* a `subject:` lambda.
+- **"Also touched this record"** — actions that wrote to it under a different
+  subject or none at all: a bulk update, a save whose subject was the parent, an
+  entry registered with no `subject:`. There is no column linking these to the
+  record, so they are found by matching `request_id` against the record's own
+  change rows.
+
+The second section is **capped and says so**: it reads a bounded number of the
+record's most recent change rows, prints how many it read, and offers `?scan=` to
+widen it. That is the same treatment the request drill-down gives its date window
+— a narrowed query must never be mistaken for a complete one.
+
+Both sections are reachable as query objects if you would rather build your own
+view than link to the engine's:
+
+```ruby
+timeline = AuditLog::RecordTimeline.new(record_type: "Order", record_id: order.id)
+
+timeline.events                    # subject-matched, ordered, UNLIMITED — you paginate
+timeline.changes_for(page_of_events)  # the change rows behind a page, grouped by request_id
+timeline.correlated(limit: 50)     # .events, .scanned, .truncated? — render all three
+```
+
+`events` returns an unlimited relation on purpose: a limit applied below the
+controller is invisible to the screen rendering it. If you cap it, say so on the
+page. And if you render `correlated`, render `scanned` and `truncated?` with it —
+a "recent activity" list that quietly stops short is worse than no list.
+
+> The engine sets `isolate_namespace`, so its helpers and route helpers are not
+> available in your own views. Reuse the query objects, not the partials — write
+> the markup that matches your app, or link to the engine screen.
+
+---
+
 ## Making association ids readable (optional)
 
 A field-level diff records what the database recorded, which is an id:
@@ -632,7 +680,7 @@ application that has opted nothing in pays nothing.
 | `lib/audit_log/console.rb` | Narrates console sessions. |
 | `db/sql/audit_tables.sql` | The two partitioned tables and their indexes. |
 | `db/sql/audit_row_change.sql` | The trigger function. The heart of layer 1. |
-| `app/queries/` | One object per auditor question (`ActorActivity`, `RecordHistory`, `ActionReport`, `Reconciler`, `Coverage`), plus `LabelResolver` — the per-request association-label cache. |
+| `app/queries/` | One object per auditor question (`ActorActivity`, `RecordHistory`, `RecordTimeline`, `ActionReport`, `Reconciler`, `Coverage`), plus `LabelResolver` — the per-request association-label cache. |
 | `app/controllers/`, `app/views/` | The auditor UI. `shared/_event_payload` renders `audit_events.metadata` in three states — present, absent, redacted. |
 | `lib/audit_log/rspec.rb` | Shared examples a host app uses instead of copying a spec. Not loaded by `lib/audit_log.rb` — rspec is the host's test dependency. |
 | `lib/generators/audit_log/` | `audit_log:install` and `audit_log:trigger`, with templates. |
@@ -689,6 +737,7 @@ sections most likely to matter, and the shape of the mistake each one prevents:
 | `event_subscriber.rb`, `record.rb` | §7, §12 | `readonly?` keyed on `true` breaks **inserts**, silently disabling layer 2 |
 | `partitions.rb`, the SQL, migrations | §8 | every boundary is UTC midnight, and the three manual operations must not overlap |
 | a query object or a screen | §11 | mandatory date bounds are what make the screens prune |
+| `record_timeline.rb`, the record screen | §11.2a | `where.not(subject_type:, subject_id:)` is NULL-unsafe and silently drops every event with no subject — which is the exact population the correlated section exists to show |
 | `pagination.rb` or a screen's scope | §11.0 | the cursor must carry microseconds, or rows vanish between pages — and a `.limit` below the controller is a silent truncation |
 | `csv_export.rb` | §11.4a | an export with a row cap reintroduces exactly what the paging removed |
 | `redaction.rb` | §13 | `changed_columns` must survive; it is what keeps "the email changed at 14:02" provable |

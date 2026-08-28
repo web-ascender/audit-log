@@ -42,7 +42,15 @@ RSpec.describe "preview", type: :request do
     as_actor(raj)  { orders[1].submit! }
     as_actor(jane) { orders[2].cancel!(reason: "customer withdrew") }
     as_actor(raj)  { products[0].update!(price_cents: 1_299) }            # uncovered by the registry
-    as_actor(jane) { Product.active.update_all("price_cents = (price_cents * 103) / 100") }
+    # A bulk change WITH its narrative -- and price.bulk_adjusted is registered
+    # with no `subject:`, because a bulk change has no one aggregate root. It is
+    # therefore the action a record timeline built on the subject index alone
+    # would lose entirely, and the reason the "Also touched this record" section
+    # has something to render on the product preview.
+    as_actor(jane) do
+      count = Product.active.update_all("price_cents = (price_cents * 103) / 100")
+      AuditLog.notify("price.bulk_adjusted", percent: 3, count: count)
+    end
 
     AuditLog::Current.reset
     Customer.where(id: customers[2].id).update_all(status: "dormant")     # out-of-band
@@ -74,6 +82,13 @@ RSpec.describe "preview", type: :request do
       "records"   => audit.records_path,
       "record"    => audit.record_path("Order"),
       "history"   => audit.record_history_path(record_type: "Order", record_id: orders[0].id),
+      "narrative" => audit.record_history_path(record_type: "Order", record_id: orders[0].id,
+                                               view: "actions"),
+      # A PRODUCT, not an order: price.bulk_adjusted carries no subject: lambda,
+      # so a product's narrative tab is empty above and populated below. The one
+      # screen state that renders the correlated section on its own.
+      "correlated" => audit.record_history_path(record_type: "Product", record_id: products[0].id,
+                                                view: "actions"),
       "actions"   => audit.actions_path,
       "action"    => audit.action_path("order.submitted"),
       "redaction" => audit.action_path("audit.redaction"),

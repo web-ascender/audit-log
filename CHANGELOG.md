@@ -2,6 +2,59 @@
 
 ## Unreleased
 
+### Narrative history for a single record  **[2026-08-28]**
+
+`audit_events` has carried `subject_type` / `subject_id` and an index on
+`(subject_type, subject_id, occurred_at DESC)` since the first migration, and
+`AuditLog::Redaction` was the only thing in the library that read them. There was
+no query object and no screen: "what was *done* to Order #4821, in words" had
+storage, an index, and no answer. DESIGN §11.4's screens table had the same gap,
+listing the record screen as `audit_changes` alone.
+
+- **`AuditLog::RecordTimeline`** — the narrative half of Q2. `#events` is the
+  actions that named this record as their `subject`: one index scan, ordered,
+  unlimited, and the caller paginates it. `#correlated` is the actions that wrote
+  to the record *without* naming it — a bulk update, a save whose subject was the
+  parent, an action registered with no `subject:` lambda — found by matching
+  `request_id` against the record's own change rows, since that is the only link
+  between the two layers.
+- **`/audit/records/:type/:id/history` gains an Actions tab**, alongside the
+  existing change rows, which stay the landing tab and the compliance-grade
+  answer. An unrecognised `?view=` falls back to them rather than to the capped
+  list. The CSV export follows the open tab and names the tab in the filename, so
+  two exports of one record cannot arrive under one name.
+- **The correlated section is capped, and the cap is disclosed and escapable.**
+  It reads a bounded number of the record's most recent change rows, prints how
+  many it read, says so when there was more, and offers `?scan=` to widen it —
+  the same treatment `RequestDrillDown` gives its date window. An unqualified
+  "recent activity" heading over a silently truncated list is the failure this
+  library exists to prevent.
+- **The two populations render as two sections, never one merged list.** DESIGN
+  §11.2a: merging presents "this action touched this record" as the same claim as
+  "this action was about this record", and hides that only one half is capped.
+
+Two things found while building it:
+
+- **`where.not(subject_type: t, subject_id: i)` is NULL-unsafe and fails
+  silently.** It compiles to `NOT (subject_type = t AND subject_id = i)`, which
+  evaluates to NULL — and therefore excludes the row — whenever `subject_type IS
+  NULL`. An action registered without a `subject:` lambda is exactly that row, and
+  it is the single most important thing the correlated section is there to
+  surface, so the natural spelling drops the whole population the feature exists
+  for while the screen still renders. Now the row-wise
+  `(subject_type, subject_id) IS DISTINCT FROM (?::text, ?::bigint)`.
+- **`ActorActivity#changes_for` carried no date bound**, which made it the one
+  drill-down in the library that scanned every partition — six today, 84 at a
+  7-year horizon, on every page render of the actor screen. Both screens now go
+  through **`AuditLog::Change.grouped_by_request`**, one implementation, bounded
+  by the page's own events so the window infers nothing.
+
+Also: `spec/preview.rb` renders 15 screens rather than 13, and its bulk price
+change now emits the `price.bulk_adjusted` it was always registered for — it is
+the action with no `subject:`, so it is what gives the product preview something
+to render in the correlated section.
+
+
 ### Extracted from the reference application
 
 Everything below this heading predates the gem: `audit_log` began as

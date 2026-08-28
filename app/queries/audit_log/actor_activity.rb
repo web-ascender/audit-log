@@ -39,13 +39,14 @@ module AuditLog
     # request_id for the whole page. This is where the design pays off -- a
     # 40-record nested-attributes form submit renders as ONE expandable row, not
     # 40 rows the auditor has to mentally reassemble.
+    #
+    # Delegated so this screen and the record timeline cannot drift about what
+    # "the changes behind this page of events" means -- and so both get the date
+    # bound. This query used to carry none, which made it the one drill-down in
+    # the library that scanned every partition; Change.grouped_by_request says
+    # why that matters and where the window comes from.
     def changes_for(events)
-      request_ids = Array(events).map(&:request_id).uniq
-      return {} if request_ids.empty?
-
-      AuditLog::Change.where(request_id: request_ids)
-                      .order(:occurred_at, :id)
-                      .group_by(&:request_id)
+      AuditLog::Change.grouped_by_request(events)
     end
   end
 end

@@ -1,11 +1,68 @@
 <%= render "audit_log/shared/nav" %>
 <h1><%= @record_type %> #<%= @record_id %></h1>
-<p class="note">
-  Full history for one record — the only screen where an unbounded range is acceptable,
-  because a single record has bounded history. Paged by keyset, so there is no cap and
-  no truncation. Index: <code>(record_type, record_id, occurred_at DESC)</code>.
-</p>
-<%= render "audit_log/shared/change_rows", changes: @changes %>
-<%= render "audit_log/shared/pagination", pagy: @pagy, rows: @changes %>
+
+<div class="tabs">
+  <%= link_to "Changes", record_history_path(record_type: @record_type, record_id: @record_id, view: "changes"),
+        class: ("on" if @view == "changes") %>
+  <%= link_to "Actions", record_history_path(record_type: @record_type, record_id: @record_id, view: "actions"),
+        class: ("on" if @view == "actions") %>
+</div>
+
+<% if @view == "actions" %>
+  <p class="note">
+    The narrative layer for this record — the actions that named it as their
+    <code>subject</code>. Readable, but complete only for actions that have a
+    <code>Registry</code> entry <em>and</em> a <code>subject:</code> lambda, which is why
+    <strong>Changes</strong> remains the compliance-grade answer. Unbounded in range, paged by
+    keyset. Index: <code>(subject_type, subject_id, occurred_at DESC)</code>.
+  </p>
+  <%= render "audit_log/shared/event_rows", events: @events, changes_by_request: @changes_by_request %>
+  <%= render "audit_log/shared/pagination", pagy: @pagy, rows: @events %>
+
+  <%# The second population, kept visibly separate. See RecordTimeline: an action
+      that merely touched this record is not the same claim as one that was about
+      it, and this list is capped while the one above is not. %>
+  <section>
+    <h2>Also touched this record</h2>
+    <p class="note">
+      Actions that wrote to this record without naming it — a bulk update, a save whose
+      subject was the parent, or an action registered with no <code>subject:</code> at all.
+      Correlated through <code>request_id</code> against this record's own change rows, which
+      is the only link there is between the two layers.
+    </p>
+    <%# A capped list must never be mistaken for a complete one -- the same rule
+        the drill-down states its window under. %>
+    <p class="note small">
+      <% if @correlated.scanned.zero? %>
+        No correlated change rows for this record.
+      <% else %>
+        Read from the <strong><%= @correlated.scanned %></strong> most recent
+        <%= "change row".pluralize(@correlated.scanned) %> for this record.
+        <% if @correlated.truncated? %>
+          <strong>This record has more history than that.</strong>
+          <%= link_to "Scan #{@correlated.scanned * 4} instead",
+                record_history_path(record_type: @record_type, record_id: @record_id,
+                                    view: "actions", scan: @correlated.scanned * 4) %>
+          — slower. The <strong>Changes</strong> tab is not capped either way.
+        <% end %>
+      <% end %>
+    </p>
+    <% if @correlated.any? %>
+      <%= render "audit_log/shared/event_rows", events: @correlated.events %>
+    <% else %>
+      <p class="empty">No unsubjected actions touched this record in the rows scanned.</p>
+    <% end %>
+  </section>
+<% else %>
+  <p class="note">
+    The record layer, straight from the database triggers — full history for one record, and the
+    only screen where an unbounded range is acceptable, because a single record has bounded
+    history. Complete by construction: <code>update_all</code>, raw SQL and cascading deletes all
+    land here. Paged by keyset, so there is no cap and no truncation.
+    Index: <code>(record_type, record_id, occurred_at DESC)</code>.
+  </p>
+  <%= render "audit_log/shared/change_rows", changes: @changes %>
+  <%= render "audit_log/shared/pagination", pagy: @pagy, rows: @changes %>
+<% end %>
 
 <p class="export"><%= audit_csv_link %> <span class="hint">the rows above, unpaginated, for the same filters and date range</span></p>

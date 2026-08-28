@@ -59,14 +59,14 @@ Update it when you change behaviour.
 | Ruby | **>= 3.3** — the floor is `SecureRandom.uuid_v7` (DESIGN §2.1), not a preference. 3.3.0 exactly also cannot run Rails 8.1, for a reason of Rails' own. Developed on 4.0.6. |
 | Rails | **`~> 8.0`** — floor 8.0 (DESIGN §2.2), and a real ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. Developed on 8.1.3.1. |
 | PostgreSQL | **18.6 on port 5438** — not the workspace default 5437 |
-| Tests | RSpec against `spec/dummy` (257 examples), on every push via GitHub Actions |
+| Tests | RSpec against `spec/dummy` (275 examples), on every push via GitHub Actions |
 | Runtime deps | `rails`, `pagy` (keyset paging), `csv` (export). **`pg` deliberately is not one** — the host app picks its build. |
 
 ```bash
 bundle install
 cd spec/dummy && RAILS_ENV=test bundle exec bin/rails db:create db:migrate
 bundle exec rspec                       # from the gem root
-bundle exec rspec spec/preview.rb       # renders all 13 engine screens to spec/dummy/public/
+bundle exec rspec spec/preview.rb       # renders all 15 engine screens to spec/dummy/public/
 ```
 
 `spec/dummy/db/structure.sql` is **git-ignored on purpose**. For a disposable app
@@ -184,6 +184,32 @@ Do not "fix" these without reading the linked reasoning first.
   resolves on demand, so a screen that forgets to warm is slower and never wrong.
   Do not restructure it into something a new screen can silently skip. **CSV export
   is deliberately unlabelled** — it is the evidence artifact and ships recorded ids.
+- **The record history screen has two tabs, and the narrative one has two
+  SECTIONS that must not be merged.** `AuditLog::RecordTimeline#events` is the
+  actions that named this record as their `subject` (indexed, uncapped);
+  `#correlated` is the actions that wrote to it without naming it, found by
+  matching `request_id` against the record's own change rows. Merging them into
+  one list reads better and makes two false claims: that an action which happened
+  to touch this record is the same as one that was about it, and that the whole
+  list is as complete as the top half. Only `correlated` is capped, and it prints
+  `scanned` / `truncated?` for exactly that reason. DESIGN §11.2a.
+- **`where.not(subject_type: t, subject_id: i)` is the WRONG exclusion in
+  `RecordTimeline` and fails silently.** It compiles to
+  `NOT (subject_type = t AND subject_id = i)`, which is NULL — and therefore
+  excludes the row — whenever `subject_type IS NULL`. An action registered with no
+  `subject:` lambda is that row, and it is the single most important thing the
+  correlated section exists to surface, so the natural spelling drops the entire
+  population the feature is for while the screen still renders fine. It is spelled
+  `(subject_type, subject_id) IS DISTINCT FROM (?::text, ?::bigint)`, which is
+  null-safe in both columns; `record_timeline_spec` pins it.
+- **`AuditLog::Change.grouped_by_request` is date-bounded, and that bound is not
+  optional.** `WHERE request_id IN (...)` names `occurred_at` not at all, so the
+  planner eliminates no partition — the same argument `RequestDrillDown`'s
+  doc-comment makes at length. The window comes from the page's own events, so it
+  infers nothing. This is ONE method because the actor screen and the record
+  timeline both need it and an earlier hand-rolled copy on `ActorActivity`
+  carried no bound at all — the one drill-down in the library that scanned every
+  partition on every page render.
 - **`caused_by_request_id` is a real indexed column on `audit_events`, not a
   `metadata` key.** It points at a *different* unit of work than `request_id` (the
   request that enqueued this job) and the two are never equal on a row. It was
@@ -413,10 +439,10 @@ one. Do not reintroduce it.
 ## Testing
 
 ```bash
-bundle exec rspec                         # 257 examples, against spec/dummy
+bundle exec rspec                         # 275 examples, against spec/dummy
 bundle exec rspec spec/audit_log          # the library proper
 bundle exec rspec spec/requests           # the auditor UI and the CSV export
-bundle exec rspec spec/preview.rb         # dev tool: renders 13 screens to spec/dummy/public/
+bundle exec rspec spec/preview.rb         # dev tool: renders 15 screens to spec/dummy/public/
 ```
 
 `spec/preview.rb` is deliberately not `_spec.rb`, so it is not auto-collected.
@@ -442,6 +468,7 @@ property from different angles — **that nothing goes missing without saying so
 | `archive_spec` | a partition is dropped without a verified export |
 | `redaction_spec` | redaction removes structure, not just values |
 | `association_labels_spec` | a label replaces a stored id, or a failed lookup reads as an absent one |
+| `record_timeline_spec` | an unsubjected action vanishes from a record's narrative, or a capped section does not admit it is capped |
 | `install_generator_spec` | the ControllerContext include lands ahead of authentication, or a skipped step reports success |
 
 A change that makes any of those pass *more easily* is a regression.
