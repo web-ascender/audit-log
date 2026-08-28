@@ -10,9 +10,11 @@
 > decision, they state it briefly and link here.
 >
 > Section numbers are cited from source comments (`plan §6.1`, `§11.0 Rule 1`, and a dozen more),
-> so **they are stable**. Sections 15, 18 and 19 covered project rollout and the migration of
-> existing paper_trail applications; that is not library documentation and now lives in
-> [`../../ROLLOUT.md`](../../ROLLOUT.md). Nothing renumbered.
+> so **they are stable**. Sections 15, 18 and 19 covered project rollout; that is not library
+> documentation and now lives in [`../../ROLLOUT.md`](../../ROLLOUT.md), which is also where the
+> remaining open questions are. Nothing renumbered. Section 19 planned improvements to the existing
+> paper_trail applications and was dropped on 2026-08-28 — this library is for new projects, and
+> those apps are not being migrated.
 >
 > Sections corrected by actually building the thing are marked **[corrected 2026-08-27]**. Those
 > are the most valuable paragraphs here: every one was a defect that failed *silently*.
@@ -1343,8 +1345,15 @@ database. Either forbid it in the UI or route it to a background export job.
 page. Use Pagy's keyset pagination (`Pagy::Keyset`, Pagy 9+) ordered by `(occurred_at DESC, id DESC)`
 — unique because `id` comes from one sequence shared across all partitions. Where a count is
 genuinely wanted, show "1–50 of many" via `Pagy::Countless`.
+>
+> **Rule 2 is not implemented.** Pagy is in the Gemfile and unused; the screens apply fixed row
+> caps (50 events, 100 actions, 200 changes) instead. That is a silent truncation on an audit
+> screen — an auditor asking what Jane did last week is shown the newest 50 with nothing saying
+> there were 500 — which is the same failure the drill-down bound was designed to avoid. Treat it
+> as the outstanding item in §11, not as a decision. [flagged 2026-08-28]
 
-Both models are read-only (`def readonly? = true`) and paired with a query object per screen.
+Both models are read-only (`def readonly? = persisted?` — **not** `= true`, which breaks inserts
+and silently disables layer 2; see §12) and paired with a query object per screen.
 
 ---
 
