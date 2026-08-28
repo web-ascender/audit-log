@@ -25,8 +25,15 @@ RSpec.describe AuditLog::Partitions, "lifecycle" do
   # fixtures pin a single connection and hand the same object back to `checkout`.
   def raw_session
     cfg = ActiveRecord::Base.connection_db_config.configuration_hash
+
+    # Every credential the pool was given, PASSWORD INCLUDED. Omitting it worked
+    # for as long as the only database this ran against was a local one with trust
+    # authentication -- and then failed the moment CI pointed it at a server that
+    # asks ("fe_sendauth: no password supplied"). A developer whose local Postgres
+    # requires a password would have hit exactly the same thing.
     session = PG.connect(host: cfg[:host], port: cfg[:port],
-                         dbname: cfg[:database], user: cfg[:username])
+                         dbname: cfg[:database], user: cfg[:username],
+                         password: cfg[:password])
     yield session
   ensure
     session&.close
