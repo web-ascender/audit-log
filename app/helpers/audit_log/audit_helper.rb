@@ -52,9 +52,27 @@ module AuditLog
       date_range.to_param
     end
 
+    # The TRAILING group, never a prefix.
+    #
+    # request_id is a UUIDv7, whose first 48 bits are the millisecond it was
+    # minted. Taking `first(8)` keeps 32 of those 48 bits and drops the low 16, so
+    # its resolution is 2^16 ms -- roughly 65 SECONDS. Every action in the same
+    # minute renders as the same string, which is exactly the collision a short id
+    # exists to prevent. Prefix-truncating is a habit from v4 ids, where the
+    # leading bits are random; in v7 they are deliberately not.
+    #
+    # The last group is 48 bits of rand_b, so it disambiguates. It also loses
+    # nothing: the timestamp half is redundant with the "When" column sitting next
+    # to it on every screen that renders this.
+    def audit_short_id(request_id)
+      request_id.to_s.split("-").last.presence || request_id.to_s
+    end
+
     def audit_request_link(request_id)
       return tag.span("out of band", class: "badge out-of-band") if request_id.blank?
-      link_to request_id.first(8), request_path(request_id), class: "mono"
+
+      link_to audit_short_id(request_id), request_path(request_id),
+              class: "mono", title: request_id
     end
   end
 end

@@ -210,6 +210,23 @@ indistinguishable from each other.
 
 ---
 
+### Short request ids use the TRAILING group, never a prefix
+
+`audit_short_id` renders the last group of the uuid. Truncating from the front
+looks natural and is wrong here: a UUIDv7's first 48 bits are the millisecond it
+was minted, so `request_id.first(8)` keeps 32 of those bits, drops the low 16, and
+has a resolution of about **65 seconds**. Every action in the same minute rendered
+identically — which on a record-history screen, where consecutive actions are
+seconds apart, is the common case rather than an edge one.
+
+The failure is silent: the page renders, the links work, and two unrelated actions
+merely look like the same one. Prefix truncation is a habit from v4 ids, whose
+leading bits are random; in v7 they deliberately are not.
+
+The trailing group is 48 bits of `rand_b`, and it costs nothing to use — the
+timestamp half is redundant with the "When" column beside it on every screen that
+renders this. The full id rides along in a `title` attribute.
+
 ### `caused_by_request_id` is a column, not a metadata key
 
 `request_id` and `caused_by_request_id` answer different questions and are never

@@ -56,7 +56,7 @@
     <tbody>
       <% @uncovered.each do |row| %>
         <tr>
-          <td><%= link_to row.request_id.first(8), request_path(row.request_id), class: "mono" %></td>
+          <td><%= audit_request_link(row.request_id) %></td>
           <td><%= audit_time(row.occurred_at) %></td>
           <td class="num"><%= row.change_count %></td>
           <td><%= row.record_types.join(", ") %></td>
