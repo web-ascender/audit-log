@@ -53,45 +53,50 @@ rows constituted "submitting an order".
 
 ---
 
-## Installing into another Rails 8 app
+## Installing into a Rails 8 app
 
-0. Two gems, both for the auditor UI only — layers 1 and 2 need nothing:
+```ruby
+# Gemfile
+gem "audit_log", git: "https://github.com/web-ascender/audit-log"
+```
 
-   ```ruby
-   gem "pagy", "~> 9.3"   # keyset pagination for the screens
-   gem "csv",  "~> 3.3"   # export; csv stopped being a default gem in Ruby 3.4
-   ```
+A private repo, so `bundle` needs credentials for the company GitHub org. For
+local co-development against the reference app, use a path instead:
+`gem "audit_log", path: "../audit-log"`.
 
-   Skip them only if you also drop `app/controllers`, `app/views`,
-   `pagination.rb` and `csv_export.rb` — the audit machinery itself does not
-   reference either.
+`pagy` and `csv` come with it. Both are for the auditor UI only — layers 1 and 2
+reference neither — but they are hard dependencies rather than optional ones,
+because `pagy` is load-bearing for *correctness*: `AuditLog::Pagination` is keyset
+paging, and offset paging on a newest-first view of an append-only table
+duplicates rows across a page boundary after a single concurrent write. See
+[DESIGN §11.0 Rule 2](DESIGN.md).
 
-1. Copy `lib/audit_log.rb` and `lib/audit_log/` into the target app's `lib/`.
+PostgreSQL is required and not swappable — the whole of layer 1 is a plpgsql
+trigger writing jsonb into range-partitioned tables. `pg` is deliberately *not* a
+dependency, so your app picks its own build.
 
-2. In `config/application.rb`, **before** the `class Application` body:
+### Then run the generator
 
-   ```ruby
-   require_relative "../lib/audit_log"
-   ```
+```bash
+bin/rails generate audit_log:install
+```
 
-   `require_relative`, not `require`: Rails has not yet put `lib` on `$LOAD_PATH`
-   at this point in boot.
+Which does steps 1–7 below. Read the list anyway: the generator reports what it
+could not do, and two of the steps are irreducibly manual.
 
-3. In the `Application` body:
+1. **`config.active_record.schema_format = :sql`** in `config/application.rb`.
+   REQUIRED, and required before your first migration: `schema.rb` cannot
+   represent partitioned tables, trigger functions, or triggers.
 
-   ```ruby
-   # Zeitwerk must not also claim the engine's constants.
-   config.autoload_lib(ignore: %w[assets tasks audit_log])
+   The generator will **not** flip this silently on an app that already has a
+   `db/schema.rb` — switching an established app is disruptive, so it tells you
+   and stops.
 
-   # REQUIRED, and required before the first migration exists: schema.rb cannot
-   # represent partitioned tables, trigger functions, or triggers.
-   config.active_record.schema_format = :sql
-   ```
+2. **`config/initializers/audit_log.rb`** — the coupling points, and the registry
+   of auditable actions. Every one is a lambda; this is the only file that knows
+   anything about your app. The generator writes a commented starting point.
 
-4. `config/initializers/audit_log.rb` — configure the coupling points and
-   register actions. See this demo's copy for a worked example.
-
-5. Migration:
+3. **A migration** installing the schema:
 
    ```ruby
    class InstallAuditLog < ActiveRecord::Migration[8.1]
@@ -100,30 +105,55 @@ rows constituted "submitting an order".
    end
    ```
 
-6. Attach a trigger per audited table — conventionally in the migration that
-   creates it, so the decision lands in the same reviewable diff as the table:
+4. **`ApplicationController`: `include AuditLog::ControllerContext`**, after
+   whatever establishes `current_user`. This is the entire web-side integration.
+
+5. **`ApplicationJob`: `include AuditLog::JobContext`.** The entire job-side
+   integration.
+
+6. **`config/routes.rb`: `mount AuditLog::Engine => "/audit", as: :audit`.**
+   Gate it — `config.authorize` defaults to a no-op, which is right for a demo
+   and wrong for anything else.
+
+7. **A coverage spec**, three lines, using the shared example the gem ships:
+
+   ```ruby
+   # spec/audit_log/coverage_spec.rb
+   require "rails_helper"
+   require "audit_log/rspec"
+
+   RSpec.describe "audit trigger coverage" do
+     it_behaves_like "an app with complete audit coverage"
+   end
+   ```
+
+   This is the forcing function: a table that is neither audited nor exempted with
+   a written reason fails the build. Do not weaken it to make a build pass. It
+   shares `AuditLog::Coverage` with `rake audit_log:coverage`, so the spec and the
+   task cannot disagree about what counts as covered.
+
+### The two manual steps
+
+8. **Attach a trigger per audited table.** One line per table, and the entire
+   per-model cost of the design:
 
    ```ruby
    create_table :orders { |t| ... }
    attach_audit_trigger :orders, model: "Order"
    ```
 
-   That placement is a review convention, not a requirement — see
+   `bin/rails generate audit_log:trigger orders --model=Order` writes a migration
+   for a table that already exists. Placing it beside `create_table` is a review
+   convention, not a requirement — see
    [Attaching to a table that already exists](#attaching-to-a-table-that-already-exists).
 
-7. `ApplicationController`: `include AuditLog::ControllerContext`
-   (after whatever establishes `current_user`).
+   Nobody can generate this for you: which tables are worth auditing is a
+   judgement about your domain. Step 7 is what stops the judgement being skipped.
 
-8. `ApplicationJob`: `include AuditLog::JobContext`.
-
-9. `config/routes.rb`: `mount AuditLog::Engine => "/audit", as: :audit`.
-
-10. Copy the specs in `spec/audit_log/` — especially `coverage_spec.rb`.
-
-11. Schedule `AuditLog::Partitions.ensure!` daily. **A missing future partition
-    is a write-path outage**, not a degraded report. Nothing else in
-    `partitions.rb` belongs in a cron — see
-    [The partition lifecycle](#the-partition-lifecycle).
+9. **Schedule `AuditLog::Partitions.ensure!` daily** (or
+   `rake audit_log:partitions`). **A missing future partition is a write-path
+   outage**, not a degraded report. Nothing else in `partitions.rb` belongs in a
+   cron — see [The partition lifecycle](#the-partition-lifecycle).
 
 ### What a model needs
 
@@ -537,58 +567,71 @@ application that has opted nothing in pays nothing.
 
 | Path | Role |
 |---|---|
-| `configuration.rb` | Every host-app coupling point. The only file to read before adopting. |
-| `current.rb` | `CurrentAttributes` holding the audit identity as **primitives**. |
-| `context.rb` | Writes the correlation GUCs onto a connection; mints UUIDv7 ids. |
-| `transaction_stamp.rb` | Adapter prepend. Read the comment — it explains why `raw_execute` and not `begin_db_transaction`. |
-| `controller_context.rb` | The whole web integration. |
-| `job_context.rb` | The whole background-job integration. |
-| `registry.rb` | The allowlist of auditable actions, and each one's human sentence. |
-| `event_subscriber.rb` | `Rails.event` → `audit_events`. |
-| `actor_label.rb` | Renders the label snapshotted onto every row, and (`display`/`linkable?`) the one definition of how a stored actor reads on a screen. |
-| `record_label.rb` | The **opt-in** label chain (`to_audit_label` → `to_label` → overridden `to_s` → nothing) for the record an association id points at. Display-time only; nothing it returns is stored. |
-| `migration_helpers.rb` | `attach_audit_trigger` / `detach_audit_trigger`. |
-| `schema.rb` | `install!` / `uninstall!` for a migration. |
-| `partitions.rb` | Partition rotation, default-partition drain, yearly rollup, retention, freezing, UTC-boundary enforcement. |
-| `bypass.rb` | The one escape hatch, which logs itself. |
-| `redaction.rb` | The **only** thing allowed to modify audit rows. Values go, structure stays. |
-| `archive.rb` | Retired partitions → gzipped CSV + manifest; drops only what verifies. |
-| `pagination.rb` | Keyset paging for the screens. No page numbers, no counts. |
-| `csv_export.rb` | Streaming CSV for the screens. No row cap. |
-| `engine.rb` | Initializers: the adapter prepend, the event subscriber, `PGTZ`. |
-| `console.rb` | Narrates console sessions. |
+| `lib/audit_log/configuration.rb` | Every host-app coupling point. The only file to read before adopting. |
+| `lib/audit_log/current.rb` | `CurrentAttributes` holding the audit identity as **primitives**. |
+| `lib/audit_log/context.rb` | Writes the correlation GUCs onto a connection; mints UUIDv7 ids. |
+| `lib/audit_log/transaction_stamp.rb` | Adapter prepend. Read the comment — it explains why `raw_execute` and not `begin_db_transaction`. |
+| `lib/audit_log/controller_context.rb` | The whole web integration. |
+| `lib/audit_log/job_context.rb` | The whole background-job integration. |
+| `lib/audit_log/registry.rb` | The allowlist of auditable actions, and each one's human sentence. |
+| `lib/audit_log/event_subscriber.rb` | `Rails.event` → `audit_events`. |
+| `lib/audit_log/actor_label.rb` | Renders the label snapshotted onto every row, and (`display`/`linkable?`) the one definition of how a stored actor reads on a screen. |
+| `lib/audit_log/record_label.rb` | The **opt-in** label chain (`to_audit_label` → `to_label` → overridden `to_s` → nothing) for the record an association id points at. Display-time only; nothing it returns is stored. |
+| `lib/audit_log/migration_helpers.rb` | `attach_audit_trigger` / `detach_audit_trigger`. |
+| `lib/audit_log/schema.rb` | `install!` / `uninstall!` for a migration. |
+| `lib/audit_log/partitions.rb` | Partition rotation, default-partition drain, yearly rollup, retention, freezing, UTC-boundary enforcement. |
+| `lib/audit_log/bypass.rb` | The one escape hatch, which logs itself. |
+| `lib/audit_log/redaction.rb` | The **only** thing allowed to modify audit rows. Values go, structure stays. |
+| `lib/audit_log/archive.rb` | Retired partitions → gzipped CSV + manifest; drops only what verifies. |
+| `lib/audit_log/pagination.rb` | Keyset paging for the screens. No page numbers, no counts. |
+| `lib/audit_log/csv_export.rb` | Streaming CSV for the screens. No row cap. |
+| `lib/audit_log/engine.rb` | Initializers: the adapter prepend, the event subscriber, `PGTZ`. |
+| `lib/audit_log/console.rb` | Narrates console sessions. |
 | `db/sql/audit_tables.sql` | The two partitioned tables and their indexes. |
 | `db/sql/audit_row_change.sql` | The trigger function. The heart of layer 1. |
-| `app/queries/` | One object per auditor question (`ActorActivity`, `RecordHistory`, `ActionReport`, `Reconciler`), plus `LabelResolver` — the per-request association-label cache. |
+| `app/queries/` | One object per auditor question (`ActorActivity`, `RecordHistory`, `ActionReport`, `Reconciler`, `Coverage`), plus `LabelResolver` — the per-request association-label cache. |
 | `app/controllers/`, `app/views/` | The auditor UI. `shared/_event_payload` renders `audit_events.metadata` in three states — present, absent, redacted. |
+| `lib/audit_log/rspec.rb` | Shared examples a host app uses instead of copying a spec. Not loaded by `lib/audit_log.rb` — rspec is the host's test dependency. |
+| `lib/audit_log/generators/` | `audit_log:install` and `audit_log:trigger`. |
 | `DESIGN.md` | Why every decision here is what it is. Cited by section number from source comments. |
-| `tasks/audit_log.rake` | `partitions`, `drain_default`, `rollup`, `retention`, `export`, `drop_exported`, `freeze`, `redact`, `reconcile`, `coverage`, `benchmark`. |
+| `lib/audit_log/tasks/audit_log.rake` | `partitions`, `drain_default`, `rollup`, `retention`, `export`, `drop_exported`, `freeze`, `redact`, `reconcile`, `coverage`, `benchmark`. |
 
 ---
 
 ## Working on the library: what reloads and what does not
 
-The engine loads its own files two ways, and only one of them reloads in
-development:
+The gem loads its own files two ways, and only one of them reloads in a host
+app's development environment:
 
 | Path | Loader | Reloads? |
 |---|---|---|
-| `lib/audit_log/app/**` (queries, models, controllers, helpers, views) | Zeitwerk | **yes** |
+| `app/**` (queries, models, controllers, helpers, views) | Zeitwerk, via the engine | **yes** |
 | `lib/audit_log/*.rb` (`configuration`, `context`, `partitions`, `schema`, …) | `Kernel#autoload`, from `lib/audit_log.rb` | **no** — once per process |
 
 **Editing anything directly under `lib/audit_log/` requires a server restart.**
-This is deliberate, not an oversight: `lib/audit_log.rb` uses plain `autoload`
-with absolute paths because it is required from `config/application.rb`, *before*
-Rails' `:set_load_path` initializer runs, and `TransactionStamp` is `prepend`ed
-into the Postgres adapter at boot, which reloading would corrupt. `AuditLog.config`
-is memoized in `@config` on the module besides, so a reloaded `Configuration`
-class would not replace the instance already built.
+This matters in practice when you consume the gem by path, as the reference app
+does: an `app/**` edit shows up on the next request, a `lib/**` edit does not.
+
+It is deliberate rather than an oversight. `TransactionStamp` is `prepend`ed into
+the Postgres adapter at boot, which reloading would corrupt, and `AuditLog.config`
+memoizes its instance in `@config` on the module — so a reloaded `Configuration`
+class would not replace the object already built.
 
 The failure mode is a half-updated library: a reloaded query object calling a
 stale `Configuration`. Adding a `config` attribute and using it in the same edit
 raises `NoMethodError` on the next request, which is the *good* case — if the
 calling code tolerates `nil`, the same staleness silently changes behaviour
 instead. Restart after touching the top level.
+
+Two path constants, both deliberate:
+
+- **`AuditLog::GEM_ROOT`** — the gem root. `Schema::SQL_DIR` resolves `db/sql`
+  against it rather than against `Engine.root`, because `Schema.install!` runs
+  from a migration and a migration must not depend on a booted engine.
+- **`Engine.find_root` does not exist, on purpose.** It used to, while this
+  library lived inside a host app's `lib/`, where Rails' default root-walk would
+  have resolved to the *host* app's root and pulled in its `app/` directories. A
+  gem root is unambiguous. Do not reintroduce it.
 
 ## Before you change anything
 

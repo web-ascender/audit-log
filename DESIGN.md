@@ -1,17 +1,18 @@
 # AuditLog — Design Record
 
-**Status:** validated against the working implementation in this repository
+**Status:** validated against the working implementation in this gem, and against
+the reference application in `../audit-log-demo`
 **Last updated:** 2026-08-28
 
-> **Why this decision is what it is.** This is the reasoning behind every choice in
-> `lib/audit_log/`, kept next to the code it explains so that extracting the library into a gem
-> takes the rationale with it. [`README.md`](README.md) is the install-and-use guide; this file is
-> the *why*, and it is the single source of truth for it — where the README or `CLAUDE.md` state a
-> decision, they state it briefly and link here.
+> **Why this decision is what it is.** This is the reasoning behind every choice in this gem, and
+> it travelled with the code when the library was extracted from the reference app — which was the
+> point of writing it here rather than in a wiki. [`README.md`](README.md) is the install-and-use
+> guide; this file is the *why*, and it is the single source of truth for it — where the README or
+> `CLAUDE.md` state a decision, they state it briefly and link here.
 >
 > Section numbers are cited from source comments (`plan §6.1`, `§11.0 Rule 1`, and a dozen more),
 > so **they are stable**. Sections 15, 18 and 19 covered project rollout; that is not library
-> documentation and now lives in [`../../ROLLOUT.md`](../../ROLLOUT.md). Nothing renumbered. As of
+> documentation and lives in the reference app's `ROLLOUT.md`. Nothing renumbered. As of
 > 2026-08-28 no open question remains: the last four closed as retention (§8), export (§8),
 > redaction (§13) and pagination (§11.0) were built. Section 19 planned improvements to the existing
 > paper_trail applications and was dropped on 2026-08-28 — this library is for new projects, and
@@ -110,7 +111,7 @@ management materially speeds up vacuum on very large tables, which is exactly wh
 **18 is recommended but explicitly non-blocking.** §20 covers what it adds; the headline is eager
 page freezing, which suits insert-only partitions better than anything else in the release, and
 which matters more the longer the retention horizon is — seven years, per
-[`ROLLOUT.md`](../../ROLLOUT.md) Q2.
+the reference app's `ROLLOUT.md` Q2.
 
 *Below 13:* attach the trigger to each partition individually instead of the parent, and add it to
 the partition-creation job. Workable, one more moving part. Below 11, abandon partitioning.
@@ -1218,7 +1219,7 @@ is explicit — but it reads to a reviewer as though the months are misaligned a
 DST. Set `PGTZ=UTC` for dumps.
 
 **Retention.** [implemented 2026-08-27] `config.retention`, default **7 years**
-([`ROLLOUT.md`](../../ROLLOUT.md) Q2, decided 2026-08-27);
+(the reference app's `ROLLOUT.md` Q2, decided 2026-08-27);
 `nil` disables it. A partition expires when its **upper** bound is older than the horizon, never its
 lower — the lower bound would retire a month that still holds in-horizon days.
 
@@ -2012,7 +2013,7 @@ Measure before building the UI, on realistic hardware and data:
    partitions touched than the date range covers. Confirm the `changed_columns` GIN index is
    actually chosen for the field filter.
 5. **Storage growth.** Bytes per audit row against projected write volume → 12- and 36-month
-   forecasts. This is the input to the retention horizon ([`ROLLOUT.md`](../../ROLLOUT.md) Q2).
+   forecasts. This is the input to the retention horizon (the reference app's `ROLLOUT.md` Q2).
 
 Record the numbers in this document when they exist.
 
@@ -2035,7 +2036,7 @@ and item 5 forecasting still to do.
 **Storage: ~484 bytes per `audit_changes` row** at this row shape (a small jsonb `diff`, a
 two-element `changed_columns`, a ~40-char `actor_label`), indexes included. That is the number to
 multiply by projected write volume against the retention horizon in
-[`ROLLOUT.md`](../../ROLLOUT.md).
+the reference app's `ROLLOUT.md`.
 
 Two things the measurements confirm and one they corrected:
 
