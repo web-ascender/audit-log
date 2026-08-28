@@ -1750,7 +1750,7 @@ forces every insert to read the previous row, serializing all writes through one
 Audit rows hold old values of fields that may be personal data, which puts R7 (immutable) in direct
 tension with a GDPR/CCPA erasure request.
 
-The workable resolution, to be confirmed with counsel ([`ROLLOUT.md`](../../ROLLOUT.md) Q5):
+**Implemented 2026-08-28** as `AuditLog::Redaction`, following the resolution below exactly:
 
 - Keep the **structural** record permanently: who changed what field, on which record, when.
 - Allow **value-level redaction**: replace the old/new values in `diff` for designated PII columns
@@ -1764,6 +1764,36 @@ The workable resolution, to be confirmed with counsel ([`ROLLOUT.md`](../../ROLL
 
 Design the column exclusion list (§5) to keep the highest-sensitivity fields out of the log
 entirely, so redaction stays a rare event.
+
+### What the implementation adds to the above
+
+**Two entry points, because there are two kinds of erasure request.**
+`redact_record!` handles the *subject* — the person whose data was changed — replacing values in
+`diff` and clearing the matching events' `summary` and `metadata`, since an action's payload is the
+likeliest place for a verbatim second copy. `redact_actor!` handles the *actor* — the person who did
+things — replacing the snapshotted `actor_label` while keeping `actor_type` and `actor_id`. That is
+pseudonymization rather than deletion, and it is the right answer: their activity stays attributable
+and countable, the log simply stops naming them.
+
+**`changed_columns` is never touched.** It is the structural record, and keeping it is the whole
+design in one line: *"the email address was changed at 14:02 by Jane"* stays provable after the
+address itself is gone.
+
+**The narration and the redaction share a transaction.** The log can never hold a redaction nothing
+accounts for, nor an account of a redaction that did not happen.
+
+**It is deliberately not date-bounded.** Every other query in this library carries a range so the
+planner can prune; this one must reach every partition, because an incomplete redaction is a
+compliance failure rather than a slow screen. Run it in a maintenance window on a large log.
+
+**The rake task takes `FIELDS=`, not `COLUMNS=`.** `COLUMNS` is a reserved shell variable holding
+the terminal width, so `COLUMNS=email rake audit_log:redact` silently arrives as a number, matches
+no column, and redacts nothing while reporting success. Found by running it.
+
+Not covered in v1, and stated here rather than discovered later: an unregistered action's summary
+for a subject that is not set (`subject_type`/`subject_id` nil) will not be found by
+`redact_record!`. Registry entries that carry personal data in a summary should always set
+`subject`.
 
 ---
 

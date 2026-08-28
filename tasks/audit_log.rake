@@ -168,6 +168,40 @@ namespace :audit_log do
     puts frozen.any? ? "Froze: #{frozen.join(', ')}" : "Nothing to freeze."
   end
 
+  desc "Redact a record's values from the audit log. RECORD=Type:id REASON=DSR-1182 [FIELDS=a,b] [DRY_RUN=1]"
+  task redact: :environment do
+    record = ENV["RECORD"].to_s.split(":")
+    reason = ENV["REASON"]
+    abort "RECORD=Type:id is required, e.g. RECORD=Customer:42" unless record.size == 2
+    abort "REASON is required -- a redaction without a written authorization is not auditable." if reason.blank?
+
+    type, id = record
+    # FIELDS, not COLUMNS: COLUMNS is a reserved shell variable holding the
+    # terminal width, so `COLUMNS=email rake ...` silently arrives as the
+    # terminal width instead -- which then matches no column and redacts nothing
+    # while reporting success.
+    columns  = ENV["FIELDS"].to_s.split(",").map(&:strip).presence
+
+    preview = AuditLog::Redaction.preview(record_type: type, record_id: id)
+    puts "#{type} ##{id}: #{preview[:changes]} change row(s), #{preview[:events]} event row(s)."
+    puts "Columns recorded: #{preview[:columns].join(", ").presence || "none"}"
+    puts "Would redact: #{columns&.join(", ") || "every recorded value"}"
+
+    if ENV["DRY_RUN"].present?
+      puts "DRY_RUN -- nothing changed."
+      next
+    end
+
+    # Irreversible by design: the values are overwritten in place, which is the
+    # point of an erasure request. Structure survives, values do not.
+    result = AuditLog::Redaction.redact_record!(
+      record_type: type, record_id: id, columns: columns, reason: reason
+    )
+    puts "Redacted #{result[:changes]} change row(s) and #{result[:events]} event row(s)."
+    puts "Marker: #{result[:marker]}"
+    puts "The redaction is itself logged as `audit.redaction`."
+  end
+
   desc "Report correlated changes with no registered action (completeness reconciler)"
   task reconcile: :environment do
     rows = AuditLog::Reconciler.new.uncovered_requests
