@@ -61,10 +61,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # `pg` is installed with force_ruby_platform in this gem's Gemfile (see the
-      # comment there), so it compiles against libpq rather than shipping a binary.
-      - name: Install libpq headers
-        run: sudo apt-get update && sudo apt-get install -y libpq-dev
+      # A PostgreSQL 18 CLIENT, not just an 18 server. The runner image ships
+      # postgresql-client-16, and pg_dump refuses to dump a server newer than
+      # itself -- "aborting because of server version mismatch". That is a real
+      # hazard for this library rather than a CI detail: schema_format = :sql is
+      # mandatory here, so pg_dump is on the normal migration path, and the
+      # engine's PGTZ initializer exists precisely to control what it renders.
+      - name: Install the PostgreSQL 18 client
+        run: |
+          sudo install -d /usr/share/keyrings
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
+          echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-18 libpq-dev
+          echo "/usr/lib/postgresql/18/bin" >> "$GITHUB_PATH"
 
       - uses: ruby/setup-ruby@v1
         with:
@@ -79,6 +91,14 @@ jobs:
 
       # Fail loudly and early on the wrong server version rather than letting a
       # partition or planner spec fail obscurely twenty minutes later.
+      # Asserted separately from the server version, because they fail differently
+      # and a mismatched CLIENT is the one that cost a build.
+      - name: Assert the pg_dump client is 18
+        run: |
+          echo "pg_dump: $(pg_dump --version)"
+          pg_dump --version | grep -qE " 18\." \
+            || { echo "::error::pg_dump is not 18; schema dumps will refuse to run."; exit 1; }
+
       - name: Assert PostgreSQL 18
         run: |
           version=$(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d postgres -tAc "SHOW server_version")
