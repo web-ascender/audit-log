@@ -131,7 +131,7 @@ cost lives in the migration, next to the table it audits.
 | `job_context.rb` | The whole background-job integration. |
 | `registry.rb` | The allowlist of auditable actions, and each one's human sentence. |
 | `event_subscriber.rb` | `Rails.event` → `audit_events`. |
-| `actor_label.rb` | Renders the label that gets snapshotted onto every row. |
+| `actor_label.rb` | Renders the label snapshotted onto every row, and (`display`/`linkable?`) the one definition of how a stored actor reads on a screen. |
 | `migration_helpers.rb` | `attach_audit_trigger` / `detach_audit_trigger`. |
 | `schema.rb` | `install!` / `uninstall!` for a migration. |
 | `partitions.rb` | Partition rotation, default-partition drain, yearly rollup, retention, freezing, UTC-boundary enforcement. |
@@ -193,6 +193,7 @@ sections most likely to matter, and the shape of the mistake each one prevents:
 | `redaction.rb` | §13 | `changed_columns` must survive; it is what keeps "the email changed at 14:02" provable |
 | `redaction.rb`'s marker, `shared/_event_payload` | §11.3, §13 | a redacted payload and an absent one are the same empty jsonb — the marker is the only trace, and a screen that cannot tell them apart renders an erasure as an absence |
 | `archive.rb` | §8 | `drop_exported!` may never drop a partition whose manifest does not verify |
+| `actor_label.rb`, an actor cell on a screen | §6.2 | a `GROUP BY` rollup has a tuple, not a record — a hand-rolled fallback chain drops the nil branch and `actor_path(nil)` 500s the screen |
 | anything storing a timestamp | §4 | `occurred_at` is filled by a column DEFAULT so `config.time_zone` cannot reach it — supplying it from Ruby breaks that silently |
 
 Section numbers are cited from source comments throughout the library, so they

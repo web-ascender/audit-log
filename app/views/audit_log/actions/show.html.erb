@@ -8,8 +8,7 @@
   <table class="grid compact">
     <% @by_actor.each do |(type, id, label), count| %>
       <tr>
-        <td><%= link_to (label.presence || "#{type} ##{id}"),
-                  actor_path(id, audit_range_params.merge(actor_type: type)) %></td>
+        <td><%= audit_actor_cell(type, id, label) %></td>
         <td class="num"><%= number_with_delimiter count %></td>
       </tr>
     <% end %>

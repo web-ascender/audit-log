@@ -698,6 +698,19 @@ from the statement-level stamping hook (§6.1) — that path is far too hot to q
 > write *is*; render "System" at **display** time instead (§11.2 already specifies that). Otherwise
 > a console session becomes indistinguishable from a genuine system action, which inverts the whole
 > point of §9.
+>
+> **[followed up 2026-08-28]** Deferring "System" to display time means every screen has to render
+> it, and one of them did not. `ActorLabel.display` is now the single definition of the fallback
+> chain — snapshotted label, then bare identifier, then "System" — with `ActorLabel.linkable?`
+> saying whether there is an actor to link to. The models delegate to it.
+>
+> The rule it exists to enforce: **a `GROUP BY` rollup hands the view a tuple, not a record**, so
+> `actor_display` is not available there and the "who triggered it" table on `actions/show`
+> re-spelled the chain by hand. The copy dropped the nil branch, and `actor_path(nil)` raises
+> `UrlGenerationError` — so the screen did not degrade, it 500'd, the first time an actorless action
+> reached it. That action was `audit.redaction` itself, whose rake task passes no actor. Rollups go
+> through `audit_actor_cell`; `spec/preview.rb` renders both screens so neither goes unlooked-at
+> again.
 
 ### 6.3 Web requests
 

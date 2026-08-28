@@ -65,6 +65,23 @@ module AuditLog
       safe_join(change.changed_columns.sort.map { |c| tag.code(c, class: "col-chip") }, " ")
     end
 
+    # An actor cell built from a GROUP BY rollup, which has a tuple rather than a
+    # record. Renders through ActorLabel so it reads identically to
+    # Event#actor_display / Change#actor_display, and -- the part that matters --
+    # only LINKS when there is an actor to link to. A NULL actor has no activity
+    # page: `actor_path(nil)` raises UrlGenerationError, which took down the whole
+    # screen the first time an actorless action (a redaction run from rake) was
+    # rolled up on it.
+    def audit_actor_cell(actor_type, actor_id, actor_label = nil, **link_params)
+      label = AuditLog::ActorLabel.display(actor_type, actor_id, actor_label)
+
+      unless AuditLog::ActorLabel.linkable?(actor_type, actor_id)
+        return tag.span(label, class: "muted", title: "No actor recorded — see CLAUDE.md on NULL actors")
+      end
+
+      link_to label, actor_path(actor_id, audit_range_params.merge(actor_type: actor_type, **link_params))
+    end
+
     def audit_range_params
       date_range.to_param
     end

@@ -29,7 +29,7 @@ module AuditLog
     end
 
     def actor_display
-      actor_label.presence || (actor_type ? "#{actor_type} ##{actor_id}" : "System")
+      AuditLog::ActorLabel.display(actor_type, actor_id, actor_label)
     end
   end
 end

@@ -49,7 +49,7 @@ module AuditLog
     def out_of_band? = request_id.nil?
 
     def actor_display
-      actor_label.presence || (actor_type ? "#{actor_type} ##{actor_id}" : "System")
+      AuditLog::ActorLabel.display(actor_type, actor_id, actor_label)
     end
 
     # [[column, old, new], ...] sorted for stable rendering.
