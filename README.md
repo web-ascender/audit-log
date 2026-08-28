@@ -81,8 +81,21 @@ dependency, so your app picks its own build.
 bin/rails generate audit_log:install
 ```
 
-Which does steps 1–7 below. Read the list anyway: the generator reports what it
-could not do, and two of the steps are irreducibly manual.
+Which does steps 1–7 below. **Read the list anyway.** The generator reports what
+it could not do, two of the steps are irreducibly manual, and one thing it does
+needs your eyes on it.
+
+Options: `--mount-at=/audit`, and `--skip-migration`, `--skip-routes`,
+`--skip-controller`, `--skip-job`, `--skip-spec`. Re-running is safe — every step
+detects work already done and reports `skip` rather than injecting twice.
+
+**The one thing to check afterwards.** `AuditLog::ControllerContext` is
+`included do before_action :set_audit_context end`, so *where* the include sits in
+`ApplicationController` decides callback order. Ahead of your authentication, it
+reads a `current_user` that is not resolved yet — and **every audit row in the
+application gets a NULL actor, silently.** The generator lands it after the last
+`before_action` it can find and then asks you to confirm; there is no way for it
+to be certain, so confirm.
 
 1. **`config.active_record.schema_format = :sql`** in `config/application.rb`.
    REQUIRED, and required before your first migration: `schema.rb` cannot
@@ -142,13 +155,31 @@ could not do, and two of the steps are irreducibly manual.
    attach_audit_trigger :orders, model: "Order"
    ```
 
-   `bin/rails generate audit_log:trigger orders --model=Order` writes a migration
-   for a table that already exists. Placing it beside `create_table` is a review
-   convention, not a requirement — see
+   For a table that already exists:
+
+   ```bash
+   bin/rails generate audit_log:trigger orders --model=Order
+   bin/rails generate audit_log:trigger orders --model=Order --exclude=internal_notes --replace
+   ```
+
+   `--replace` generates detach-then-attach, which is the supported way to
+   *change* a table's model or exclusion list: attach is deliberately not
+   idempotent, so a plain second attach fails with `42710` rather than letting two
+   triggers coexist and double-write under different exclusion sets. It is not
+   retroactive — rows already written keep the diffs they were written with.
+
+   The generator warns about, and **cannot check**, the one hard constraint: the
+   trigger assigns `rec_id bigint := NEW.id`, so an `id: false` join table, a
+   `uuid` primary key or a primary key not named `id` **fails on the first write
+   after attaching**, not at migration time. It has no connection to your table.
+
+   Placing the attach beside `create_table` is a review convention, not a
+   requirement — see
    [Attaching to a table that already exists](#attaching-to-a-table-that-already-exists).
 
-   Nobody can generate this for you: which tables are worth auditing is a
-   judgement about your domain. Step 7 is what stops the judgement being skipped.
+   Nobody can generate the *decision* for you: which tables are worth auditing is
+   a judgement about your domain. Step 7 is what stops it being skipped instead of
+   made.
 
 9. **Schedule `AuditLog::Partitions.ensure!` daily** (or
    `rake audit_log:partitions`). **A missing future partition is a write-path
@@ -592,7 +623,7 @@ application that has opted nothing in pays nothing.
 | `app/queries/` | One object per auditor question (`ActorActivity`, `RecordHistory`, `ActionReport`, `Reconciler`, `Coverage`), plus `LabelResolver` — the per-request association-label cache. |
 | `app/controllers/`, `app/views/` | The auditor UI. `shared/_event_payload` renders `audit_events.metadata` in three states — present, absent, redacted. |
 | `lib/audit_log/rspec.rb` | Shared examples a host app uses instead of copying a spec. Not loaded by `lib/audit_log.rb` — rspec is the host's test dependency. |
-| `lib/audit_log/generators/` | `audit_log:install` and `audit_log:trigger`. |
+| `lib/generators/audit_log/` | `audit_log:install` and `audit_log:trigger`, with templates. |
 | `DESIGN.md` | Why every decision here is what it is. Cited by section number from source comments. |
 | `lib/audit_log/tasks/audit_log.rake` | `partitions`, `drain_default`, `rollup`, `retention`, `export`, `drop_exported`, `freeze`, `redact`, `reconcile`, `coverage`, `benchmark`. |
 

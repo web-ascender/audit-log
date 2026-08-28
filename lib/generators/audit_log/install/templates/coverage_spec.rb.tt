@@ -1,0 +1,18 @@
+# frozen_string_literal: true
+
+require "rails_helper"
+require "audit_log/rspec"
+
+# THE FORCING FUNCTION. Layer 1 is opt-in per table, which is deliberate --
+# auditing everything automatically sweeps in queue, cache and session tables
+# whose churn buries real findings. The risk of opt-in is that a table gets added
+# and nobody decides. This makes deciding mandatory: a new table either gets a
+# trigger or gets a written exemption, or the build breaks.
+#
+# The examples are shared from the gem so they cannot drift from the
+# AuditLog::Coverage that `rake audit_log:coverage` uses. Do not copy them here,
+# and DO NOT WEAKEN THIS SPEC TO MAKE A BUILD PASS -- it is the only thing between
+# "we audit everything" and "we audit whatever someone remembered".
+RSpec.describe "audit trigger coverage" do
+  it_behaves_like "an app with complete audit coverage"
+end

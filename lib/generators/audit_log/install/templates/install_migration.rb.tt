@@ -1,0 +1,11 @@
+# frozen_string_literal: true
+
+# The whole audit schema: two range-partitioned tables, their indexes, the
+# trigger function, and partitions for the current window.
+#
+# The DDL is versioned inside the gem so this migration stays three lines and
+# cannot drift from the library that reads those tables.
+class InstallAuditLog < ActiveRecord::Migration<%= migration_version %>
+  def up   = AuditLog::Schema.install!(connection)
+  def down = AuditLog::Schema.uninstall!(connection)
+end

@@ -78,6 +78,18 @@ re-migrate if a schema change appears not to apply.
 
 Do not "fix" these without reading the linked reasoning first.
 
+- **`audit_log:install` refuses to set `schema_format` when `db/schema.rb`
+  exists, and that refusal is a feature.** `:sql` is required *before* the first
+  migration; switching an established app means re-dumping its whole schema and
+  every developer rebuilding their database. A generator must not start that
+  quietly — it reports the three steps and stops.
+- **The `ControllerContext` include is injected after the LAST `before_action`,
+  not at the top of the class.** `inject_into_class` puts it at the top, which
+  puts `set_audit_context` ahead of `authenticate_user!` — so it reads a
+  `current_user` that is not resolved yet and **every audit row gets a NULL
+  actor, silently.** This was a real bug in the first version of the generator.
+  The generator also prints a "confirm this" note, because anchoring on the last
+  `before_action` is a good guess and not a certainty.
 - **`config.active_record.schema_format = :sql` is required of the host app.**
   Not optional and not this gem's to set: `schema.rb` cannot represent
   partitioned tables, trigger functions, or triggers. It must be set before the
@@ -430,6 +442,7 @@ property from different angles — **that nothing goes missing without saying so
 | `archive_spec` | a partition is dropped without a verified export |
 | `redaction_spec` | redaction removes structure, not just values |
 | `association_labels_spec` | a label replaces a stored id, or a failed lookup reads as an absent one |
+| `install_generator_spec` | the ControllerContext include lands ahead of authentication, or a skipped step reports success |
 
 A change that makes any of those pass *more easily* is a regression.
 

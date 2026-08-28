@@ -1,0 +1,27 @@
+# frozen_string_literal: true
+
+# The entire per-model cost of the audit design: one line. Nothing goes in the
+# model class -- no concern, no callback, no base class -- which is exactly why
+# update_all, delete_all, raw SQL and database cascades cannot escape it.
+class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version %>
+  def up
+<% if options[:replace] -%>
+    # Detach first: attach is NOT idempotent, and the trigger name is derived
+    # from the table alone, so a second attach collides (42710). detach_audit_trigger
+    # is idempotent (DROP TRIGGER IF EXISTS), which makes this pair safe to re-run.
+    #
+    # Not retroactive: rows already written keep the diffs they were written with.
+    detach_audit_trigger :<%= table_name %>
+<% end -%>
+    attach_audit_trigger <%= attach_arguments %>
+  end
+
+  def down
+<% if options[:replace] -%>
+    # Reverting to the PREVIOUS model/exclusions is not something this migration
+    # can know. Detaching is the honest inverse; re-attach with the old arguments
+    # by hand if you need the old trigger back.
+<% end -%>
+    detach_audit_trigger :<%= table_name %>
+  end
+end

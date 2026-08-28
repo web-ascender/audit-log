@@ -1,0 +1,134 @@
+# frozen_string_literal: true
+
+# Everything the audit log needs to know about THIS application.
+#
+# The library names no application constant -- no User, no ApplicationRecord, no
+# authentication gem, no model. Every coupling point is a lambda or a string here.
+# If you find yourself wanting the library to know something about this app, add a
+# config attribute; do not reach for the constant.
+#
+# Full reference: the gem's README.md. Reasoning: its DESIGN.md.
+AuditLog.configure do |config|
+  # --------------------------------------------------------------------- actors
+  # Resolves the acting user from a controller. The default works with Devise,
+  # the Rails authentication generator, and anything else exposing `current_user`
+  # in controller scope.
+  config.actor_resolver = ->(controller) { controller.try(:current_user) }
+
+  # The label SNAPSHOTTED onto every audit row this actor touches, computed once
+  # per request. A snapshot rather than a live join on purpose: if the UI joined
+  # to `users` to render a name, renaming or deleting a user would retroactively
+  # change what the audit log says happened, and auditors read that as tampering.
+  #
+  # `to_label` on your user model is the intended hook. The default falls back to
+  # name/email/"Class #id" so an ApiKey or a Machine actor still reads sensibly.
+  # config.actor_label_resolver = ->(actor) { actor.to_label }
+
+  # Populates the actor picker on the audit screens. Sourced from your users
+  # table, never from the audit log: an auditor searching "Jane Doe" wants to
+  # find her whether or not she has activity in the current window.
+  #
+  # Returns [] by default, which makes the picker an empty dropdown.
+  # config.actor_picker = lambda do |query|
+  #   scope = User.order(:name)
+  #   scope = scope.where("name ILIKE :q OR email ILIKE :q", q: "%#{query}%") if query.present?
+  #   scope.limit(50)
+  # end
+
+  # -------------------------------------------------------------- authorization
+  # THE AUDIT SCREENS ARE A PRIVILEGED SURFACE AND THIS DEFAULTS TO A NO-OP.
+  # Anyone who can reach the mount point can read every change every user ever
+  # made. Replace this before deploying.
+  config.authorize = lambda do |controller|
+    unless controller.current_user&.respond_to?(:auditor?) && controller.current_user.auditor?
+      raise ActionController::RoutingError, "Not authorized to view the audit log"
+    end
+  end
+
+  # Inherits your layout, authentication and helpers. Resolved lazily, by name.
+  # config.parent_controller = "ApplicationController"
+
+  # ------------------------------------------------------------------- coverage
+  # Tables that legitimately have no audit trigger, each WITH A WRITTEN REASON.
+  # Anything not audited and not listed here fails the coverage spec, which is
+  # the forcing function that keeps "opt-in" from degrading into "forgotten".
+  #
+  # Rails' own tables are pre-listed. Note what does NOT need listing: tables in
+  # a database this app does not audit -- a queue or cache database attached
+  # through connects_to is never seen by the primary connection.
+  config.unaudited_tables.merge!(
+    # "sessions" => "session store; churn with no compliance value",
+  )
+
+  # Databases whose connections carry the audit correlation context. This decides
+  # who pays for the correlation round trip, NOT what is audited -- a database
+  # left out is still fully audited, its rows simply arrive with no actor and no
+  # request_id. Name only databases that actually hold audited tables.
+  # config.correlated_databases = %w[primary]
+
+  # ----------------------------------------------------------------- lifecycle
+  # Policy, not implementation -- someone has to own the horizon, and it should be
+  # visible where the rest of this app's audit decisions are.
+  #
+  # Only `rake audit_log:partitions` is safe to schedule. The others take ACCESS
+  # EXCLUSIVE on an audit table and belong in a maintenance window.
+  # config.retention        = 7.years   # nil disables retirement entirely
+  # config.retention_action = :detach   # :drop only once an export step exists
+  # config.rollup_after     = 2.years   # consolidate closed years; nil disables
+
+  # ------------------------------------------------------------------- the rest
+  # Classes permitted to call AuditLog.without_logging. Empty means the bypass is
+  # unavailable, which is the right default. The bypass logs itself first.
+  # config.bypass_allowlist = %w[CatalogImportJob]
+
+  # Rows per page on the audit screens. Keyset-paginated, so there is no OFFSET
+  # to grow and no COUNT to compute -- this is a rendering choice, not a cost one.
+  # config.page_size = 50
+
+  # Columns never copied into a diff, on any table. Per-table additions belong in
+  # the migration's attach_audit_trigger; this is the floor everywhere.
+  # config.default_excluded_columns += %w[api_token]
+
+  # Captions association ids in a diff with the record they point at --
+  # "product_id  (not set) -> Grommet 10mm (id: 51)". OPT-IN per model: define
+  # `to_audit_label` and it appears; define nothing and the bare id renders
+  # exactly as before. The id is never replaced.
+  # config.record_label_resolver = ->(type, ids) { ... }   # nil disables entirely
+  # config.association_targets   = { "LineItem" => { "legacy_ref" => "Product" } }
+end
+
+# ---------------------------------------------------------------------------
+# THE REGISTRY -- the finite, reviewable list of what this system considers an
+# auditable action, and the home of each action's human sentence.
+#
+# Layer 1 records that six rows changed. Only this application can say that those
+# six rows constituted "submitting an order". That sentence lives here, so the
+# list of things this app considers worth narrating is reviewable in one place.
+#
+# An AuditLog.notify with no entry here is a SILENT NO-OP as far as audit_events
+# is concerned: the event still reaches any observability subscriber and never
+# becomes an audit row. That is how analytics stays out of the audit tables, and
+# it is the first thing to check when an action does not appear on the screens.
+#
+# Skipping an entry is legal. The change is still fully audited at the record
+# level by layer 1; it simply shows up in `rake audit_log:reconcile`, which is
+# how this list keeps filling in.
+# ---------------------------------------------------------------------------
+Rails.application.config.to_prepare do
+  AuditLog::Registry.clear!
+
+  # AuditLog::Registry.register "order.submitted",
+  #   description: "An order was submitted for fulfillment.",
+  #   subject: ->(p) { ["Order", p[:order_id]] },
+  #   summary: ->(p) { "Submitted order #{p[:reference]} for #{p[:customer_name]}" }
+  #
+  # Then, inside the transaction that does the work:
+  #
+  #   AuditLog.notify("order.submitted",
+  #     order_id: id, reference: reference, customer_name: customer.name)
+  #
+  # You never pass the actor, IP, source, timestamp or request_id -- all five come
+  # from AuditLog::Current, which ControllerContext/JobContext populated. The
+  # payload is only the domain detail, and it is stored on the event so a screen
+  # can render the total AFTER the order has been deleted.
+end
