@@ -59,7 +59,7 @@ jobs:
       AUDIT_LOG_DB_PASSWORD: postgres
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # A PostgreSQL 18 CLIENT, not just an 18 server. The runner image ships
       # postgresql-client-16, and pg_dump refuses to dump a server newer than
