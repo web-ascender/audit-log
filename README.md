@@ -90,12 +90,16 @@ rows constituted "submitting an order".
    end
    ```
 
-6. Attach a trigger per audited table, in the migration that creates it:
+6. Attach a trigger per audited table — conventionally in the migration that
+   creates it, so the decision lands in the same reviewable diff as the table:
 
    ```ruby
    create_table :orders { |t| ... }
    attach_audit_trigger :orders, model: "Order"
    ```
+
+   That placement is a review convention, not a requirement — see
+   [Attaching to a table that already exists](#attaching-to-a-table-that-already-exists).
 
 7. `ApplicationController`: `include AuditLog::ControllerContext`
    (after whatever establishes `current_user`).
@@ -116,6 +120,103 @@ rows constituted "submitting an order".
 Nothing. No `has_audit_log`, no `include Auditable`, no callback, no base class.
 An audited model is an ordinary `ApplicationRecord`. The one line of per-model
 cost lives in the migration, next to the table it audits.
+
+### Attaching to a table that already exists
+
+Supported, and no different mechanically. `attach_audit_trigger` is a bare
+`CREATE TRIGGER`: it reads nothing from the `create_table` beside it and carries
+no state between the two calls, so a standalone migration is equivalent.
+
+```ruby
+class AuditExistingOrders < ActiveRecord::Migration[8.1]
+  def up   = attach_audit_trigger(:orders, model: "Order")
+  def down = detach_audit_trigger(:orders)
+end
+```
+
+`coverage_spec.rb` is satisfied either way — it queries `pg_trigger`, not the
+migration history.
+
+Three things to check first. None is about *when* the trigger is attached; all
+three are about the shape of the table.
+
+- **Step 5 must already have run.** `CREATE TRIGGER` resolves
+  `public.audit_row_change` at creation time, so a missing install fails the
+  migration loudly. This is the harmless one.
+- **The table needs a `bigint`-compatible `id`.** The trigger function assigns
+  `rec_id bigint := NEW.id`, and `audit_changes.record_id` is `bigint NOT NULL`.
+  A `create_table id: false` join table, a `uuid` primary key, or a primary key
+  not named `id` therefore **fails on the first write after attaching**, not at
+  migration time. Every table in this app is uniform, so the constraint stays
+  invisible until you meet a legacy schema. Check the primary key before you
+  attach.
+- **`CREATE TRIGGER` takes `SHARE ROW EXCLUSIVE` on the table.** Catalog-only, no
+  rewrite, so it is fast — but it blocks writes while held, and a *pending*
+  request queues every write behind it. On a busy table set a `lock_timeout` and
+  retry, rather than letting the migration wait behind one long transaction. Same
+  reasoning as `config.maintenance_lock_timeout` for the maintenance tasks.
+
+**What the history then looks like.** Rows that existed before the attach have no
+back-history, and there is no backfill — the trigger records changes, and those
+changes did not pass through it. Two things narrow the gap:
+
+- The **first `UPDATE`** of a pre-existing row still yields a complete
+  `[old, new]` pair, because the diff reads `to_jsonb(OLD)` off the live row. What
+  is missing is the changes before the attach, not the values before the change.
+- A **`DELETE`** snapshots the whole final row, so even a row created long before
+  the trigger leaves a full record behind when it goes.
+
+What remains is epistemic: a record with no `audit_changes` rows is ambiguous
+between "never changed" and "predates the trigger". **Record the attach date** —
+the migration's own timestamp is the durable answer. An audit trail that cannot
+say which of the two it means is under-reporting without saying so, which is the
+one failure mode this whole design exists to prevent.
+
+### Re-attaching, and changing a table's exclusions
+
+**`attach_audit_trigger` is not idempotent, deliberately.** A second attach on an
+already-audited table fails:
+
+```
+ERROR:  trigger "orders_audit" for relation "orders" already exists   -- SQLSTATE 42710
+```
+
+`trigger_name` is `#{table}_audit` — derived from the table alone, ignoring both
+`model:` and `exclude:` — so two attaches on one table *always* collide on the
+name, whatever arguments they pass. That collision is load-bearing. Were the name
+to incorporate the model or the exclusion list, the second attach would **succeed**
+and the table would carry two triggers: two `audit_changes` rows for every write,
+under possibly different exclusion sets. Double-counted audit rows are far worse
+than a failed migration — invisible until somebody counts, and wrong in every
+rollup and reconciliation downstream. Postgres DDL is transactional and Rails
+wraps each migration, so the duplicate fails loudly with nothing half-applied.
+
+`detach_audit_trigger` **is** idempotent (`DROP TRIGGER IF EXISTS`). The asymmetry
+is the point, and it makes detach-then-attach the supported way to change a
+table's exclusions or its model name — idempotent end to end:
+
+```ruby
+def up
+  detach_audit_trigger :orders
+  attach_audit_trigger :orders, model: "Order", exclude: %w[internal_notes]
+end
+```
+
+Changing the exclusion list is not retroactive: rows already in `audit_changes`
+keep the diffs they were written with. A newly excluded column stops appearing
+from the re-attach forward and stays in the history before it.
+
+`CREATE OR REPLACE TRIGGER` exists as of PostgreSQL 14 (verified on 18.6) and
+would make attaching idempotent. It is deliberately not used: it would also
+silently absorb a second attach carrying a *different* model name or exclusion
+list, which is exactly the mistake worth hearing about. There is no
+`CREATE TRIGGER IF NOT EXISTS` in PostgreSQL at all.
+
+Re-running a migration is not how you meet this — `schema_migrations` prevents
+that. The reachable paths are two branches each attaching the same table, a later
+"fix" migration attaching a trigger the table already has, and a migration
+attaching to a table whose trigger already arrived via `db/structure.sql` (which
+carries every trigger, since `schema_format = :sql`).
 
 ### Emitting events from a controller action
 
