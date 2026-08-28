@@ -56,6 +56,30 @@ a merged keyset needs `(max(occurred_at), request_id)` rather than
 `(occurred_at, id)`: both tables have their own `bigserial`, so the naive cursor
 has colliding tiebreakers.
 
+The Timeline tab renders as a column of cards rather than a `table.grid`, and
+that is not only cosmetic: the other two tabs answer "list every row matching
+this filter", which is a grid, and this one answers "tell me what happened",
+which is a narrative. The rail dot is the only thing carrying `kind` — filled for
+a registered action, hollow for a change with no narrative — because a
+recomputed sentence must never look like a summary frozen at emit time. The CSS
+lives in the host app, as all of the auditor UI's does; the reference app's
+stylesheet gained it.
+
+Fixed while styling those cards, and it was a real hole rather than a cosmetic
+one: the Timeline card rendered `metadata` with a bare `if entry.metadata.any?`,
+so a **redacted** entry — whose metadata was emptied — rendered as nothing at
+all. The card took its warm tint and said nothing about why. It now carries the
+same three states as `shared/_event_payload`, with the notice deliberately
+outside the `<details>`: a disclosure the reader has to click for is not a
+disclosure. The note sits above the field changes, since it explains the
+`[redacted ...]` values below it, and `audit_ui_spec` asserts it lands outside
+every `<details>` on the page.
+
+`audit_operation_badge(change)` now delegates to a new
+`audit_operation_chip(operation)`, so a caller holding a bare operation code —
+`Timeline::Entry#operations`, which is a value object's list of codes — gets the
+same badge without a screen re-spelling the code-to-colour mapping.
+
 Also: `Change.grouped_by_request` moved up to `AuditLog::Record`. Both tables
 carry `request_id` and `occurred_at`, so a page of events hydrates its changes and
 a page of changes hydrates its events through one bounded implementation.

@@ -220,6 +220,16 @@ Do not "fix" these without reading the linked reasoning first.
   state; the id is what the log recorded (DESIGN §11.8). A host building a pretty
   timeline will want to drop it, which is exactly why the pretty method is the
   one that keeps it.
+- **The Timeline card renders `metadata` in the SAME three states as
+  `shared/_event_payload`, and the redaction note is not inside the
+  `<details>`.** The first version of the card had only `if entry.metadata.any?`,
+  which renders a redacted entry — whose metadata was emptied — as nothing at
+  all: the card picked up its warm tint and said nothing about why. That is the
+  silent hole redaction exists to avoid, in a new screen. `Entry#redacted?` is
+  the discriminator and reads through `Redaction.marker?`; the note precedes the
+  field changes, because it explains the `[redacted ...]` values below it.
+  `audit_ui_spec` asserts the note is outside every `<details>` on the page, not
+  merely present somewhere.
 - **The engine's Timeline tab renders the value objects, not relations.** That is
   the dogfooding: a presenter nothing in the gem consumes drifts from what the
   auditor UI actually does — the same argument that makes one `Coverage` back both

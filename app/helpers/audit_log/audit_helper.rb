@@ -5,7 +5,16 @@ module AuditLog
     OPERATION_CLASS = { "I" => "op-insert", "U" => "op-update", "D" => "op-delete" }.freeze
 
     def audit_operation_badge(change)
-      tag.span(change.operation_name, class: "badge #{OPERATION_CLASS[change.operation]}")
+      audit_operation_chip(change.operation)
+    end
+
+    # The same badge from a bare operation code, for a caller holding one without
+    # a Change row -- AuditLog::Timeline::Entry#operations, which is a value
+    # object's list of codes. One definition of the code-to-class mapping, so a
+    # screen cannot invent a fourth colour for a delete.
+    def audit_operation_chip(operation)
+      name = AuditLog::Change::OPERATION_NAMES.fetch(operation, operation)
+      tag.span(name, class: "badge #{OPERATION_CLASS[operation]}")
     end
 
     def audit_source_badge(source)

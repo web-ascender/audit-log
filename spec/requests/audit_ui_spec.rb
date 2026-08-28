@@ -140,6 +140,27 @@ RSpec.describe "the auditor UI", type: :request do
         .to eq(AuditLog::Change.for_record("Order", @order.id).distinct.count(:request_id))
     end
 
+    # The rule shared/_event_payload encodes, applied to the timeline card: an
+    # emptied payload and an action that carried none are the SAME empty jsonb,
+    # so the notice must not be collapsed behind a <details>. Getting this wrong
+    # renders an erasure as an absence -- the card just looks empty.
+    it "discloses a redacted entry outside the collapsed payload" do
+      customer = create_customer(name: "Erasure Target")
+      as_actor(staff) { customer.update!(name: "Changed Once") }
+      AuditLog::Redaction.redact_record!(record_type: "Customer", record_id: customer.id,
+                                         reason: "DSR-9001")
+
+      get audit.record_history_path(record_type: "Customer", record_id: customer.id,
+                                    view: "timeline")
+      expect(response).to have_http_status(:ok)
+      expect(response.body).to include("Values redacted")
+      expect(response.body).to include("redaction-note")
+
+      # Outside every <details> on the page, not merely present somewhere.
+      collapsed = response.body.scan(/<details.*?<\/details>/m).join
+      expect(collapsed).not_to include("Values redacted")
+    end
+
     it "exports whichever tab of a record's history is open" do
       get audit.record_history_path(record_type: "Order", record_id: @order.id,
                                     view: "actions", format: :csv)
