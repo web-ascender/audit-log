@@ -219,27 +219,12 @@ namespace :audit_log do
 
   desc "List tables in the primary database that have no audit trigger"
   task coverage: :environment do
-    conn = ApplicationRecord.connection
-    audited = conn.select_values(<<~SQL)
-      SELECT c.relname FROM pg_trigger t
-      JOIN pg_class c ON c.oid = t.tgrelid
-      WHERE NOT t.tgisinternal AND t.tgname LIKE '%\\_audit'
-    SQL
+    # Same AuditLog::Coverage the shared example in audit_log/rspec uses, so the
+    # rake task and the spec cannot disagree about what counts as covered.
+    coverage = AuditLog::Coverage.new
 
-    # Partitions inherit their parent's triggers and cannot be attached
-    # independently, so they are not candidates for auditing.
-    partitions = conn.select_values(
-      "SELECT c.relname FROM pg_class c JOIN pg_inherits i ON i.inhrelid = c.oid"
-    )
-
-    missing = conn.tables - audited - partitions - AuditLog.config.unaudited_tables.keys
-
-    if missing.empty?
-      puts "OK: every table is either audited or explicitly exempted."
-    else
-      puts "Untracked tables: #{missing.join(', ')}"
-      exit 1
-    end
+    puts coverage.report
+    exit 1 unless coverage.ok?
   end
 end
 

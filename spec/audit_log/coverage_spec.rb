@@ -1,64 +1,52 @@
 # frozen_string_literal: true
 
 require "rails_helper"
+require "audit_log/rspec"
 
-# The forcing function for the whole design.
-#
-# Layer 1 is opt-in per table -- one attach_audit_trigger line in the migration --
-# which is deliberate: auditing every table automatically would sweep in queue,
-# cache and session tables whose churn would bury real findings. The risk of
-# opt-in is that a table gets added and nobody decides. This spec makes that
-# decision mandatory: a new table either gets a trigger or gets a written reason,
-# or the build breaks.
+# The forcing function, exercised here exactly as a host application exercises it
+# -- through the shared example the gem ships. If this file grows beyond these
+# three lines, the shared example is missing something a host app needs.
 RSpec.describe "audit trigger coverage" do
-  let(:connection) { ApplicationRecord.connection }
+  it_behaves_like "an app with complete audit coverage"
+end
 
-  # Partitions inherit their parent's triggers and cannot be attached
-  # independently, so they are not candidates for auditing. Excluding them here
-  # rather than listing each one in unaudited_tables keeps the exemption list
-  # about DECISIONS instead of about partition rotation.
-  def partition_tables
-    connection.select_values(<<~SQL)
-      SELECT c.relname
-      FROM   pg_class c
-      JOIN   pg_inherits i ON i.inhrelid = c.oid
-    SQL
+# And the object underneath it, which the rake task shares.
+RSpec.describe AuditLog::Coverage do
+  subject(:coverage) { described_class.new }
+
+  it "reads pg_trigger rather than the migration history" do
+    expect(coverage.audited_tables)
+      .to include("orders", "line_items", "products", "customers", "shipments", "users")
   end
 
-  def audited_tables
-    connection.select_values(<<~SQL)
-      SELECT c.relname
-      FROM   pg_trigger t
-      JOIN   pg_class c ON c.oid = t.tgrelid
-      WHERE  NOT t.tgisinternal
-        AND  t.tgname LIKE '%\\_audit'
-    SQL
+  it "never counts a partition as a candidate for auditing" do
+    expect(coverage.partition_tables).to include(a_string_matching(/\Aaudit_changes_\d{4}_\d{2}\z/))
+    expect(coverage.missing).to be_empty
   end
 
-  it "audits every table that has not been explicitly exempted" do
-    # ApplicationRecord, not ActiveRecord::Base: with Solid Queue in its own
-    # database we only want the primary connection's tables here.
-    exempt  = AuditLog.config.unaudited_tables.keys
-    missing = connection.tables - audited_tables - exempt - partition_tables
+  it "reports a table with no trigger and no exemption" do
+    ActiveRecord::Base.connection.create_table(:widgets) { |t| t.string :name }
 
-    expect(missing).to be_empty,
-      "Untracked tables: #{missing.join(', ')}. " \
-      "Add attach_audit_trigger to the migration, or add the table to " \
-      "AuditLog.config.unaudited_tables with a reason."
+    expect(coverage.missing).to include("widgets")
+    expect(coverage).not_to be_ok
+    expect(coverage.report).to include("widgets").and include("attach_audit_trigger")
+  ensure
+    ActiveRecord::Base.connection.drop_table(:widgets, if_exists: true)
   end
 
-  it "does not exempt a table that no longer exists" do
-    stale = AuditLog.config.unaudited_tables.keys - connection.tables
-    expect(stale).to be_empty,
-      "These tables are exempted but do not exist: #{stale.join(', ')}"
+  it "reports an exemption whose table has been dropped" do
+    allow(AuditLog.config).to receive(:unaudited_tables)
+      .and_return(AuditLog.config.unaudited_tables.merge("long_gone" => "was removed in 2019"))
+
+    expect(coverage.stale_exemptions).to eq(%w[long_gone])
+    expect(coverage).not_to be_ok
   end
 
-  it "records a reason for every exemption" do
-    blank = AuditLog.config.unaudited_tables.reject { |_, reason| reason.present? }
-    expect(blank).to be_empty
-  end
+  it "reports an exemption with no written reason" do
+    allow(AuditLog.config).to receive(:unaudited_tables)
+      .and_return(AuditLog.config.unaudited_tables.merge("users" => "  "))
 
-  it "does not audit the audit tables themselves" do
-    expect(audited_tables).not_to include("audit_changes", "audit_events")
+    expect(coverage.unreasoned_exemptions).to eq(%w[users])
+    expect(coverage).not_to be_ok
   end
 end
