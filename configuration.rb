@@ -98,6 +98,12 @@ module AuditLog
     # horizon. Both are acceptable for cold years and neither is for warm ones.
     attr_accessor :rollup_after
 
+    # Where `rake audit_log:export` writes retired partitions. A LOCAL path: the
+    # library streams the partition to a file and stops. Moving that file to S3,
+    # GCS or anywhere else is a deployment decision, and baking one in is what
+    # would stop this being copyable. See AuditLog::Archive.
+    attr_accessor :archive_dir
+
     # Applied to every maintenance path that needs ACCESS EXCLUSIVE on an audit
     # table: drain_default!, retire!, and rollup_year!'s swap. A pending
     # ACCESS EXCLUSIVE request blocks every lock queued behind it, so an
@@ -138,6 +144,7 @@ module AuditLog
       @retention_action         = :detach
       @rollup_after             = 2.years
       @maintenance_lock_timeout = "5s"
+      @archive_dir              = nil
       @raise_on_subscriber_error = true
       @unaudited_tables         = {
         "schema_migrations"    => "Rails internal",

@@ -1204,6 +1204,33 @@ and it stops `create_month!` mistaking a retired table for a live partition. Det
 then-drop, never drop-then-hope — so the export step is what `:drop` is still waiting on, not the
 horizon.
 
+**Export, then drop.** [implemented 2026-08-28, ROLLOUT Q8] `AuditLog::Archive` streams a retired
+partition to a local gzipped CSV plus a manifest, and `drop_exported!` drops only what verifies.
+
+**`COPY ... TO STDOUT`, and nothing else.** The constraint is managed Postgres, and every other
+option fails on at least one provider: `COPY TO '/path'` writes on the *server* and needs superuser
+plus a filesystem you do not have; `COPY TO PROGRAM` needs superuser; `aws_s3.query_export_to_s3`
+is an RDS-only extension that ties the library to one cloud; Cloud SQL's export API is GCP-only and
+runs outside the application entirely; `pg_dump -t` needs the binary, a second set of credentials,
+and a client version matching the server. `COPY ... TO STDOUT` streams through the connection the
+application already has — no server filesystem, no superuser, no extension, no extra credentials,
+identical on RDS, Aurora, Cloud SQL, Azure Flexible and plain self-hosted.
+
+**Where the file goes is not this library's business.** It writes a local file and stops. Uploading
+to S3 or GCS is a deployment decision, and baking one in is exactly what would make this
+un-copyable. `config.archive_dir` names the local directory; the rake task says so out loud.
+
+**The manifest is the point.** It records row count, SHA-256, byte size and column list, and
+`drop_exported!` refuses any partition that does not verify against *both* halves: the checksum
+catches a truncated or corrupt write, and the row count catches an export taken against a different
+partition or before more rows arrived — which a checksum alone cannot see. Verification failures are
+re-raised as `VerificationError`, including unreadable-file errors from Zlib, so that one bad export
+is a **reported refusal** rather than an exception that aborts the run and leaves the partitions
+after it silently unprocessed.
+
+The artifact is deliberately plain: gzip and CSV, readable with `gzcat` and any CSV reader, with no
+dependency on this library ever existing. Detach, export, verify, drop — never drop-then-hope.
+
 **Draining the default partition.** [implemented 2026-08-27] The trap noted above — rows in the
 default partition *block* creating the partition that should hold them — needs a way out, or the
 backstop converts a write-path outage into a permanent one. `drain_default!` stages the rows into a

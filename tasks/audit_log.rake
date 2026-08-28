@@ -117,6 +117,51 @@ namespace :audit_log do
     end
   end
 
+  desc "Export retired partitions to DIR as gzipped CSV plus a manifest"
+  task export: :environment do
+    dir = ENV["DIR"] || AuditLog.config.archive_dir
+    abort "Set DIR=/path/to/archive (or AuditLog.config.archive_dir)." if dir.blank?
+
+    exported = AuditLog::Archive.export_retired!(dir: dir)
+    if exported.empty?
+      puts "Nothing to export -- every retired partition already has one in #{dir}."
+    else
+      exported.each do |m|
+        puts "  #{m[:partition]}: #{m[:rows]} row(s), " \
+             "#{ActiveSupport::NumberHelper.number_to_human_size(m[:bytes])} " \
+             "-> #{AuditLog::Archive.data_path(dir, m[:partition])}"
+      end
+    end
+
+    # The library writes a local file and stops. Getting it somewhere durable is
+    # a deployment decision, and baking one in is what would make this
+    # un-copyable -- see AuditLog::Archive.
+    puts "\nThese are LOCAL files. Copy them somewhere durable before running " \
+         "audit_log:drop_exported."
+  end
+
+  desc "Drop retired partitions whose export in DIR verifies"
+  task drop_exported: :environment do
+    dir = ENV["DIR"] || AuditLog.config.archive_dir
+    abort "Set DIR=/path/to/archive (or AuditLog.config.archive_dir)." if dir.blank?
+
+    results = AuditLog::Archive.drop_exported!(dir: dir)
+    if results.empty?
+      puts "No retired partitions."
+      next
+    end
+
+    results.each do |r|
+      if r[:dropped]
+        puts "  dropped:  #{r[:name]} (#{ActiveSupport::NumberHelper.number_to_human_size(r[:bytes])} reclaimed)"
+      else
+        # Left in place on purpose: the manifest exists so that this step cannot
+        # destroy a partition whose export is missing, short or corrupt.
+        warn "  KEPT:     #{r[:name]} -- #{r[:error]}"
+      end
+    end
+  end
+
   desc "VACUUM FREEZE every closed partition"
   task freeze: :environment do
     frozen = AuditLog::Partitions.freeze_closed!
