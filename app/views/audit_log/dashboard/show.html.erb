@@ -1,0 +1,77 @@
+<%= render "audit_log/shared/nav" %>
+<h1>Audit overview</h1>
+<%= render "audit_log/shared/date_filter", url: root_path %>
+
+<div class="cards">
+  <div class="card"><span class="n"><%= number_with_delimiter @event_count %></span>
+    <span class="l">actions (layer 2)</span></div>
+  <div class="card"><span class="n"><%= number_with_delimiter @change_count %></span>
+    <span class="l">row changes (layer 1)</span></div>
+  <div class="card <%= "warn" if @out_of_band_count.positive? %>">
+    <span class="n"><%= number_with_delimiter @out_of_band_count %></span>
+    <span class="l">out-of-band changes</span></div>
+  <div class="card <%= "warn" if @uncovered.any? %>">
+    <span class="n"><%= @uncovered.size %><%= "+" if @uncovered.size >= 10 %></span>
+    <span class="l">uncovered requests</span></div>
+</div>
+
+<div class="two-col">
+  <section>
+    <h2>Actions by type</h2>
+    <table class="grid compact">
+      <% @by_action.each do |action, count| %>
+        <tr><td><%= link_to action, action_path(action, audit_range_params), class: "mono" %></td>
+            <td class="num"><%= number_with_delimiter count %></td></tr>
+      <% end %>
+      <% if @by_action.empty? %><tr><td class="empty">Nothing yet.</td></tr><% end %>
+    </table>
+  </section>
+
+  <section>
+    <h2>Row changes by model</h2>
+    <table class="grid compact">
+      <% @by_type.each do |type, count| %>
+        <tr><td><%= link_to type, record_path(type, audit_range_params) %></td>
+            <td class="num"><%= number_with_delimiter count %></td></tr>
+      <% end %>
+      <% if @by_type.empty? %><tr><td class="empty">Nothing yet.</td></tr><% end %>
+    </table>
+  </section>
+</div>
+
+<section>
+  <h2>Recent actions</h2>
+  <%= render "audit_log/shared/event_rows", events: @recent %>
+</section>
+
+<section>
+  <h2>Completeness reconciler</h2>
+  <p class="note">
+    Requests that produced row changes but no registered action. Each one is a mutation
+    path missing an <code>AuditLog::Registry</code> entry — the list should trend to zero.
+    Run daily and alert when non-empty.
+  </p>
+  <table class="grid compact">
+    <thead><tr><th>Request</th><th>When</th><th>Changes</th><th>Models</th></tr></thead>
+    <tbody>
+      <% @uncovered.each do |row| %>
+        <tr>
+          <td><%= link_to row.request_id.first(8), request_path(row.request_id), class: "mono" %></td>
+          <td><%= audit_time(row.occurred_at) %></td>
+          <td class="num"><%= row.change_count %></td>
+          <td><%= row.record_types.join(", ") %></td>
+        </tr>
+      <% end %>
+      <% if @uncovered.empty? %>
+        <tr><td colspan="4" class="empty ok">Every correlated change is covered by a registered action.</td></tr>
+      <% end %>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Partitions</h2>
+  <p class="note">Monthly range partitions on <code>occurred_at</code>. Bounded date filters let
+     Postgres prune everything outside the range.</p>
+  <p class="mono small"><%= @partitions.join(" · ") %></p>
+</section>

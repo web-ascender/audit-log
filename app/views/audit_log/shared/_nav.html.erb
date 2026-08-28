@@ -1,0 +1,9 @@
+<nav class="audit-nav">
+  <span class="audit-brand">Audit log</span>
+  <%= link_to "Overview", root_path(audit_range_params), class: ("on" if controller_name == "dashboard") %>
+  <%= link_to "Who did what", actors_path(audit_range_params), class: ("on" if controller_name == "actors") %>
+  <%= link_to "By record", records_path(audit_range_params), class: ("on" if controller_name == "records") %>
+  <%= link_to "By action", actions_path(audit_range_params), class: ("on" if controller_name == "actions") %>
+  <%= link_to "Out of band", out_of_band_index_path(audit_range_params),
+        class: ("on" if controller_name == "out_of_band") %>
+</nav>

@@ -1,0 +1,16 @@
+<%= render "audit_log/shared/nav" %>
+<h1>By record type</h1>
+<%= render "audit_log/shared/date_filter", url: records_path %>
+
+<table class="grid">
+  <thead><tr><th>Model</th><th class="num">Changes in range</th></tr></thead>
+  <tbody>
+    <% @record_types.each do |type, count| %>
+      <tr>
+        <td><%= link_to type, record_path(type, audit_range_params) %></td>
+        <td class="num"><%= number_with_delimiter count %></td>
+      </tr>
+    <% end %>
+    <% if @record_types.empty? %><tr><td colspan="2" class="empty">No changes in this range.</td></tr><% end %>
+  </tbody>
+</table>

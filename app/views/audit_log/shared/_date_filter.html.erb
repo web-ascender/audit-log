@@ -1,0 +1,11 @@
+<%# Rule 1: every screen carries a bounded date range. Partition pruning is the
+    entire performance story, so the UI never offers "all time". %>
+<%= form_with url: url, method: :get, class: "date-filter" do |f| %>
+  <% (local_assigns[:hidden] || {}).each do |k, v| %>
+    <%= hidden_field_tag k, v %>
+  <% end %>
+  <label>From <%= date_field_tag :from, date_range.from.to_date %></label>
+  <label>To <%= date_field_tag :to, date_range.to.to_date %></label>
+  <%= submit_tag "Apply", name: nil %>
+  <span class="hint"><%= pluralize(date_range.days, "day") %> — bounded so Postgres prunes partitions</span>
+<% end %>

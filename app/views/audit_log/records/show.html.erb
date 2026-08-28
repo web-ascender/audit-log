@@ -1,0 +1,18 @@
+<%= render "audit_log/shared/nav" %>
+<h1><%= @record_type %> changes</h1>
+<%= render "audit_log/shared/date_filter", url: record_path(@record_type) %>
+
+<%= form_with url: record_path(@record_type), method: :get, class: "date-filter" do %>
+  <%= hidden_field_tag :from, date_range.from.to_date %>
+  <%= hidden_field_tag :to, date_range.to.to_date %>
+  <label>Fields touched</label>
+  <% @touched_columns.each do |col| %>
+    <label class="chk">
+      <%= check_box_tag "columns[]", col, @columns.include?(col), id: "col_#{col}" %> <%= col %>
+    </label>
+  <% end %>
+  <%= submit_tag "Filter", name: nil %>
+  <span class="hint">served by the GIN index on <code>changed_columns</code></span>
+<% end %>
+
+<%= render "audit_log/shared/change_rows", changes: @changes %>

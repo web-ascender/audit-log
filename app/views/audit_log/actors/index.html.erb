@@ -1,0 +1,25 @@
+<%= render "audit_log/shared/nav" %>
+<h1>Who did what</h1>
+<p class="note">
+  The picker reads the <code>users</code> table, not the audit log: an auditor looking for
+  someone wants to find them whether or not they have activity in this window.
+</p>
+
+<%= form_with url: actors_path, method: :get, class: "date-filter" do %>
+  <%= text_field_tag :q, params[:q], placeholder: "name or email" %>
+  <%= submit_tag "Search", name: nil %>
+<% end %>
+
+<table class="grid">
+  <thead><tr><th>Actor</th><th></th></tr></thead>
+  <tbody>
+    <% @actors.each do |actor| %>
+      <tr>
+        <td><%= AuditLog::ActorLabel.for(actor) %></td>
+        <td><%= link_to "Activity →",
+                  actor_path(actor.id, audit_range_params.merge(actor_type: actor.class.name)) %></td>
+      </tr>
+    <% end %>
+    <% if @actors.empty? %><tr><td colspan="2" class="empty">No actors found.</td></tr><% end %>
+  </tbody>
+</table>

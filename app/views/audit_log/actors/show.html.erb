@@ -1,0 +1,27 @@
+<%= render "audit_log/shared/nav" %>
+<h1><%= @actor_label %></h1>
+<%= render "audit_log/shared/date_filter",
+      url: actor_path(@actor_id), hidden: { actor_type: @actor_type, view: @view } %>
+
+<div class="tabs">
+  <%= link_to "Actions", actor_path(@actor_id, audit_range_params.merge(actor_type: @actor_type, view: "actions")),
+        class: ("on" if @view == "actions") %>
+  <%= link_to "All changes", actor_path(@actor_id, audit_range_params.merge(actor_type: @actor_type, view: "changes")),
+        class: ("on" if @view == "changes") %>
+</div>
+
+<% if @view == "actions" %>
+  <p class="note">
+    The narrative layer. Readable, but complete only for actions that have a
+    <code>Registry</code> entry — which is why the <strong>All changes</strong> tab exists
+    alongside it and is the compliance-grade answer.
+  </p>
+  <%= render "audit_log/shared/event_rows", events: @events, changes_by_request: @changes %>
+<% else %>
+  <p class="note">
+    The record layer, straight from the database triggers. Complete by construction and
+    independent of the registry: <code>update_all</code>, raw SQL and cascading deletes all
+    land here.
+  </p>
+  <%= render "audit_log/shared/change_rows", changes: @records %>
+<% end %>

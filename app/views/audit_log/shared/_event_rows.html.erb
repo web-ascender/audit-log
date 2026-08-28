@@ -1,0 +1,42 @@
+<table class="grid">
+  <thead>
+    <tr><th>When</th><th>Action</th><th>Summary</th><th>Actor</th><th>Source</th><th></th></tr>
+  </thead>
+  <tbody>
+    <% events.each do |event| %>
+      <tr>
+        <td class="nowrap"><%= audit_time(event.occurred_at) %></td>
+        <td><%= link_to event.action, action_path(event.action, audit_range_params), class: "mono" %></td>
+        <td class="summary"><%= event.summary %></td>
+        <td><%= event.actor_display %></td>
+        <td><%= audit_source_badge(event.source) %></td>
+        <td><%= link_to "detail", request_path(event.request_id) %></td>
+      </tr>
+      <% related = (local_assigns[:changes_by_request] || {})[event.request_id] %>
+      <% if related.present? %>
+        <tr class="detail">
+          <td colspan="6">
+            <details>
+              <%# One form submit touching N records reads as ONE action here,
+                  not N unrelated rows. That is the whole point of request_id. %>
+              <summary><%= pluralize(related.size, "record") %> changed in this action</summary>
+              <ul class="record-list">
+                <% related.each do |change| %>
+                  <li>
+                    <%= audit_operation_badge(change) %>
+                    <%= link_to change.label,
+                          record_history_path(record_type: change.record_type, record_id: change.record_id) %>
+                    <%= audit_changed_columns(change) %>
+                  </li>
+                <% end %>
+              </ul>
+            </details>
+          </td>
+        </tr>
+      <% end %>
+    <% end %>
+    <% if events.empty? %>
+      <tr><td colspan="6" class="empty">No actions in this range.</td></tr>
+    <% end %>
+  </tbody>
+</table>

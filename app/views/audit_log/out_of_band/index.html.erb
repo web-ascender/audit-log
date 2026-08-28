@@ -1,0 +1,9 @@
+<%= render "audit_log/shared/nav" %>
+<h1>Out-of-band changes</h1>
+<p class="note">
+  Row changes with <code>request_id IS NULL</code> — writes made outside a correlated request:
+  a console session, a migration, a rake task, a manual <code>psql</code> connection.
+  The design surfaces these rather than hiding them; they are the highest-scrutiny rows in the log.
+</p>
+<%= render "audit_log/shared/date_filter", url: out_of_band_index_path %>
+<%= render "audit_log/shared/change_rows", changes: @changes %>

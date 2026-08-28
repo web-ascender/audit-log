@@ -1,0 +1,8 @@
+<%= render "audit_log/shared/nav" %>
+<h1><%= @record_type %> #<%= @record_id %></h1>
+<p class="note">
+  Full history for one record — the only screen where an unbounded range is acceptable,
+  because a single record has bounded history. Capped at 200 rows.
+  Index: <code>(record_type, record_id, occurred_at DESC)</code>.
+</p>
+<%= render "audit_log/shared/change_rows", changes: @changes %>

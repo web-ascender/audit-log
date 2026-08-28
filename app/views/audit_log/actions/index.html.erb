@@ -1,0 +1,22 @@
+<%= render "audit_log/shared/nav" %>
+<h1>By action</h1>
+<%= render "audit_log/shared/date_filter", url: actions_path %>
+
+<p class="note">
+  The registry is an intentional audit surface: a finite, reviewable list of what this system
+  considers an auditable action. Events with no entry here reach observability and never touch
+  the audit tables.
+</p>
+
+<table class="grid">
+  <thead><tr><th>Action</th><th>Registered</th><th class="num">In range</th></tr></thead>
+  <tbody>
+    <% (@registered | @actions.keys).sort.each do |action| %>
+      <tr>
+        <td><%= link_to action, action_path(action, audit_range_params), class: "mono" %></td>
+        <td><%= @registered.include?(action) ? "yes" : tag.span("unregistered", class: "badge warn") %></td>
+        <td class="num"><%= number_with_delimiter(@actions[action] || 0) %></td>
+      </tr>
+    <% end %>
+  </tbody>
+</table>

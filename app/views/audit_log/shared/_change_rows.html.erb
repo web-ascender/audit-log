@@ -1,0 +1,33 @@
+<table class="grid">
+  <thead>
+    <tr>
+      <th>When</th><th>Op</th><th>Record</th><th>Fields</th><th>Actor</th><th>Action</th>
+    </tr>
+  </thead>
+  <tbody>
+    <% changes.each do |change| %>
+      <tr class="<%= "out-of-band-row" if change.out_of_band? %>">
+        <td class="nowrap"><%= audit_time(change.occurred_at) %></td>
+        <td><%= audit_operation_badge(change) %></td>
+        <td>
+          <%= link_to change.label,
+                record_history_path(record_type: change.record_type, record_id: change.record_id) %>
+        </td>
+        <td class="fields"><%= audit_changed_columns(change) %></td>
+        <td><%= change.actor_display %></td>
+        <td><%= audit_request_link(change.request_id) %></td>
+      </tr>
+      <tr class="detail">
+        <td colspan="6">
+          <details>
+            <summary><%= pluralize(change.changed_columns.size, "field") %></summary>
+            <%= render "audit_log/shared/diff", change: change %>
+          </details>
+        </td>
+      </tr>
+    <% end %>
+    <% if changes.empty? %>
+      <tr><td colspan="6" class="empty">No changes in this range.</td></tr>
+    <% end %>
+  </tbody>
+</table>
