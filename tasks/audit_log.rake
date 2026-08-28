@@ -28,6 +28,14 @@ namespace :audit_log do
       warn "NOTE: #{r[:name]} is detached and still occupying " \
            "#{ActiveSupport::NumberHelper.number_to_human_size(r[:bytes])}. Export it and drop it."
     end
+
+    # Not partitions and not in `list`, so nothing else would ever mention them --
+    # while each holds a full year of audit data.
+    AuditLog::Partitions.orphaned_rollups.each do |r|
+      warn "WARNING: #{r[:name]} is a staging table left by a rollup that did not finish, " \
+           "occupying #{ActiveSupport::NumberHelper.number_to_human_size(r[:bytes])}. " \
+           "Re-run `rake audit_log:rollup` to reclaim it."
+    end
   end
 
   desc "Move rows out of the default partition into the partitions that should hold them"
@@ -69,7 +77,10 @@ namespace :audit_log do
       next
     end
 
-    AuditLog::Partitions.retire!.each do |r|
+    # Printed from the block, as each partition commits: every one is its own
+    # transaction, so a failure partway through leaves the earlier ones already
+    # retired, and the operator has to be told which.
+    AuditLog::Partitions.retire! do |r|
       puts r[:retired_as] ? "  detached: #{r[:name]} -> #{r[:retired_as]}" : "  dropped:  #{r[:name]}"
     end
     warn "Detached partitions still hold their data. Export and drop them; " \
@@ -101,7 +112,7 @@ namespace :audit_log do
 
     # Rewrites a full year of data and then takes ACCESS EXCLUSIVE for the swap.
     # Maintenance window, not a cron.
-    AuditLog::Partitions.rollup!.compact.each do |r|
+    AuditLog::Partitions.rollup! do |r|
       puts "  #{r[:name]}: #{r[:rows]} row(s), replaced #{r[:replaced].size} monthly partition(s)"
     end
   end

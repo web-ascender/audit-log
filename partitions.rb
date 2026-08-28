@@ -51,6 +51,17 @@ module AuditLog
     # never mistake a retired table for a live partition.
     RETIRED_INFIX = "retired"
 
+    # Stamped as a table comment on a rollup's staging table and cleared when the
+    # swap succeeds. It is what tells a later run that an existing
+    # audit_events_2019 is our own debris from an interrupted rollup and not
+    # somebody's manual backup -- the difference between a safe reset and
+    # dropping a table this library did not create.
+    ROLLUP_MARKER = "audit_log:rollup-in-progress"
+
+    # Session-level advisory lock serialising drain / rollup / retire against
+    # each other. See `with_maintenance_lock`.
+    MAINTENANCE_LOCK_KEY = 0x4155_4449_5401 # "AUDIT" + 01
+
     class << self
       def ensure!(connection: ActiveRecord::Base.connection, months_ahead: nil, months_back: 1)
         months_ahead ||= AuditLog.config.partition_months_ahead
@@ -117,7 +128,9 @@ module AuditLog
       # partition -- exactly where they started, still queryable through the
       # parent, nothing lost.
       def drain_default!(connection: ActiveRecord::Base.connection)
-        TABLES.index_with { |table| drain_table_default!(table, connection: connection) }
+        with_maintenance_lock(connection) do
+          TABLES.index_with { |table| drain_table_default!(table, connection: connection) }
+        end
       end
 
       # ------------------------------------------------------------ retention
@@ -145,32 +158,14 @@ module AuditLog
       # Set config.retention_action = :drop once an export step exists.
       def retire!(connection: ActiveRecord::Base.connection,
                   retention: AuditLog.config.retention,
-                  action: AuditLog.config.retention_action)
+                  action: AuditLog.config.retention_action,
+                  &block)
         raise Error, "unknown retention_action #{action.inspect}" unless %i[detach drop].include?(action)
 
-        expired_partitions(connection: connection, retention: retention).map do |bound|
-          name    = bound[:name]
-          table   = parent_table_for(name)
-          retired = retired_name(table, name)
-
-          with_lock_timeout(connection) do
-            connection.transaction do
-              connection.execute(
-                "ALTER TABLE #{connection.quote_table_name(table)} " \
-                "DETACH PARTITION #{connection.quote_table_name(name)}"
-              )
-              if action == :drop
-                connection.execute("DROP TABLE #{connection.quote_table_name(name)}")
-              else
-                connection.execute(
-                  "ALTER TABLE #{connection.quote_table_name(name)} " \
-                  "RENAME TO #{connection.quote_table_name(retired)}"
-                )
-              end
-            end
+        with_maintenance_lock(connection) do
+          expired_partitions(connection: connection, retention: retention).map do |bound|
+            retire_partition!(bound, action: action, connection: connection, &block)
           end
-
-          bound.merge(action: action, retired_as: (retired unless action == :drop))
         end
       end
 
@@ -183,8 +178,27 @@ module AuditLog
           JOIN   pg_namespace n ON n.oid = c.relnamespace
           WHERE  n.nspname = 'public'
             AND  c.relkind = 'r'
-            AND  (c.relname LIKE 'audit_events_#{RETIRED_INFIX}_%'
-                  OR c.relname LIKE 'audit_changes_#{RETIRED_INFIX}_%')
+            -- Regex, not LIKE: `_` is a LIKE wildcard, so
+            -- 'audit_events_retired_%' also matches audit_eventsXretiredY2019.
+            AND  c.relname ~ '^(audit_events|audit_changes)_#{RETIRED_INFIX}_'
+          ORDER  BY c.relname
+        SQL
+      end
+
+      # Staging tables left behind by a rollup that failed after the copy but
+      # before the swap. They are not partitions, so `list` does not show them and
+      # no query touches them -- but each holds a full year of audit data and the
+      # disk that goes with it. Reported for the same reason retired partitions
+      # are: an invisible cost is one nobody reclaims.
+      def orphaned_rollups(connection: ActiveRecord::Base.connection)
+        connection.select_all(<<~SQL).to_a.map { |r| { name: r["name"], bytes: r["bytes"].to_i } }
+          SELECT c.relname AS name, pg_total_relation_size(c.oid) AS bytes
+          FROM   pg_class c
+          JOIN   pg_namespace n ON n.oid = c.relnamespace
+          WHERE  n.nspname = 'public'
+            AND  c.relkind = 'r'
+            AND  obj_description(c.oid, 'pg_class') = #{connection.quote(ROLLUP_MARKER)}
+            AND  NOT EXISTS (SELECT 1 FROM pg_inherits WHERE inhrelid = c.oid)
           ORDER  BY c.relname
         SQL
       end
@@ -216,7 +230,9 @@ module AuditLog
       def rollup!(connection: ActiveRecord::Base.connection,
                   older_than: AuditLog.config.rollup_after)
         rollup_candidates(connection: connection, older_than: older_than).map do |candidate|
-          rollup_year!(candidate[:table], candidate[:year], connection: connection)
+          rollup_year!(candidate[:table], candidate[:year], connection: connection).tap do |r|
+            yield r if r && block_given?
+          end
         end
       end
 
@@ -238,6 +254,10 @@ module AuditLog
       # a watermark read after the copy would not catch a row that landed during
       # it, which is precisely the row that would be lost.
       def rollup_year!(table, year, connection: ActiveRecord::Base.connection)
+        with_maintenance_lock(connection) { rollup_year(table, year, connection) }
+      end
+
+      private def rollup_year(table, year, connection)
         target = year_partition_name(table, year)
         lower  = Time.utc(year)
         upper  = Time.utc(year + 1)
@@ -267,15 +287,22 @@ module AuditLog
                        "run AuditLog::Partitions.drain_default! first"
         end
 
-        watermark = connection.select_value(<<~SQL).to_i
-          SELECT coalesce(max(id), 0) FROM #{connection.quote_table_name(table)}
-          WHERE occurred_at >= #{lo_lit} AND occurred_at < #{hi_lit}
-        SQL
+        watermark = rollup_watermark(table, lo_lit, hi_lit, connection: connection)
 
         # ---- phase 1: build and fill, holding no lock on the parent ----------
-        # A leftover target from an interrupted earlier run holds nothing the
-        # parent does not, since it is not attached. Recreating is the safe reset.
-        connection.execute("DROP TABLE IF EXISTS #{connection.quote_table_name(target)}")
+        # An unattached table under the target name is either our own debris from
+        # an interrupted run -- which holds nothing the parent does not, so
+        # recreating is the safe reset -- or something this library did not
+        # create. Only the marker distinguishes them, and dropping the second kind
+        # would destroy data. `DROP TABLE IF EXISTS` cannot tell the difference,
+        # so it is not used here.
+        if exists?(target, connection: connection)
+          unless rollup_debris?(target, connection: connection)
+            raise Error, "#{target} already exists and carries no rollup marker, so it was not " \
+                         "left behind by this library. Inspect and remove it before retrying."
+          end
+          connection.execute("DROP TABLE #{connection.quote_table_name(target)}")
+        end
 
         # INCLUDING ALL carries the indexes, so ATTACH matches them against the
         # parent's partitioned indexes instead of rebuilding them under the lock.
@@ -283,6 +310,9 @@ module AuditLog
           CREATE TABLE #{connection.quote_table_name(target)}
           (LIKE #{connection.quote_table_name(table)} INCLUDING ALL)
         SQL
+        connection.execute(
+          "COMMENT ON TABLE #{connection.quote_table_name(target)} IS #{connection.quote(ROLLUP_MARKER)}"
+        )
         connection.execute(<<~SQL)
           INSERT INTO #{connection.quote_table_name(target)}
           SELECT * FROM #{connection.quote_table_name(table)}
@@ -334,6 +364,7 @@ module AuditLog
               "ALTER TABLE #{connection.quote_table_name(target)} " \
               "DROP CONSTRAINT #{connection.quote_table_name(constraint)}"
             )
+            connection.execute("COMMENT ON TABLE #{connection.quote_table_name(target)} IS NULL")
 
             monthlies.each do |m|
               connection.execute("DROP TABLE #{connection.quote_table_name(m[:name])}")
@@ -421,10 +452,106 @@ module AuditLog
 
       private
 
+      # The id watermark guarding the rollup swap. Private and separate so the
+      # guard itself is reachable from a test -- it is the single piece of logic
+      # here whose failure mode is silent data loss, and "I reasoned about it"
+      # is not the same as "it fires".
+      def rollup_watermark(table, lo_lit, hi_lit, connection:)
+        connection.select_value(<<~SQL).to_i
+          SELECT coalesce(max(id), 0) FROM #{connection.quote_table_name(table)}
+          WHERE occurred_at >= #{lo_lit} AND occurred_at < #{hi_lit}
+        SQL
+      end
+
+      def rollup_debris?(name, connection:)
+        connection.select_value(<<~SQL).present?
+          SELECT 1 FROM pg_class c
+          WHERE  c.relname = #{connection.quote(name)}
+            AND  obj_description(c.oid, 'pg_class') = #{connection.quote(ROLLUP_MARKER)}
+            AND  NOT EXISTS (SELECT 1 FROM pg_inherits WHERE inhrelid = c.oid)
+        SQL
+      end
+
+      # The three maintenance operations must not overlap each other.
+      #
+      # Not a style preference -- it closes a hole in rollup_year!'s watermark
+      # guard. drain_default! reinserts relocated rows under their ORIGINAL ids,
+      # which are by definition below a watermark taken later, so a drain that
+      # lands a row in a monthly partition midway through a rollup would slip past
+      # `id > watermark` and be dropped with that partition. Phase 1 of a rollup
+      # holds no lock on the parent, so the interleaving is possible. Serialising
+      # the operations removes it, and incidentally stops two rollups or a
+      # rollup and a retire racing.
+      #
+      # try_ rather than a blocking acquire: a second maintenance run should say
+      # so immediately, not queue behind an hour-long rewrite.
+      #
+      # Advisory locks are re-entrant within a session, so this serialises
+      # SESSIONS, not calls -- which is the case that matters (two rake tasks, a
+      # cron overlapping a console). One session calling two of these in sequence
+      # is unaffected, and that is deliberate.
+      def with_maintenance_lock(connection)
+        # `uncached` is load-bearing, not defensive. pg_try_advisory_lock is a
+        # SELECT with a side effect, so ActiveRecord's query cache treats it as an
+        # ordinary read: acquire, release, acquire again within one request or job
+        # and the second acquire is served FROM THE CACHE as `true` while the
+        # session holds no lock at all. Verified -- pg_locks reports zero. That
+        # would leave this method reporting mutual exclusion it is not providing,
+        # which is worse than not having it. Everything else in this module
+        # mutates through `execute`, which does clear the cache.
+        connection.uncached do
+          unless connection.select_value("SELECT pg_try_advisory_lock(#{MAINTENANCE_LOCK_KEY})")
+            raise Error, "another AuditLog::Partitions maintenance operation is already running " \
+                         "on this database"
+          end
+
+          begin
+            yield
+          ensure
+            # Inside the begin, so a failure to ACQUIRE does not fall through to
+            # releasing a lock this session does not hold -- which Postgres answers
+            # with a warning and a false, quietly hiding the real error.
+            connection.select_value("SELECT pg_advisory_unlock(#{MAINTENANCE_LOCK_KEY})")
+          end
+        end
+      end
+
+      def retire_partition!(bound, action:, connection:)
+        name    = bound[:name]
+        table   = parent_table_for(name)
+        retired = retired_name(table, name)
+
+        if action == :detach && exists?(retired, connection: connection)
+          raise Error, "#{retired} already exists; #{name} was retired once before and " \
+                       "recreated. Export and drop the old one first."
+        end
+
+        connection.transaction do
+          connection.execute(
+            "ALTER TABLE #{connection.quote_table_name(table)} " \
+            "DETACH PARTITION #{connection.quote_table_name(name)}"
+          )
+          if action == :drop
+            connection.execute("DROP TABLE #{connection.quote_table_name(name)}")
+          else
+            connection.execute(
+              "ALTER TABLE #{connection.quote_table_name(name)} " \
+              "RENAME TO #{connection.quote_table_name(retired)}"
+            )
+          end
+        end
+
+        # Yielded as each one commits, not collected and handed back at the end:
+        # every partition is its own transaction, so a failure on the fifth leaves
+        # four already retired, and a caller that only sees the return value sees
+        # nothing at all about those four.
+        bound.merge(action: action, retired_as: (retired unless action == :drop))
+             .tap { |r| yield r if block_given? }
+      end
+
       def drain_table_default!(table, connection:)
         default = "#{table}_default"
-        result  = { moved: 0, created: [] }
-        return result unless exists?(default, connection: connection)
+        return { moved: 0, created: [] } unless exists?(default, connection: connection)
 
         with_lock_timeout(connection) do
           connection.transaction do
@@ -441,7 +568,7 @@ module AuditLog
               FROM #{connection.quote_table_name(default)}
               ORDER BY 1
             SQL
-            next result if months.empty?
+            next { moved: 0, created: [] } if months.empty?
 
             staging = "_audit_log_drain_#{table}"
             connection.execute("DROP TABLE IF EXISTS #{connection.quote_table_name(staging)}")
@@ -450,34 +577,34 @@ module AuditLog
               (LIKE #{connection.quote_table_name(table)}) ON COMMIT DROP
             SQL
 
-            moved = connection.select_value(<<~SQL).to_i
-              WITH moved AS (DELETE FROM #{connection.quote_table_name(default)} RETURNING *),
-                   staged AS (INSERT INTO #{connection.quote_table_name(staging)} SELECT * FROM moved RETURNING 1)
-              SELECT count(*) FROM staged
+            # `execute`, not select_value: this SELECT deletes rows. Running a
+            # data-modifying statement through the query-cache path would both
+            # cache it and skip the invalidation that every other write here
+            # performs, so a later overflow_count could report rows that are gone.
+            connection.execute(<<~SQL)
+              WITH moved AS (DELETE FROM #{connection.quote_table_name(default)} RETURNING *)
+              INSERT INTO #{connection.quote_table_name(staging)} SELECT * FROM moved
             SQL
+            moved = connection.select_value(
+              "SELECT count(*) FROM #{connection.quote_table_name(staging)}"
+            ).to_i
 
             # A month already inside a yearly partition needs no monthly one, and
             # creating an overlapping partition would fail.
             covered = partition_bounds(connection: connection).select { |b| b[:name].start_with?("#{table}_") }
-            months.each do |month|
+            created = months.reject { |month|
               start = month.to_time(:utc)
-              next if covered.any? { |b| b[:lower] <= start && start < b[:upper] }
-
-              result[:created] << create_month!(table, month, connection: connection)
-            end
-            result[:created].compact!
+              covered.any? { |b| b[:lower] <= start && start < b[:upper] }
+            }.filter_map { |month| create_month!(table, month, connection: connection) }
 
             connection.execute(<<~SQL)
               INSERT INTO #{connection.quote_table_name(table)}
               SELECT * FROM #{connection.quote_table_name(staging)}
             SQL
 
-            result[:moved] = moved
-            result
+            { moved: moved, created: created }
           end
         end
-
-        result
       end
 
       # Which months to provision and which are closed must be decided in UTC,

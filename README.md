@@ -407,6 +407,24 @@ long-running reader blocks *every* lock request queued behind it — which is to
 say the audit write path for the whole application. Failing fast and reporting
 is strictly better than a maintenance task that takes production down.
 
+#### The three manual operations cannot overlap
+
+`drain_default!`, `rollup_year!` and `retire!` each take a session-level advisory
+lock and refuse immediately if another session holds it. That is not tidiness: it
+closes a hole in the rollup's late-write guard. `drain_default!` reinserts
+relocated rows under their **original** ids, which are by definition below a
+watermark taken later, so a drain that lands a row in a monthly partition midway
+through a rollup would slip past `id > watermark` and be dropped along with that
+partition. Rollup phase 1 deliberately holds no lock on the parent, so the
+interleaving is reachable.
+
+The lock calls run inside `connection.uncached`, and that is load-bearing.
+`pg_try_advisory_lock` is a `SELECT` with a side effect, so ActiveRecord's query
+cache treats it as an ordinary read — acquire, release, acquire again with no
+intervening `execute` and the second acquire is served from cache as `true` while
+`pg_locks` shows the session holding nothing. Mutual exclusion that reports
+success and does nothing is worse than none.
+
 #### Draining the default partition
 
 A row whose month has no partition lands in `audit_changes_default` — that is
@@ -461,6 +479,14 @@ row that would be lost.
 `ATTACH` also has to scan the default partition to prove no row there belongs in
 the incoming range, so `rollup_year!` checks that first and points at
 `drain_default!` rather than failing cryptically at the end of a long copy.
+
+If a rollup dies after the copy but before the swap, its staging table survives
+under the target name, holding a full year of audit data. It carries a table
+comment marking it as this library's debris, which is the only thing separating
+"safe to recreate" from "somebody else's table, and dropping it destroys data" —
+so `rollup_year!` refuses an unmarked table rather than reaching for
+`DROP TABLE IF EXISTS`. `orphaned_rollups` reports marked debris, and
+`rake audit_log:partitions` warns about it with its size; a re-run reclaims it.
 
 Two costs worth stating. It rewrites a full year of data. And it coarsens
 retention: a yearly partition can only be retired whole, so up to eleven extra
