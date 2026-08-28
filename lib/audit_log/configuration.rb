@@ -1,5 +1,12 @@
 # frozen_string_literal: true
 
+# The durations below (24.hours, 7.years) are core_ext, not core Ruby. Inside a
+# booted Rails app something else has always required this already; as a GEM,
+# depending on that transitively is how `require "audit_log"` comes to work only
+# when the Gemfile happens to load ActiveRecord first.
+require "active_support/core_ext/numeric/time"   # 24.hours
+require "active_support/core_ext/integer/time"   # 7.years, 2.years
+
 module AuditLog
   # Every host-application coupling point lives here, so extracting this
   # directory into a gem requires no edits to the library itself.

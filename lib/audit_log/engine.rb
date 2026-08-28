@@ -1,19 +1,21 @@
 # frozen_string_literal: true
 
+# `rails` before `rails/engine`, and not only for tidiness: rails/engine pulls in
+# rails/initializable, which uses ActiveSupport's delegate_missing_to. Requiring
+# rails/engine on its own raises NoMethodError unless something else happened to
+# load ActiveSupport's core extensions first -- which, in a host app, depends on
+# Gemfile ORDER. Both requires are idempotent, so this costs nothing when Rails
+# is already loaded and makes `require "audit_log"` work regardless.
+require "rails"
 require "rails/engine"
 
 module AuditLog
-  # A mountable engine rooted at lib/audit_log/, so the whole library is one
-  # directory. `find_root` is overridden because the default walks up from the
-  # calling file looking for a `lib` directory, which from here would resolve to
-  # the *host application's* root and pull in its app/ directories.
+  # A conventional mountable engine: app/, config/ and db/ sit at the gem root,
+  # so Rails::Engine finds them itself and this class needs no find_root
+  # override. (It had one while the library lived inside a host app's lib/, where
+  # the default root-walk would have resolved to the HOST app's root and pulled
+  # in its app/ directories. Extracting to a gem removed the reason for it.)
   class Engine < ::Rails::Engine
-    ENGINE_ROOT = File.expand_path(__dir__)
-
-    def self.find_root(_from)
-      Pathname.new(ENGINE_ROOT)
-    end
-
     isolate_namespace AuditLog
 
     # ---------------------------------------------------------------- layer 1
@@ -77,8 +79,10 @@ module AuditLog
       AuditLog::Console.start!
     end
 
+    # __dir__ is lexical, so it still names lib/audit_log/ when this block is
+    # instance_exec'd on the engine later.
     rake_tasks do
-      load File.expand_path("tasks/audit_log.rake", ENGINE_ROOT)
+      load File.expand_path("tasks/audit_log.rake", __dir__)
     end
   end
 end

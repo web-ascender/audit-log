@@ -9,7 +9,9 @@ module AuditLog
   #     def down = AuditLog::Schema.uninstall!
   #   end
   module Schema
-    SQL_DIR = File.expand_path("db/sql", Engine::ENGINE_ROOT)
+    # AuditLog::GEM_ROOT rather than Engine.root: this DDL is called from a
+    # migration, and a migration must not depend on the engine being booted.
+    SQL_DIR = File.expand_path("db/sql", AuditLog::GEM_ROOT)
 
     class << self
       def install!(connection = ActiveRecord::Base.connection)
