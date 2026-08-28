@@ -1,0 +1,125 @@
+# Copyright (c) 2026 Web Ascender. All rights reserved. Internal use only.
+#
+# WHY THIS EXISTS, beyond habit: this library's entire thesis is a set of forcing
+# functions -- coverage_spec, completeness_spec, job_correlation_spec,
+# pagination_spec, archive_spec, redaction_spec -- and CLAUDE.md says outright that
+# "a change that makes any of those pass more easily is a regression". They force
+# nothing if they only run when someone remembers. A library whose cardinal rule is
+# "nothing goes missing without saying so" needs something saying so about itself.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  spec:
+    name: rspec (Ruby ${{ matrix.ruby }}, PostgreSQL 18)
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ["4.0.6"]
+
+    services:
+      # PostgreSQL 18 specifically. This is not a "latest is fine" dependency:
+      # DESIGN §20 records what the design takes from PG 18 (uuidv7() in seeds,
+      # the partition/planner behaviour the query plans assume), and §20.3 records
+      # that ALTER TABLE ... MERGE PARTITIONS does NOT exist in 18 -- which is why
+      # rollup_year! is a hand-rolled copy-and-swap. A different major version
+      # would silently change what these specs prove.
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      RAILS_ENV: test
+      # spec/dummy/config/database.yml reads all four, defaulting to the local
+      # non-standard port 5438. CI is an ordinary 5432.
+      AUDIT_LOG_DB_HOST: localhost
+      AUDIT_LOG_DB_PORT: 5432
+      AUDIT_LOG_DB_USER: postgres
+      AUDIT_LOG_DB_PASSWORD: postgres
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # `pg` is installed with force_ruby_platform in this gem's Gemfile (see the
+      # comment there), so it compiles against libpq rather than shipping a binary.
+      - name: Install libpq headers
+        run: sudo apt-get update && sudo apt-get install -y libpq-dev
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          # No Gemfile.lock is committed -- correct for a gem, whose dependencies
+          # must resolve against whatever the host app pins -- so there is nothing
+          # to key a bundler cache on.
+          bundler-cache: false
+
+      - name: Install dependencies
+        run: bundle install --jobs 4 --retry 3
+
+      # Fail loudly and early on the wrong server version rather than letting a
+      # partition or planner spec fail obscurely twenty minutes later.
+      - name: Assert PostgreSQL 18
+        run: |
+          version=$(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d postgres -tAc "SHOW server_version")
+          echo "server_version = $version"
+          case "$version" in
+            18*) ;;
+            *) echo "::error::Expected PostgreSQL 18, got $version. See DESIGN.md §20."; exit 1 ;;
+          esac
+
+      - name: Prepare the dummy app's database
+        working-directory: spec/dummy
+        # db:create + db:migrate, NOT db:prepare. structure.sql is deliberately
+        # git-ignored for this disposable app (db:migrate loads it in preference to
+        # re-running migrations, so a schema edit silently does nothing), which
+        # means the migrations are the only source of truth here.
+        run: bundle exec bin/rails db:create db:migrate
+
+      - name: rspec
+        run: bundle exec rspec --format progress
+
+      # The forcing function, through the rake path rather than the spec path.
+      # Both go through AuditLog::Coverage, and running each proves the wiring.
+      - name: audit_log:coverage
+        working-directory: spec/dummy
+        run: bundle exec bin/rails audit_log:coverage
+
+      # A gemspec warning is how a gem ships with an empty licence field or an
+      # unbuildable file list. This gem is proprietary and must never be pushed, so
+      # `gem build` is the only packaging step that ever runs -- keep it clean.
+      - name: gem build must be warning-free
+        run: |
+          output=$(gem build audit_log.gemspec 2>&1)
+          echo "$output"
+          if echo "$output" | grep -qi "WARNING"; then
+            echo "::error::gem build emitted warnings."
+            exit 1
+          fi
+
+      # LICENSE.txt must travel inside the built gem: it is the only thing stating
+      # the terms to whoever ends up holding the .gem file.
+      - name: Packaged gem carries the licence
+        run: |
+          tar -xOf audit_log-*.gem data.tar.gz | tar -tzf - | grep -qx "LICENSE.txt" \
+            || { echo "::error::LICENSE.txt is missing from the packaged gem."; exit 1; }
