@@ -56,7 +56,7 @@ Update it when you change behaviour.
 
 | | |
 |---|---|
-| Ruby | >= 3.2 (gemspec); developed on 4.0.6 |
+| Ruby | **>= 3.3** — the floor is `SecureRandom.uuid_v7` (DESIGN §2.1), not a preference. 3.3.0 exactly also cannot run Rails 8.1, for a reason of Rails' own. Developed on 4.0.6. |
 | Rails | >= 8.0 (gemspec); developed on 8.1.3.1 |
 | PostgreSQL | **18.6 on port 5438** — not the workspace default 5437 |
 | Tests | RSpec against `spec/dummy` (235 examples) |

@@ -28,16 +28,22 @@ jobs:
       # the first failure would throw away half the answer.
       fail-fast: false
       matrix:
-        # 3.2 is the FLOOR the gemspec claims (required_ruby_version >= 3.2.0).
-        # Testing only the development version would leave that claim unverified,
-        # which is the kind of quiet inaccuracy this project does not permit
-        # elsewhere -- an app on 3.2 would be the one to discover it. If this leg
-        # ever fails, the honest fixes are to fix the code or RAISE THE FLOOR,
-        # never to drop the leg.
+        # 3.3 is the FLOOR (required_ruby_version), and it is here because testing
+        # only the development version leaves that claim unverified -- an adopting
+        # app would be the one to discover it was wrong.
+        #
+        # Which is exactly what happened: this leg was added as "3.2", matching the
+        # gemspec, and failed on SecureRandom.uuid_v7 being 3.3+. DESIGN §2.1 had
+        # said 3.3 was the hard floor all along; the gemspec was simply wrong. If
+        # this leg fails again, fix the code or raise the floor -- never drop it.
+        #
+        # Unpinned patch on purpose: 3.3.0 exactly cannot run Rails 8.1 (actionview
+        # uses `yield(*, **)` inside a block, which its parser rejects), so pinning
+        # would test a configuration nobody can use.
         #
         # 4.0.6 is what the library is developed on, and what .ruby-version and the
         # reference application pin.
-        ruby: ["3.2", "4.0.6"]
+        ruby: ["3.3", "4.0.6"]
 
     services:
       # PostgreSQL 18 specifically. This is not a "latest is fine" dependency:

@@ -25,7 +25,18 @@ Gem::Specification.new do |spec|
     CSV export, and a mountable auditor UI.
   TEXT
 
-  spec.required_ruby_version = ">= 3.2.0"
+  # 3.3, not 3.2, and DESIGN §2.1 has said so all along -- the floor exists
+  # entirely for SecureRandom.uuid_v7, which landed in Ruby 3.3. UUIDv7 is what
+  # gives the audit_changes(request_id) index insert locality on the
+  # highest-volume table in the database, and Context.minted_at decodes the
+  # embedded timestamp to bound the drill-down. On 3.2 every correlated write
+  # raises NoMethodError.
+  #
+  # Ruby 3.3.0 EXACTLY is additionally unusable, and not because of anything here:
+  # actionview 8.1.3.1 contains `yield(*, **)` inside a block, which 3.3.0's parser
+  # rejects, while Rails still declares required_ruby_version >= 3.2.0. Any Rails
+  # 8.1 app hits that, gem or no gem. Later 3.3 patches are fine.
+  spec.required_ruby_version = ">= 3.3.0"
   spec.license = "LicenseRef-Proprietary"
 
   # PROPRIETARY AND INTERNAL. `LicenseRef-Proprietary` is SPDX's own convention
