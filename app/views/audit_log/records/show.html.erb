@@ -16,3 +16,4 @@
 <% end %>
 
 <%= render "audit_log/shared/change_rows", changes: @changes %>
+<%= render "audit_log/shared/pagination", pagy: @pagy, rows: @changes %>

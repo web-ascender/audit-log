@@ -13,7 +13,8 @@ module AuditLog
       @action = params[:id]
       report  = AuditLog::ActionReport.new(action: @action, range: date_range.to_range)
 
-      @events   = report.events.limit(100)
+      @pagy     = paginate(report.events)
+      @events   = @pagy.records
       @by_actor = report.by_actor
       @entry    = AuditLog::Registry[@action]
     end

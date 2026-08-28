@@ -5,6 +5,8 @@ module AuditLog
   # these screens pick up its layout, authentication and helpers without the
   # library naming any of them.
   class ApplicationController < AuditLog.config.parent_controller.constantize
+    include AuditLog::Pagination
+
     before_action { AuditLog.config.authorize.call(self) }
 
     helper AuditLog::AuditHelper

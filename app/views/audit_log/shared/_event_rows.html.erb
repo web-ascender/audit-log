@@ -4,7 +4,7 @@
   </thead>
   <tbody>
     <% events.each do |event| %>
-      <tr>
+      <tr data-event-id="<%= event.id %>">
         <td class="nowrap"><%= audit_time(event.occurred_at) %></td>
         <td><%= link_to event.action, action_path(event.action, audit_range_params), class: "mono" %></td>
         <td class="summary"><%= event.summary %></td>

@@ -18,7 +18,8 @@ module AuditLog
       query = AuditLog::RecordHistory.new(
         record_type: @record_type, range: date_range.to_range, columns: @columns
       )
-      @changes         = query.changes(limit: 200)
+      @pagy            = paginate(query.changes)
+      @changes         = @pagy.records
       @touched_columns = query.touched_columns
     end
 
@@ -28,9 +29,10 @@ module AuditLog
       @record_type = params[:record_type]
       @record_id   = params[:record_id]
 
-      @changes = AuditLog::RecordHistory.new(
+      @pagy    = paginate(AuditLog::RecordHistory.new(
         record_type: @record_type, record_id: @record_id
-      ).changes
+      ).changes)
+      @changes = @pagy.records
     end
   end
 end

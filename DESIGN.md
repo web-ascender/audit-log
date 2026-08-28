@@ -1345,12 +1345,25 @@ database. Either forbid it in the UI or route it to a background export job.
 page. Use Pagy's keyset pagination (`Pagy::Keyset`, Pagy 9+) ordered by `(occurred_at DESC, id DESC)`
 — unique because `id` comes from one sequence shared across all partitions. Where a count is
 genuinely wanted, show "1–50 of many" via `Pagy::Countless`.
->
-> **Rule 2 is not implemented.** Pagy is in the Gemfile and unused; the screens apply fixed row
-> caps (50 events, 100 actions, 200 changes) instead. That is a silent truncation on an audit
-> screen — an auditor asking what Jane did last week is shown the newest 50 with nothing saying
-> there were 500 — which is the same failure the drill-down bound was designed to avoid. Treat it
-> as the outstanding item in §11, not as a decision. [flagged 2026-08-28]
+
+**Implemented 2026-08-28** in `AuditLog::Pagination`, replacing the fixed row caps (50 events, 100
+actions, 200 changes) the screens shipped with. Those caps were a *silent* truncation: an auditor
+asking what Jane did last week saw the newest 50 with nothing on the page saying there were 500 —
+the same failure the drill-down date bound exists to prevent.
+
+Three properties are worth stating because each one is a way this could have gone wrong:
+
+1. **The keyset predicate is ANDed onto the screen's date range, never substituted for it.** Rule 1
+   bought partition pruning; Rule 2 must not spend it. `pagination_spec.rb` asserts `occurred_at`
+   survives in the paged query.
+2. **A cursor that does not belong to the screen falls back to the newest page.** Pagy raises
+   rather than guessing when the cursor's keys do not match the ordering, and the recovery has to
+   be visible — silently applying a mismatched cursor would drop rows off an audit screen.
+3. **The last page says "End of results."** A fixed cap could only imply it.
+
+`config.page_size` (50) is a rendering choice with no cost curve behind it: there is no OFFSET to
+grow and no COUNT to compute. The dashboard keeps fixed limits deliberately — its lists are "10
+most recent" summary widgets, not browsable result sets.
 
 Both models are read-only (`def readonly? = persisted?` — **not** `= true`, which breaks inserts
 and silently disables layer 2; see §12) and paired with a query object per screen.

@@ -21,11 +21,13 @@ module AuditLog
       )
 
       if @view == "actions"
-        @events  = @query.events.limit(50)
+        @pagy    = paginate(@query.events)
+        @events  = @pagy.records
         @changes = @query.changes_for(@events)
       else
         @operations = Array(params[:operations]).presence || %w[I U D]
-        @records    = @query.changes(operations: @operations).limit(200)
+        @pagy       = paginate(@query.changes(operations: @operations))
+        @records    = @pagy.records
       end
 
       # Prefer the SNAPSHOT the audit rows carry over the live record: it is what

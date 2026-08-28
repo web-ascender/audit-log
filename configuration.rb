@@ -62,6 +62,11 @@ module AuditLog
     # listed here, so every exemption carries a written reason.
     attr_accessor :unaudited_tables
 
+    # Rows per page on the auditor screens. Keyset-paginated, so this is a
+    # rendering choice with no cost curve behind it -- there is no OFFSET to
+    # grow and no count to compute. See AuditLog::Pagination.
+    attr_accessor :page_size
+
     # How far ahead the partition job keeps partitions provisioned. A missing
     # future partition is a write-path outage, so this has margin.
     attr_accessor :partition_months_ahead
@@ -126,6 +131,7 @@ module AuditLog
       @actor_label_resolver     = ->(actor) { default_actor_label(actor) }
       @bypass_allowlist         = []
       @default_excluded_columns = DEFAULT_EXCLUDED_COLUMNS.dup
+      @page_size                = 50
       @partition_months_ahead   = 3
       @drill_down_slack         = 24.hours
       @retention                = 7.years

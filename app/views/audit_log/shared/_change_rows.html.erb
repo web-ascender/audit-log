@@ -6,7 +6,7 @@
   </thead>
   <tbody>
     <% changes.each do |change| %>
-      <tr class="<%= "out-of-band-row" if change.out_of_band? %>">
+      <tr class="<%= "out-of-band-row" if change.out_of_band? %>" data-change-id="<%= change.id %>">
         <td class="nowrap"><%= audit_time(change.occurred_at) %></td>
         <td><%= audit_operation_badge(change) %></td>
         <td>

@@ -6,9 +6,10 @@ module AuditLog
   # are the rows an auditor scrutinizes most, so they get their own screen.
   class OutOfBandController < ApplicationController
     def index
-      @changes = AuditLog::Change.out_of_band
-                                 .occurred_between(date_range.to_range)
-                                 .newest_first.limit(200)
+      @pagy    = paginate(AuditLog::Change.out_of_band
+                                          .occurred_between(date_range.to_range)
+                                          .newest_first)
+      @changes = @pagy.records
     end
   end
 end

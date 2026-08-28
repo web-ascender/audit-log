@@ -1,0 +1,6 @@
+<%#
+  Keyset paging: a cursor and "older", never page numbers or a total. OFFSET
+  re-reads every skipped row and COUNT(*) blocks the page; both get worse exactly
+  as the log becomes worth reading. DESIGN §11.0 Rule 2.
+%>
+<%= audit_pagination(pagy, rows.size) %>
