@@ -1563,6 +1563,25 @@ Because `metadata` holds the full event payload, this screen can also surface do
 (`total_cents`, `line_count`) without touching the `orders` table — which matters when the order
 has since been deleted.
 
+**Rendering it  [added 2026-08-28]** — `shared/_event_payload`, on every screen that lists events.
+It was stored, exported by `CsvExport` and shown nowhere for a long time, because the property was
+pinned one layer too low: `auditor_questions_spec`'s "surfaces domain values from metadata" asserts
+on `ActionReport#events`, and passes whether or not a screen ever prints them.
+
+The partial renders **three** states, not two. An empty `metadata` means either *this action
+carried no payload* or *`Redaction` emptied it* (§13), and those are the same empty jsonb on the
+row — redaction deliberately leaves no flag column, since the point is that everything else is
+untouched. Rendering both as nothing turns an erasure into exactly the silent hole §13 exists to
+prevent, so the redacted case is stated outright and is **not** collapsed behind a `<details>`: a
+disclosure the reader has to click for has not been made. The only trace on the row is the marker
+string, so `Redaction.marker?` is the discriminator, written next to `marker_for` and matched
+against it in `redaction_spec` rather than re-spelled as a regex in a view.
+
+Values render **in full**, via `audit_metadata_value` rather than `audit_value`. Truncation is
+right for a diff cell in a wide table and wrong here: `metadata` is the structured evidence behind
+the summary sentence — the exact `total_cents`, the whole tracking number — and an ellipsis in it
+is the screen under-reporting without saying so.
+
 **The action picker needs no query:** `Audit::Registry.keys` is the authoritative list, in memory.
 
 ---

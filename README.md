@@ -145,7 +145,7 @@ cost lives in the migration, next to the table it audits.
 | `db/sql/audit_tables.sql` | The two partitioned tables and their indexes. |
 | `db/sql/audit_row_change.sql` | The trigger function. The heart of layer 1. |
 | `app/queries/` | One object per auditor question (`ActorActivity`, `RecordHistory`, `ActionReport`, `Reconciler`). |
-| `app/controllers/`, `app/views/` | The auditor UI. |
+| `app/controllers/`, `app/views/` | The auditor UI. `shared/_event_payload` renders `audit_events.metadata` in three states — present, absent, redacted. |
 | `DESIGN.md` | Why every decision here is what it is. Cited by section number from source comments. |
 | `tasks/audit_log.rake` | `partitions`, `drain_default`, `rollup`, `retention`, `export`, `drop_exported`, `freeze`, `redact`, `reconcile`, `coverage`, `benchmark`. |
 
@@ -191,6 +191,7 @@ sections most likely to matter, and the shape of the mistake each one prevents:
 | `pagination.rb` or a screen's scope | §11.0 | the cursor must carry microseconds, or rows vanish between pages — and a `.limit` below the controller is a silent truncation |
 | `csv_export.rb` | §11.4a | an export with a row cap reintroduces exactly what the paging removed |
 | `redaction.rb` | §13 | `changed_columns` must survive; it is what keeps "the email changed at 14:02" provable |
+| `redaction.rb`'s marker, `shared/_event_payload` | §11.3, §13 | a redacted payload and an absent one are the same empty jsonb — the marker is the only trace, and a screen that cannot tell them apart renders an erasure as an absence |
 | `archive.rb` | §8 | `drop_exported!` may never drop a partition whose manifest does not verify |
 | anything storing a timestamp | §4 | `occurred_at` is filled by a column DEFAULT so `config.time_zone` cannot reach it — supplying it from Ruby breaks that silently |
 

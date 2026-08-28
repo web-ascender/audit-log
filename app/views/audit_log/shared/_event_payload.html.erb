@@ -1,0 +1,35 @@
+<%# The action's own payload -- the structured values behind the rendered
+    summary. Stored on every event, exported by CsvExport, and until now shown on
+    no screen at all. DESIGN §11.3: it is what lets a screen surface total_cents
+    or line_count WITHOUT touching the orders table, which is the whole point
+    after the order has been deleted.
+
+    THREE states, not two. An empty metadata means either "this action carried no
+    payload" or "Redaction emptied it" (§13), and rendering both as nothing is
+    exactly the silent hole redaction is designed to avoid -- so the redacted case
+    is stated outright, and is NOT collapsed behind a <details>. A disclosure the
+    reader has to click for is not a disclosure. %>
+<% if AuditLog::Redaction.marker?(event.summary) %>
+  <tr class="detail">
+    <td colspan="<%= colspan %>">
+      <p class="redaction-note">
+        Payload redacted. The action, actor, time and correlation id are
+        untouched — the summary names the authorization.
+      </p>
+    </td>
+  </tr>
+<% elsif event.metadata.present? %>
+  <tr class="detail">
+    <td colspan="<%= colspan %>">
+      <details>
+        <summary><%= pluralize(event.metadata.size, "payload field") %></summary>
+        <dl class="payload">
+          <% event.metadata.sort.each do |key, value| %>
+            <dt class="mono"><%= key %></dt>
+            <dd><%= audit_metadata_value(value) %></dd>
+          <% end %>
+        </dl>
+      </details>
+    </td>
+  </tr>
+<% end %>

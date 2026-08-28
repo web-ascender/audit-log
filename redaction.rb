@@ -25,6 +25,21 @@ module AuditLog
   module Redaction
     ACTION = "audit.redaction"
 
+    # The marker, in both directions.
+    #
+    # A redaction leaves NO flag column behind -- by design, since the point is
+    # that the row is otherwise untouched -- so this string is the only trace on
+    # the row itself. A reader therefore has to be able to recognise one, because
+    # an emptied `metadata` and an action that simply carried no payload are
+    # indistinguishable otherwise, and rendering both as "nothing here" is the
+    # silent hole this module exists to avoid.
+    #
+    # Written once and matched against itself in redaction_spec, rather than
+    # hand-rolling a second regex at the call site that drifts the first time the
+    # wording changes.
+    MARKER_PREFIX  = "[redacted "
+    MARKER_PATTERN = /\A#{Regexp.escape(MARKER_PREFIX)}\d{4}-\d{2}-\d{2} per .+\]\z/
+
     class << self
       # Redact one record's values everywhere they appear.
       #
@@ -97,7 +112,13 @@ module AuditLog
       def marker_for(reason)
         raise Error, "a redaction needs a written reason" if reason.blank?
 
-        "[redacted #{Time.now.utc.to_date.iso8601} per #{reason}]"
+        "#{MARKER_PREFIX}#{Time.now.utc.to_date.iso8601} per #{reason}]"
+      end
+
+      # Does this summary / actor_label say a redaction happened here? Used by
+      # the UI to disclose an emptied payload instead of rendering it as absent.
+      def marker?(value)
+        MARKER_PATTERN.match?(value.to_s)
       end
 
       private

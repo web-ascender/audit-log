@@ -44,6 +44,23 @@ module AuditLog
       end
     end
 
+    # A payload value, rendered in full.
+    #
+    # Deliberately NOT audit_value: that one truncates, which is right for a diff
+    # cell sitting in a wide table and wrong here. metadata is the structured
+    # evidence behind the summary sentence -- the exact total_cents, the whole
+    # tracking number -- and an ellipsis in it is an audit screen quietly
+    # under-reporting. Payloads are a handful of scalars; CSS wraps the long ones.
+    def audit_metadata_value(value)
+      case value
+      when nil          then tag.span("(not set)", class: "nil-value")
+      when Hash, Array  then tag.code(value.to_json)
+      when true, false  then tag.code(value.to_s)
+      else
+        value.to_s.empty? ? tag.span("(empty)", class: "nil-value") : value.to_s
+      end
+    end
+
     def audit_changed_columns(change)
       safe_join(change.changed_columns.sort.map { |c| tag.code(c, class: "col-chip") }, " ")
     end

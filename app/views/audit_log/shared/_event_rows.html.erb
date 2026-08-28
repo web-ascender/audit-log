@@ -12,6 +12,7 @@
         <td><%= audit_source_badge(event.source) %></td>
         <td><%= link_to "detail", request_path(event.request_id) %></td>
       </tr>
+      <%= render "audit_log/shared/event_payload", event: event, colspan: 6 %>
       <% related = (local_assigns[:changes_by_request] || {})[event.request_id] %>
       <% if related.present? %>
         <tr class="detail">
