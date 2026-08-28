@@ -1,0 +1,23 @@
+# PostgreSQL 18 on the non-standard local port 5438, matching the reference app.
+#
+# ONE database, unlike the reference app's two. It runs Solid Queue in a separate
+# `queue` database so the correlation stamp never fires on a queue poll; this app
+# has no Solid Queue, so there is nothing to separate. What that costs: the
+# config.correlated_databases guard is exercised by stubbing the config rather
+# than by a second real connection -- see correlation_spec.
+default: &default
+  adapter: postgresql
+  encoding: unicode
+  host: <%= ENV.fetch("AUDIT_LOG_DB_HOST", "localhost") %>
+  port: <%= ENV.fetch("AUDIT_LOG_DB_PORT", 5438) %>
+  username: <%= ENV.fetch("AUDIT_LOG_DB_USER", "postgres") %>
+  password: <%= ENV["AUDIT_LOG_DB_PASSWORD"] %>
+  pool: 5
+
+test:
+  <<: *default
+  database: audit_log_gem_test
+
+development:
+  <<: *default
+  database: audit_log_gem_development
