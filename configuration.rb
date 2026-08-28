@@ -51,6 +51,35 @@ module AuditLog
     # and snapshotted onto every row. See ActorLabel.
     attr_accessor :actor_label_resolver
 
+    # ->(type, ids) { {id => label} }  Turns record ids into the labels an auditor
+    # reads NEXT TO them on a diff -- "Grommet 10mm (id: 51)". Display-time only;
+    # nothing it returns is ever stored, which is what separates it from
+    # actor_label_resolver above. See AuditLog::RecordLabel for why that is safe.
+    #
+    # Batch, not per-id: called once per record type per page. Return nil for a
+    # type you do not label, and {} for a type you do label none of whose ids
+    # exist any more -- the screen renders those two differently.
+    #
+    # nil disables association labelling entirely, and every screen renders bare
+    # ids exactly as it did before the feature existed.
+    #
+    # SCOPING IS THE HOST APP'S JOB. The default reads business tables with no
+    # tenant scope, on a screen an auditor is trusted with. `where(id: ids)` reads
+    # perfectly safe and is not, in a multitenant application. Scope it here.
+    attr_accessor :record_label_resolver
+
+    # { "LineItem" => { "product_id" => "Product" } }
+    #
+    # Which diff columns are association ids, for the ones belongs_to reflection
+    # cannot see. Merged OVER the reflected map, so an entry here wins; `false`
+    # suppresses a column that reflection did find.
+    #
+    # Holds no labels -- only the record type each column points at. Reflection
+    # covers the ordinary case and is the reason there is no convention-based
+    # fallback: `created_by_id`.sub(/_id$/, "").classify is "CreatedBy", and a
+    # convention that silently mislabels is worse than one that says nothing.
+    attr_accessor :association_targets
+
     # Classes permitted to call AuditLog.without_logging. Empty array means the
     # bypass is unavailable, which is the right default.
     attr_accessor :bypass_allowlist
@@ -138,6 +167,8 @@ module AuditLog
       @actor_picker             = ->(_query) { [] }
       @actor_finder             = ->(type, id) { type.to_s.safe_constantize&.find_by(id: id) }
       @actor_label_resolver     = ->(actor) { default_actor_label(actor) }
+      @record_label_resolver    = ->(type, ids) { AuditLog::RecordLabel.batch(type, ids) }
+      @association_targets      = {}
       @bypass_allowlist         = []
       @default_excluded_columns = DEFAULT_EXCLUDED_COLUMNS.dup
       @page_size                = 50

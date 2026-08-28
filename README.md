@@ -431,6 +431,98 @@ narratives are still missing.
 
 ---
 
+## Making association ids readable (optional)
+
+A field-level diff records what the database recorded, which is an id:
+
+```
+product_id     (not set)  →  51
+customer_id    (not set)  →  25
+```
+
+Define `to_audit_label` on a model and every id pointing at it gains a caption:
+
+```ruby
+class Product < ApplicationRecord
+  def to_audit_label = "#{sku} — #{name}"
+end
+```
+
+```
+product_id     (not set)  →  WID-100 — Widget, standard (id: 51)
+```
+
+That is the whole opt-in. No configuration, no per-column declaration: `belongs_to`
+reflection on the *changed* model finds which columns are foreign keys and what
+they point at, and the label chain is tried in this order —
+
+| | |
+|---|---|
+| `to_audit_label` | first, so a model can show auditors something other than what it shows the rest of the UI |
+| `to_label` | the same hook actor labels use |
+| `to_s` | only when the model deliberately overrode it |
+| *nothing* | no label. The cell renders the bare id, exactly as it did before |
+
+There is deliberately **no fallback that reads a `name` or `title` column.**
+Guessing which column reads as a label is how a screen ends up confidently
+captioning an id with the wrong string; `to_audit_label` is the seam for saying it
+explicitly.
+
+**The id is never replaced.** It is what the audit log actually stores, so the
+label annotates it and the screen states once that names are resolved when the
+page loads. This is the opposite of `actor_label.rb`, which *snapshots* its label
+onto every row at write time — see DESIGN §11.8 for why both are right.
+
+### The four things a cell can say
+
+| | Means |
+|---|---|
+| `WID-100 — Widget (id: 51)` | resolved |
+| `51 (not found)` | nothing with that id exists now — it was almost certainly deleted, which on an audit screen is information |
+| `51 (label unavailable)` | the lookup itself failed. **Not** the same as "no label configured", and never a blank cell |
+| `51` | no label available. Every screen renders exactly as it did before this feature existed |
+
+### Configuration
+
+Both attributes are optional and both have working defaults.
+
+```ruby
+AuditLog.configure do |config|
+  # ->(type, ids) { {id => label} }  Batch: called once per record type per page.
+  # Return nil for a type you do not label; {} for a type you do label none of
+  # whose ids still exist. The screen renders those two differently.
+  #
+  # nil disables association labelling entirely.
+  config.record_label_resolver = lambda do |type, ids|
+    klass = type.safe_constantize
+    klass ? klass.where(id: ids).index_by(&:id).transform_values(&:to_audit_label) : nil
+  end
+
+  # For the foreign keys reflection cannot see. Merged OVER the reflected map;
+  # `false` suppresses a column reflection did find.
+  config.association_targets = { "LineItem" => { "legacy_product_ref" => "Product" } }
+end
+```
+
+**Reflection, not convention, and this is why:** `orders.created_by_id` points at
+`User`. De-suffixing and classifying the column name gives `CreatedBy`, which does
+not exist. The `belongs_to` carries `class_name: "User"` and gets it right.
+
+### Two things to know before turning it on
+
+- **Scoping is your job.** The default resolver is `where(id: ids)` with no tenant
+  scope, reading live business tables on a screen an auditor is trusted with. In a
+  multitenant application that reads perfectly safe and is not — scope it inside
+  the lambda.
+- **CSV export is untouched, deliberately.** It is the evidence artifact; the
+  `diff` column ships the ids that were recorded, with no display decoration.
+
+Cost is one primary-key lookup per record type per page, batched before the table
+renders. A type that cannot produce a label is skipped with no query at all, so an
+application that has opted nothing in pays nothing.
+
+---
+
 ## Files
 
 | Path | Role |
@@ -444,6 +536,7 @@ narratives are still missing.
 | `registry.rb` | The allowlist of auditable actions, and each one's human sentence. |
 | `event_subscriber.rb` | `Rails.event` → `audit_events`. |
 | `actor_label.rb` | Renders the label snapshotted onto every row, and (`display`/`linkable?`) the one definition of how a stored actor reads on a screen. |
+| `record_label.rb` | The **opt-in** label chain (`to_audit_label` → `to_label` → overridden `to_s` → nothing) for the record an association id points at. Display-time only; nothing it returns is stored. |
 | `migration_helpers.rb` | `attach_audit_trigger` / `detach_audit_trigger`. |
 | `schema.rb` | `install!` / `uninstall!` for a migration. |
 | `partitions.rb` | Partition rotation, default-partition drain, yearly rollup, retention, freezing, UTC-boundary enforcement. |
@@ -456,7 +549,7 @@ narratives are still missing.
 | `console.rb` | Narrates console sessions. |
 | `db/sql/audit_tables.sql` | The two partitioned tables and their indexes. |
 | `db/sql/audit_row_change.sql` | The trigger function. The heart of layer 1. |
-| `app/queries/` | One object per auditor question (`ActorActivity`, `RecordHistory`, `ActionReport`, `Reconciler`). |
+| `app/queries/` | One object per auditor question (`ActorActivity`, `RecordHistory`, `ActionReport`, `Reconciler`), plus `LabelResolver` — the per-request association-label cache. |
 | `app/controllers/`, `app/views/` | The auditor UI. `shared/_event_payload` renders `audit_events.metadata` in three states — present, absent, redacted. |
 | `DESIGN.md` | Why every decision here is what it is. Cited by section number from source comments. |
 | `tasks/audit_log.rake` | `partitions`, `drain_default`, `rollup`, `retention`, `export`, `drop_exported`, `freeze`, `redact`, `reconcile`, `coverage`, `benchmark`. |

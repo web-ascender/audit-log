@@ -1,5 +1,8 @@
 <table class="diff">
+  <%# The change goes in, not just the column: record_type is what says whether
+      `product_id` is an association id at all, and which record type it points
+      at. See AuditLog::LabelResolver. %>
   <% change.field_changes.each do |column, old_value, new_value| %>
-    <%= audit_field_row(column, old_value, new_value) %>
+    <%= audit_field_row(change, column, old_value, new_value) %>
   <% end %>
 </table>

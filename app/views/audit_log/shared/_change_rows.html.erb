@@ -1,3 +1,8 @@
+<%# One batched label lookup for the whole page, before anything renders: every
+    (record_type, id) in these rows plus every association id in their diffs, one
+    query per type. Purely an optimization -- a miss still resolves on demand, so
+    forgetting this makes the screen slower, never wrong. %>
+<% audit_labels.warm(changes) %>
 <table class="grid">
   <thead>
     <tr>
@@ -9,10 +14,7 @@
       <tr class="<%= "out-of-band-row" if change.out_of_band? %>" data-change-id="<%= change.id %>">
         <td class="nowrap"><%= audit_time(change.occurred_at) %></td>
         <td><%= audit_operation_badge(change) %></td>
-        <td>
-          <%= link_to change.label,
-                record_history_path(record_type: change.record_type, record_id: change.record_id) %>
-        </td>
+        <td><%= audit_record_cell(change) %></td>
         <td class="fields"><%= audit_changed_columns(change) %></td>
         <td><%= change.actor_display %></td>
         <td><%= audit_request_link(change.request_id) %></td>
@@ -31,3 +33,15 @@
     <% end %>
   </tbody>
 </table>
+<%# Said once, and only when something was actually labelled. Labels are resolved
+    LIVE against current data, which is exactly what ActorLabel refuses to do for
+    the actor column -- the difference is that these annotate the stored id
+    instead of replacing it, and the id is on the screen either way. An auditor
+    has to know which half is the record and which half is today's reading. %>
+<% if audit_labels.any_resolved? %>
+  <p class="note small label-note">
+    Names shown beside an id are looked up when this page loads, so a record
+    renamed or deleted since the change will read differently now. The
+    <strong>ids are what the audit log recorded</strong>.
+  </p>
+<% end %>

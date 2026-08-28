@@ -1,3 +1,7 @@
+<%# The related-change lists below carry record ids too, and they arrive as one
+    flat hash -- so warm them all at once rather than letting each <details> block
+    resolve its own. %>
+<% audit_labels.warm(Array(local_assigns[:changes_by_request]&.values).flatten) %>
 <table class="grid">
   <thead>
     <tr><th>When</th><th>Action</th><th>Summary</th><th>Actor</th><th>Source</th><th></th></tr>
@@ -25,8 +29,7 @@
                 <% related.each do |change| %>
                   <li>
                     <%= audit_operation_badge(change) %>
-                    <%= link_to change.label,
-                          record_history_path(record_type: change.record_type, record_id: change.record_id) %>
+                    <%= audit_record_cell(change) %>
                     <%= audit_changed_columns(change) %>
                   </li>
                 <% end %>

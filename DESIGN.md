@@ -1134,6 +1134,12 @@ module Audit::ActorLabel
 end
 ```
 
+The label is resolved once per entry point and **snapshotted onto every row**, so
+that renaming or deleting a user cannot retroactively change what the log says
+happened (R6). Contrast §11.8, where association ids in a diff are labelled by a
+*live* lookup at display time — legitimate there only because that label annotates
+a stored id rather than replacing it.
+
 ---
 
 ## 8. Partition management & retention
@@ -1737,6 +1743,79 @@ leading bits are random; in v7 they deliberately are not.
 The trailing group is 48 bits of `rand_b`, and it costs nothing to use — the
 timestamp half is redundant with the "When" column beside it on every screen that
 renders this. The full id rides along in a `title` attribute.
+
+### 11.8 Association ids carry a display-time label  **[added 2026-08-28]**
+
+A field-level diff is honest and unreadable. `product_id  (not set) → 51` says
+exactly what the database recorded and tells an auditor nothing about what
+changed. The screens now render it as:
+
+```
+product_id    (not set)  →  WID-100 — Widget, standard (id: 51)
+```
+
+**This appears to contradict §7's actor-label decision, and does not.** Actor
+labels are *snapshotted* onto every audit row at write time, precisely so that
+renaming or deleting a user cannot retroactively change what the log says
+happened (R6) — a live join in the actor column would let today's data rewrite
+yesterday's record, which auditors read as tampering.
+
+The distinction is **replacement versus annotation**. An actor label *is* the
+identity in the actor column; there is nothing else in the cell, so it has to be
+the value that was true at the time. An association label sits *beside* the id
+that was recorded. The stored fact never leaves the screen, so a live lookup adds
+a reading of current state without altering the record of the past. That is why
+the rule is absolute: **the id is never dropped**, and the screen says once, in
+prose, that names are resolved at page load and ids are what was recorded.
+
+Storing labels was considered and rejected, and not primarily on storage cost. An
+*honest* stored label — one that reads as of the moment of the change — would have
+to be looked up at write time, and layer 1's write path is a Postgres trigger.
+That means N `SELECT`s inside `audit_row_change` on every audited INSERT and
+UPDATE, with the association map expressed in SQL. The write path is the one place
+in this design that must stay cheap and must never depend on the application's
+object graph.
+
+**Three decisions inside it.**
+
+1. **Discovery is `belongs_to` reflection, never a naming convention.** This
+   schema alone disproves the convention: `orders.created_by_id` de-suffixed and
+   classified is `CreatedBy`, which does not exist, while the reflection carries
+   `class_name: "User"`. A convention that silently mislabels a foreign key is
+   worse than one that labels nothing. `config.association_targets` overrides the
+   reflected map for what reflection cannot see, and `false` suppresses a column.
+
+2. **The label chain ends in `nil`, not in `"Product #51"`.** `ActorLabel`'s chain
+   must terminate in something because its column would otherwise be blank. Here
+   the id renders unconditionally, so a model with no label hook must produce *no*
+   label and leave the cell byte-identical to what it was before this feature
+   existed. That is what makes it opt-in rather than a rendering change imposed on
+   every host app. The chain is `to_audit_label`, then `to_label`, then a
+   deliberately overridden `to_s` — three explicit author decisions, and
+   deliberately no sniffing of a `name` or `title` column, because guessing which
+   column reads as a label is how a screen ends up confidently captioning an id
+   with the wrong string.
+
+3. **Four outcomes, all distinguishable.** Resolved, *absent* (`51 (not found)` —
+   the row was deleted, which on an audit screen is information), *failed*
+   (`51 (label unavailable)` — the lookup broke, which is not the same as never
+   having asked), and *no label configured* (the bare id, as always). Collapsing
+   absent into failed, or either into unlabelled, is the same silent hole
+   §11.3's payload rendering exists to avoid. `LabelResolver` distinguishes "I do
+   not label this type" (`nil` from the resolver) from "I label it and none of
+   those ids exist" (`{}`), because reporting the first as the second would
+   announce a deletion that never happened against every id on the screen.
+
+Cost is one primary-key lookup per record type per page, batched before the table
+renders and memoized per request — nothing at process level, since a cache of host
+class names in this library would go stale across a code reload. A type that
+provably cannot produce a label is pruned from the class alone, with no query, so
+an application that has opted nothing in pays nothing. A cache miss still resolves
+on demand: warming is an optimization, and forgetting it makes a screen slower,
+never wrong.
+
+CSV export is deliberately untouched. It is the evidence artifact; the `diff`
+column ships the ids that were recorded, with no display-layer decoration in it.
 
 ---
 

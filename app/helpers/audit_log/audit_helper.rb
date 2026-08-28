@@ -23,9 +23,11 @@ module AuditLog
     #   ["pending", "approved"]  changed        Pending -> Approved
     #   [nil, "approved"]        set on insert  (not set) -> Approved
     #   ["approved", nil]        CLEARED        Approved -> (cleared)
-    def audit_value(value, cleared: false)
+    def audit_value(value, cleared: false, label: nil)
       if value.nil?
         tag.span(cleared ? "(cleared)" : "(not set)", class: "nil-value")
+      elsif label
+        audit_association_value(value, label)
       elsif value.is_a?(Hash) || value.is_a?(Array)
         tag.code(truncate(value.to_json, length: 120))
       elsif value.to_s.empty?
@@ -35,13 +37,84 @@ module AuditLog
       end
     end
 
-    def audit_field_row(column, old_value, new_value)
+    # An association id, rendered with the label of the record it points at.
+    #
+    # THE ID IS NEVER DROPPED. It is what the audit log actually stores; the label
+    # is a live lookup against current state, so it annotates the id rather than
+    # replacing it. That is the whole reason a display-time join is legitimate
+    # here when ActorLabel refuses one -- see AuditLog::RecordLabel.
+    #
+    # Four outcomes, three of them visible here and all four distinguishable. The
+    # fourth is "no label available", which never reaches this method: audit_value
+    # renders the bare value exactly as it did before this feature existed, and
+    # that is what makes the whole thing opt-in.
+    def audit_association_value(value, label)
+      case label
+      when AuditLog::LabelResolver::MISSING
+        safe_join([
+          tag.span(value.to_s),
+          tag.span("(not found)", class: "assoc-missing",
+                   title: "No record with this id exists now. It was most likely deleted.")
+        ], " ")
+      when AuditLog::LabelResolver::FAILED
+        safe_join([
+          tag.span(value.to_s),
+          tag.span("(label unavailable)", class: "assoc-failed",
+                   title: "Looking up a label for this id failed. The id is what was recorded.")
+        ], " ")
+      else
+        safe_join([
+          tag.span(truncate(label.to_s, length: 120), class: "assoc-label"),
+          tag.span("(id: #{value})", class: "assoc-id")
+        ], " ")
+      end
+    end
+
+    # Takes the change, not just the column, so it can reach record_type -- which
+    # is what says whether `product_id` is an association id and what it points at.
+    def audit_field_row(change, column, old_value, new_value)
+      old_label = audit_labels.for_value(change, column, old_value, side: :old)
+      new_label = audit_labels.for_value(change, column, new_value, side: :new)
+
       tag.tr do
         tag.td(column, class: "field-name") +
-          tag.td(audit_value(old_value), class: "old") +
+          tag.td(audit_value(old_value, label: old_label), class: "old") +
           tag.td("→", class: "arrow") +
-          tag.td(audit_value(new_value, cleared: new_value.nil? && !old_value.nil?), class: "new")
+          tag.td(audit_value(new_value, cleared: new_value.nil? && !old_value.nil?, label: new_label), class: "new")
       end
+    end
+
+    # The Record column: "Order #34", captioned with the record's label when there
+    # is one. Same resolver as the diff cells, one lookup, already warmed.
+    #
+    # MISSING is deliberately NOT surfaced here, unlike in a diff cell. A record
+    # this row deleted is gone BY DEFINITION, so "(not found)" would fire on every
+    # delete in the log -- noise, not information. In a diff value a dangling
+    # foreign key is the opposite: unexpected, and worth saying. FAILED still shows,
+    # because a lookup that broke is never expected.
+    def audit_record_cell(change)
+      path  = record_history_path(record_type: change.record_type, record_id: change.record_id)
+      label = audit_labels.for(change.record_type, change.record_id)
+
+      case label
+      when nil, AuditLog::LabelResolver::MISSING
+        link_to(change.label, path)
+      when AuditLog::LabelResolver::FAILED
+        safe_join([link_to(change.label, path),
+                   tag.span("(label unavailable)", class: "assoc-failed")], " ")
+      else
+        link_to(path) do
+          safe_join([tag.span(truncate(label.to_s, length: 120), class: "assoc-label"),
+                     tag.span(change.label, class: "assoc-id")], " ")
+        end
+      end
+    end
+
+    # One LabelResolver per request, memoized on the view the way date_range is
+    # memoized on the controller. Holds the per-page label cache, so two partials
+    # on one screen share it rather than each resolving the same ids.
+    def audit_labels
+      @audit_labels ||= AuditLog::LabelResolver.new
     end
 
     # A payload value, rendered in full.
