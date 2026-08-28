@@ -55,6 +55,9 @@ module AuditLog
     # bypass is unavailable, which is the right default.
     attr_accessor :bypass_allowlist
 
+    # Added to DEFAULT_EXCLUDED_COLUMNS above rather than replacing it, unless a
+    # host app deliberately reassigns. Per-table exclusions belong in the
+    # migration; this is the floor that applies everywhere.
     attr_accessor :default_excluded_columns
 
     # Tables that legitimately have no audit trigger. The coverage spec fails the

@@ -11,8 +11,9 @@
 >
 > Section numbers are cited from source comments (`plan §6.1`, `§11.0 Rule 1`, and a dozen more),
 > so **they are stable**. Sections 15, 18 and 19 covered project rollout; that is not library
-> documentation and now lives in [`../../ROLLOUT.md`](../../ROLLOUT.md), which is also where the
-> remaining open questions are. Nothing renumbered. Section 19 planned improvements to the existing
+> documentation and now lives in [`../../ROLLOUT.md`](../../ROLLOUT.md). Nothing renumbered. As of
+> 2026-08-28 no open question remains: the last four closed as retention (§8), export (§8),
+> redaction (§13) and pagination (§11.0) were built. Section 19 planned improvements to the existing
 > paper_trail applications and was dropped on 2026-08-28 — this library is for new projects, and
 > those apps are not being migrated.
 >
@@ -124,10 +125,16 @@ the partition-creation job. Workable, one more moving part. Below 11, abandon pa
   Heroku. This is deliberate: reintroducing `SECURITY DEFINER` for append-only enforcement would
   require an owner role with rights the app role lacks, which is the one change that would
   complicate managed-database deployment.
-- **No gems.** Layers 1 and 2 are application code plus DDL. The `fx` gem (versioned function and
-  trigger files, dumped into `schema.rb`) was evaluated and dropped: partitioned tables force
-  `structure.sql` regardless (§4), and `pg_dump` already captures functions and triggers, so `fx`
-  would add a dependency for nothing. Pagy is a UI dependency, not an audit one.
+- **No gems for the audit machinery.** Layers 1 and 2 are application code plus DDL. The `fx` gem
+  (versioned function and trigger files, dumped into `schema.rb`) was evaluated and dropped:
+  partitioned tables force `structure.sql` regardless (§4), and `pg_dump` already captures functions
+  and triggers, so `fx` would add a dependency for nothing.
+
+  The **auditor UI** does take two, and they are worth naming precisely because the sentence above
+  is easy to over-read: `pagy` for keyset pagination (§11.0) and `csv` for export (§11.4a) — the
+  latter because `csv` stopped being a Ruby default gem in 3.4, so `require "csv"` alone is a
+  `LoadError`. Neither is referenced by the trigger, the correlation context, or the event
+  subscriber; an adopter who takes only layers 1 and 2 needs neither. [revised 2026-08-28]
 - **No queue backend commitment.** Solid Queue is the target, but §6.4's ActiveJob concern is
   adapter-independent; the Sidekiq middleware in §6.4 exists only for non-ActiveJob workers.
 

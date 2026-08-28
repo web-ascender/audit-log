@@ -45,6 +45,17 @@ rows constituted "submitting an order".
 
 ## Installing into another Rails 8 app
 
+0. Two gems, both for the auditor UI only — layers 1 and 2 need nothing:
+
+   ```ruby
+   gem "pagy", "~> 9.3"   # keyset pagination for the screens
+   gem "csv",  "~> 3.3"   # export; csv stopped being a default gem in Ruby 3.4
+   ```
+
+   Skip them only if you also drop `app/controllers`, `app/views`,
+   `pagination.rb` and `csv_export.rb` — the audit machinery itself does not
+   reference either.
+
 1. Copy `lib/audit_log.rb` and `lib/audit_log/` into the target app's `lib/`.
 
 2. In `config/application.rb`, **before** the `class Application` body:
@@ -125,13 +136,18 @@ cost lives in the migration, next to the table it audits.
 | `schema.rb` | `install!` / `uninstall!` for a migration. |
 | `partitions.rb` | Partition rotation, default-partition drain, yearly rollup, retention, freezing, UTC-boundary enforcement. |
 | `bypass.rb` | The one escape hatch, which logs itself. |
+| `redaction.rb` | The **only** thing allowed to modify audit rows. Values go, structure stays. |
+| `archive.rb` | Retired partitions → gzipped CSV + manifest; drops only what verifies. |
+| `pagination.rb` | Keyset paging for the screens. No page numbers, no counts. |
+| `csv_export.rb` | Streaming CSV for the screens. No row cap. |
+| `engine.rb` | Initializers: the adapter prepend, the event subscriber, `PGTZ`. |
 | `console.rb` | Narrates console sessions. |
 | `db/sql/audit_tables.sql` | The two partitioned tables and their indexes. |
 | `db/sql/audit_row_change.sql` | The trigger function. The heart of layer 1. |
 | `app/queries/` | One object per auditor question (`ActorActivity`, `RecordHistory`, `ActionReport`, `Reconciler`). |
 | `app/controllers/`, `app/views/` | The auditor UI. |
 | `DESIGN.md` | Why every decision here is what it is. Cited by section number from source comments. |
-| `tasks/audit_log.rake` | `partitions`, `drain_default`, `rollup`, `retention`, `freeze`, `reconcile`, `coverage`, `benchmark`. |
+| `tasks/audit_log.rake` | `partitions`, `drain_default`, `rollup`, `retention`, `export`, `drop_exported`, `freeze`, `redact`, `reconcile`, `coverage`, `benchmark`. |
 
 ---
 
@@ -172,6 +188,10 @@ sections most likely to matter, and the shape of the mistake each one prevents:
 | `event_subscriber.rb`, `record.rb` | §7, §12 | `readonly?` keyed on `true` breaks **inserts**, silently disabling layer 2 |
 | `partitions.rb`, the SQL, migrations | §8 | every boundary is UTC midnight, and the three manual operations must not overlap |
 | a query object or a screen | §11 | mandatory date bounds are what make the screens prune |
+| `pagination.rb` or a screen's scope | §11.0 | the cursor must carry microseconds, or rows vanish between pages — and a `.limit` below the controller is a silent truncation |
+| `csv_export.rb` | §11.4a | an export with a row cap reintroduces exactly what the paging removed |
+| `redaction.rb` | §13 | `changed_columns` must survive; it is what keeps "the email changed at 14:02" provable |
+| `archive.rb` | §8 | `drop_exported!` may never drop a partition whose manifest does not verify |
 | anything storing a timestamp | §4 | `occurred_at` is filled by a column DEFAULT so `config.time_zone` cannot reach it — supplying it from Ruby breaks that silently |
 
 Section numbers are cited from source comments throughout the library, so they
@@ -193,10 +213,16 @@ Per [`DESIGN.md`](DESIGN.md) §12, §13, and the open questions in
 - **Cryptographic tamper evidence.** If ever needed, do it as a nightly sealing
   job, never in the trigger: an in-trigger `prev_hash` chain serializes every
   write through one hot tuple.
-- **Export of retired partitions.** `retire!` detaches and reports; what happens
-  to a detached partition — `COPY` to object storage, `pg_dump -t`, a cold
-  tablespace — is a deployment decision, not a library one. Until one is made,
-  `retention_action` stays `:detach` and the partitions sit in the schema where
-  `rake audit_log:partitions` keeps naming them.
-- **PII redaction.** Blocked on a policy decision.
-- **Read-access logging.** Explicitly out of scope.
+- **Read-access logging.** Explicitly out of scope — this records changes, not
+  views.
+- **Signed-PDF export.** CSV is implemented; PDF was judged unnecessary. Revisit
+  only if a compliance regime asks for it.
+
+Note the interaction between the first item and `redaction.rb`: append-only
+grants would now have to carve out an exception for the one operation that is
+*supposed* to modify audit rows.
+
+Two things that used to be on this list are now built — **export of retired
+partitions** (`archive.rb`, `rake audit_log:export`) and **PII redaction**
+(`redaction.rb`, `rake audit_log:redact`). What remains open about redaction is
+policy, not mechanism: who may authorize one, and what makes a `REASON` valid.
