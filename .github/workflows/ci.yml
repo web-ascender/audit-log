@@ -145,6 +145,12 @@ jobs:
       # A gemspec warning is how a gem ships with an empty licence field or an
       # unbuildable file list. This gem is proprietary and must never be pushed, so
       # `gem build` is the only packaging step that ever runs -- keep it clean.
+      #
+      # DELIBERATELY STRICT, and it has already earned its keep: it caught the
+      # open-ended `rails >= 8.0` dependency, and only on the older Ruby leg,
+      # because that rubygems is stricter than the one 4.0.6 ships. If a future
+      # rubygems adds an advisory warning, the response is to fix the gemspec or
+      # consciously narrow this check -- not to delete it.
       - name: gem build must be warning-free
         run: |
           output=$(gem build audit_log.gemspec 2>&1)

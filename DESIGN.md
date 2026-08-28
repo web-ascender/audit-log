@@ -97,6 +97,14 @@ Also required, and available in the 8.x line: `config.active_job.enqueue_after_t
 which keeps a rolled-back transaction from leaving an enqueued job behind (§6.4). Confirm the
 setting is honored by the adapter in use before relying on it.
 
+**There is also a ceiling: `~> 8.0`, i.e. below 9.0.**  **[added 2026-08-28]** Not a formality.
+`TransactionStamp` prepends `raw_execute`, which is a *private* adapter method — §6.1 calls it the
+single private choke point every write funnels through — and a major version is free to move
+exactly that. An unbounded `>= 8.0` asserted that Rails 9 and 10 work, which nobody has verified.
+Raising the ceiling means re-verifying the prepend against the new adapter internals first, and the
+guard for that is `completeness_spec`: if `raw_execute` stops being the choke point, `update_all`
+and raw SQL start landing with a NULL actor and nothing else reports it.
+
 ### 2.3 PostgreSQL
 
 **13 is the hard floor.** The binding constraint is `AFTER ... FOR EACH ROW` triggers on a

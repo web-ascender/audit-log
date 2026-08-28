@@ -72,9 +72,17 @@ Gem::Specification.new do |spec|
 
   spec.require_paths = ["lib"]
 
-  # Rails 8.0 is the floor, not 8.1: layer 2 prefers Rails.event and falls back
-  # to calling the subscriber directly where it does not exist.
-  spec.add_dependency "rails", ">= 8.0"
+  # Rails 8.0 is the floor, not 8.1 (DESIGN §2.2): layer 2 prefers Rails.event and
+  # falls back to calling the subscriber directly where it does not exist.
+  #
+  # BOUNDED at < 9.0, and not merely because rubygems advises against open-ended
+  # dependencies. AuditLog::TransactionStamp prepends `raw_execute` -- a PRIVATE
+  # ActiveRecord adapter method, and DESIGN §6.1 calls it the single private choke
+  # point every write funnels through. Private APIs are exactly what a major
+  # version is free to move. `>= 8.0` claimed Rails 9 and 10 work, which nobody
+  # has verified and which that prepend makes implausible. Raising this ceiling is
+  # a deliberate act that means re-verifying the prepend, not a formality.
+  spec.add_dependency "rails", "~> 8.0"
 
   # Both are for the auditor UI only -- layers 1 and 2 reference neither, and an
   # app that mounts nothing pays for neither at runtime.
