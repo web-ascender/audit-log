@@ -743,6 +743,25 @@ fixes.
 The engine's own **Timeline** tab is rendered from these same objects, so the
 contract cannot drift from what the auditor UI does.
 
+### A worked example
+
+The reference app renders this on its `orders/show` — its own markup, its own
+i18n for the sentence this library refuses to invent, its own `record_url`
+lambda, its own role check — using nothing but the contract above. Four files:
+
+| | |
+|---|---|
+| `app/controllers/orders_controller.rb` | `recent_activity`: the two calls, the extra key that lets the view disclose its cap, and the role check |
+| `app/helpers/activity_helper.rb` | the sentence, the actor, the touched records, the three nil shapes |
+| `app/views/orders/show.html.erb` | the feed itself, deliberately not this engine's markup |
+| `config/locales/en.yml` | `activity.created` / `updated` / `deleted` |
+
+Worth reading `activity_value` there before writing your own: it must return
+exactly one element, because the field list is a CSS grid whose `<li>` is
+`display: contents`. Returning a label and its id as two elements gives valid
+markup, correct values and a scrambled page — the kind of thing only rendering
+finds.
+
 ---
 
 ## Making association ids readable (optional)

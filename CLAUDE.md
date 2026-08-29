@@ -36,7 +36,10 @@ Two layers, joined by a `request_id` (UUIDv7):
 
 The reference implementation is `../audit-log-demo`, a Rails app that consumes
 this gem by path. It is where the demo domain, Devise, Solid Queue and the seed
-data live — none of which this gem knows about.
+data live — none of which this gem knows about. Its `orders/show` renders
+`AuditLog::Timeline` in its own markup, which is the only place this library's
+host-facing contract is exercised by a real host rather than asserted by our own
+specs — **if you change a Timeline value object, check that app renders**.
 
 ## The one rule that matters most
 
