@@ -769,16 +769,23 @@ contract cannot drift from what the auditor UI does.
 
 ### A worked example
 
-The reference app renders this on its `orders/show` — its own markup, its own
-i18n for the sentence this library refuses to invent, its own `record_url`
-lambda, its own role check — using nothing but the contract above. Four files:
+The reference app renders this on its order, product and customer pages, and on
+a paginated history of its own at `/activity/:record_type/:record_id` — its own
+markup, its own i18n for the sentence this library refuses to invent, its own
+`record_url` lambda, its own role check. Nothing but the contract above:
 
 | | |
 |---|---|
-| `app/controllers/orders_controller.rb` | `recent_activity`: the two calls, the extra key that lets the view disclose its cap, and the role check |
+| `app/controllers/concerns/record_activity.rb` | the show-page widget: the cap, the extra key that discloses it, the role check |
+| `app/controllers/activity_controller.rb` | the paginated page: a record-type allowlist, `?days=`, and `include AuditLog::Pagination` |
 | `app/helpers/activity_helper.rb` | the sentence, the actor, the touched records, the three nil shapes |
-| `app/views/orders/show.html.erb` | the feed itself, deliberately not this engine's markup |
+| `app/views/shared/_activity_feed.html.erb` | how one activity renders, deliberately not this engine's markup |
 | `config/locales/en.yml` | `activity.created` / `updated` / `deleted` |
+
+That app also shows the shape worth copying: a **manager** reads one record's
+history there without holding the auditor role, because the split from `/audit`
+is by *scope* — one record, an allowlist of types — and not by fidelity. Same
+value objects, same detail.
 
 Worth reading `activity_value` there before writing your own: it must return
 exactly one element, because the field list is a CSS grid whose `<li>` is
