@@ -5,8 +5,6 @@ module AuditLog
   class Event < Record
     self.table_name = "audit_events"
 
-    SOURCES = %w[web api job console system migration].freeze
-
     scope :occurred_between, ->(range) { where(occurred_at: range) }
     scope :by_actor, ->(type, id) { where(actor_type: type, actor_id: id) }
     scope :for_action, ->(action) { where(action: action) }

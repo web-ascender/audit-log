@@ -120,8 +120,13 @@ RSpec.describe "the three auditor questions" do
       expect(report.events.first.metadata["reference"]).to be_present
     end
 
-    it "gets its action picker from the registry, in memory" do
-      expect(AuditLog::ActionReport.available_actions).to include("order.submitted")
+    # The picker is the REGISTRY, not a DISTINCT over the log -- so an action
+    # that is registered and has never been emitted still belongs in it. A picker
+    # sourced from audit_events would silently hide exactly the actions an
+    # auditor is most likely to be asking about.
+    it "sources the action picker from the registry, not from the log" do
+      expect(AuditLog::Registry.keys).to include("order.deleted")
+      expect(AuditLog::Event.for_action("order.deleted").count).to eq(0)
     end
   end
 

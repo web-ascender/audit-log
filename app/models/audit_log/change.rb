@@ -38,7 +38,10 @@ module AuditLog
       where("changed_columns && ARRAY[?]::text[]", cols.flatten.map(&:to_s))
     }
 
-    def operation_name
+    # A class method because the callers hold a bare operation code rather than a
+    # row: the auditor UI's badge helper and a host app's own. One definition, so
+    # a screen cannot invent a fourth spelling for a delete.
+    def self.operation_name(operation)
       OPERATION_NAMES.fetch(operation, operation)
     end
 

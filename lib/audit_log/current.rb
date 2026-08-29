@@ -38,8 +38,5 @@ module AuditLog
     # DISPLAY time. Writing "System" into the column instead would make a console
     # session indistinguishable from a genuine scheduled system action.
 
-    def correlated?
-      request_id.present?
-    end
   end
 end

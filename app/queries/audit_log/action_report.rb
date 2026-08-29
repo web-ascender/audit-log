@@ -29,10 +29,5 @@ module AuditLog
                      .count
     end
 
-    # The action picker needs no query at all: the registry is the authoritative
-    # list and it is already in memory.
-    def self.available_actions
-      AuditLog::Registry.keys
-    end
   end
 end

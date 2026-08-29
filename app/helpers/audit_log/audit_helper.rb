@@ -13,8 +13,8 @@ module AuditLog
     # object's list of codes. One definition of the code-to-class mapping, so a
     # screen cannot invent a fourth colour for a delete.
     def audit_operation_chip(operation)
-      name = AuditLog::Change::OPERATION_NAMES.fetch(operation, operation)
-      tag.span(name, class: "badge #{OPERATION_CLASS[operation]}")
+      tag.span(AuditLog::Change.operation_name(operation),
+               class: "badge #{OPERATION_CLASS[operation]}")
     end
 
     def audit_source_badge(source)
