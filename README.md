@@ -578,14 +578,38 @@ The auditor UI is for auditors. For an *"activity history"* on your own
 and the other records the same action touched.
 
 ```ruby
-# app/controllers/orders_controller.rb
-def show
-  @order      = Order.find(params[:id])
-  timeline    = AuditLog::Timeline.for(@order)
-  @pagy       = pagy_keyset(timeline.activity_keys)   # paginate the keys
-  @activities = timeline.activities(@pagy.records)    # load the activities
+class OrdersController < ApplicationController
+  include AuditLog::Pagination      # the gem's keyset pager — see below
+
+  def show
+    @order      = Order.find(params[:id])
+    timeline    = AuditLog::Timeline.for(@order)
+    @pagy       = paginate(timeline.activity_keys, limit: 20)
+    @activities = timeline.activities(@pagy.records)
+  end
 end
 ```
+
+`AuditLog::Timeline.new(record_type:, record_id:)` is the same thing without a
+record in hand — which is what you want for a **deleted** record, since an audit
+trail outlives what it describes and that is exactly when somebody reads it.
+
+### Use `AuditLog::Pagination`, do not hand-roll one
+
+`include AuditLog::Pagination` gives you `paginate(scope, limit:)`, reading the
+cursor from `params[:page]`. It is not a convenience.
+
+Pagy serialises the keyset cursor with `to_json`, and ActiveSupport renders a
+`Time` at **millisecond** precision — while `occurred_at` is `clock_timestamp()`,
+which is **microseconds**. A pager that does not override that mints a cursor
+naming an instant just before the row it came from, and the next page's
+`occurred_at < cursor` skips everything in the gap. **Rows vanish between pages,
+silently.** It presents as a rare flake, not as an error; it took roughly one
+full-suite run in eight to surface here before it was fixed.
+
+`AuditLog::Pagination::FULL_PRECISION` is the fix, and including the module is
+how you get it. It also falls back to the first page on a cursor minted for a
+different screen, rather than raising or — worse — applying it and dropping rows.
 
 ```erb
 <% @activities.each do |activity| %>

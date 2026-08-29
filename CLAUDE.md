@@ -223,6 +223,14 @@ Do not "fix" these without reading the linked reasoning first.
   `audit_log:reconcile`, not something to chase through a child's foreign key: it
   would need a live join to a business table, which is what keeps these screens
   truthful about deleted records. DESIGN §11.2b.
+- **`AuditLog::Pagination` is part of the PUBLISHED contract, not an engine
+  internal.** A host app rendering a timeline includes it, and that is the
+  documented path: a hand-rolled keyset pager over `activity_keys` serialises the
+  cursor at ActiveSupport's default millisecond precision while `occurred_at` is
+  microsecond `clock_timestamp()`, so rows vanish between pages, silently, as a
+  rare flake. `FULL_PRECISION` is the whole reason the module exists — do not
+  narrow it to `AuditLog::ApplicationController`, and do not let the README go
+  back to suggesting "any keyset pager".
 - **`ActivityKey` and `Activity` are the same thing at two stages of loading, and
   the split is forced rather than chosen.** `ActivityKey` is the identity (which
   unit of work, and when); `Activity` is that with the events, change rows and
