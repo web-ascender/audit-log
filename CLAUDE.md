@@ -483,6 +483,12 @@ app's timeline UI into a host app. Four things about it are load-bearing:
 - **`audit_activity_visible?` is generated as `false`.** Never change that to
   `true` "for convenience". It is the difference between a host that has decided
   who may read audit diffs and one that has published them by default.
+- **The show-page wiring guesses NOTHING it cannot verify.** It injects
+  `recent_activity(@order)` into `#show` and the render into the view only when
+  the controller has a bare `def show` AND already mentions `@order`; otherwise
+  it declines and prints the lines. A wrong ivar renders an EMPTY feed rather
+  than raising, which reads as "the audit log has no data" — the quiet
+  under-report this library exists to prevent, arrived at through a generator.
 - **A second run is create-once, not overwrite.** It updates
   `ActivityController::VIEWABLE` and leaves every file alone, because adding a
   model six months later runs against files the host has since edited. Before

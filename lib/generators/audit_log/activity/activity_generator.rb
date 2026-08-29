@@ -40,6 +40,8 @@ module AuditLog
       class_option :skip_css,    type: :boolean, default: false
       class_option :skip_routes, type: :boolean, default: false
       class_option :skip_locale, type: :boolean, default: false
+      class_option :skip_show_pages, type: :boolean, default: false,
+                                     desc: "Do not touch the models' show pages"
 
       # SAME MARKUP, different class attributes. The structure of the generated
       # views does not change with --css: only what goes in `class=`. That is the
@@ -232,6 +234,23 @@ module AuditLog
         end
       end
 
+      # ---------------------------------------------------------------- step 9
+      # Wire each model named in THIS invocation into its own show page.
+      #
+      # Runs on every invocation, including the second one -- which is the point:
+      # `rails g audit_log:activity Product` should add Product to the allowlist
+      # AND put the feed on products/show, without touching anything Order's
+      # already-edited files.
+      #
+      # It attempts the edit and REPORTS HONESTLY when it cannot make it. A
+      # generator that half-integrates a show page and says "done" leaves a page
+      # that renders nothing, which reads as the audit log having no data.
+      def integrate_show_pages
+        return if options[:skip_show_pages]
+
+        viewable.each { |model| integrate_show_page(model) }
+      end
+
       # ---------------------------------------------------------------- report
       def report
         say ""
@@ -268,18 +287,13 @@ module AuditLog
           say ""
         end
 
-        say "  Then, to render it on a show page:"
-        say ""
-        say "    # app/controllers/orders_controller.rb"
-        say "    @activities, @more_activity = recent_activity(@order)"
-        say ""
-        say "    <%= render \"shared/activity_section\", record: @order,"
-        say "          activities: @activities, more: @more_activity %>"
-        say ""
+        say_show_pages
         say "  Links to other records need config.record_url in your initializer;"
         say "  without it the labels render unlinked, ids intact."
         say ""
       end
+
+      private
 
       # A second run: the files are the host's now, so only the allowlist moved.
       def report_added_model
@@ -293,21 +307,92 @@ module AuditLog
         say "  authorization rule, a restyled view or a translated sentence is not"
         say "  something a generator should quietly reverse."
         say ""
-        say "  To render the new history on a show page:"
-        say ""
-        say "    @activities, @more_activity = recent_activity(@record)"
-        say ""
-        say "    <%= render \"shared/activity_section\", record: @record,"
-        say "          activities: @activities, more: @more_activity %>"
-        say ""
+        say_show_pages
         say "  To re-baseline every file against this version of the gem's templates,"
         say "  re-run with --force. It overwrites your edits, so diff afterwards."
         say ""
       end
 
-      private
+      # Named per model, because "add it to your show page" is not an instruction
+      # anybody can follow without knowing which file and which ivar.
+      def say_show_pages
+        return if options[:skip_show_pages]
+
+        say "  Show pages:", :green
+        viewable.each do |model|
+          var = model.underscore
+          say ""
+          say "  #{model}  ->  app/views/#{var.pluralize}/show.html.erb"
+          say "            #{" " * model.length}app/controllers/#{var.pluralize}_controller.rb#show"
+          say ""
+          say "    @activities, @more_activity = recent_activity(@#{var})"
+          say ""
+          say "    <%= render \"shared/activity_section\", record: @#{var},"
+          say "          activities: @activities, more: @more_activity %>"
+        end
+        say ""
+        say "  Anything above marked `inject` or `append` is already done."
+        say ""
+      end
 
       def viewable = models.map { |m| m.to_s.camelize }
+
+      # Best-effort, one model. Every branch either edits or explains.
+      def integrate_show_page(model)
+        var        = model.underscore
+        controller = "app/controllers/#{var.pluralize}_controller.rb"
+        view       = "app/views/#{var.pluralize}/show.html.erb"
+
+        render_line = <<~ERB
+          <%= render "shared/activity_section", record: @#{var},
+                activities: @activities, more: @more_activity %>
+        ERB
+        load_line = "@activities, @more_activity = recent_activity(@#{var})"
+
+        # A namespaced model has no guessable show page, and guessing wrong here
+        # means editing somebody else's file.
+        if model.include?("::")
+          return show_page_manual(model, load_line, render_line)
+        end
+
+        integrate_show_controller(model, controller, var, load_line)
+        integrate_show_view(model, view, render_line)
+      end
+
+      def integrate_show_controller(model, path, var, line)
+        if !file_exists?(path)
+          manual("#{path} not found, so #{model}'s show action was not wired up", line)
+        elsif read(path).include?("recent_activity")
+          skip("#{path} already calls recent_activity")
+        elsif !read(path).match?(/^\s*def show\s*$/)
+          manual("could not find `def show` in #{path}", line)
+        elsif !read(path).match?(/@#{var}\b/)
+          # The ivar is the one thing that cannot be inferred. `set_#{var}` in a
+          # before_action, a decorator, a different name -- all plausible, and a
+          # wrong guess produces a show page that renders an empty feed.
+          manual("#{path} never mentions @#{var}, so the ivar could not be inferred", line)
+        else
+          inject_into_file path, "    #{line}\n", after: /^\s*def show\s*\n/, verbose: false
+          say_status :inject, "#{path} — loads #{model} activity in #show", :green
+        end
+      end
+
+      def integrate_show_view(model, path, block)
+        if !file_exists?(path)
+          manual("#{path} not found, so the feed was not added to #{model}'s page", block.strip)
+        elsif read(path).include?("shared/activity_section")
+          skip("#{path} already renders the activity section")
+        else
+          append_to_file path, "\n#{block}", verbose: false
+          say_status :append, "#{path} — renders the activity feed", :green
+        end
+      end
+
+      def show_page_manual(model, load_line, render_line)
+        manual("#{model} is namespaced, so its show page could not be located",
+               nil,
+               "In its show action:  #{load_line}\nIn its show view:\n#{render_line}")
+      end
 
       def read(path) = File.read(File.join(destination_root, path))
       def file_exists?(path) = File.exist?(File.join(destination_root, path))

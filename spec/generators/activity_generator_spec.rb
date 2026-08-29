@@ -20,6 +20,26 @@ RSpec.describe AuditLog::Generators::ActivityGenerator do
       FileUtils.mkdir_p(File.join(dir, d))
     end
     File.write(File.join(dir, "config/routes.rb"), host.fetch(:routes, "Rails.application.routes.draw do\nend\n"))
+
+    Array(host[:models]).each do |m|
+      FileUtils.mkdir_p(File.join(dir, "app/views/#{m.underscore.pluralize}"))
+      File.write(File.join(dir, "app/controllers/#{m.underscore.pluralize}_controller.rb"), <<~RUBY)
+        class #{m.pluralize}Controller < ApplicationController
+          before_action :set_#{m.underscore}, only: %i[show]
+
+          def show
+          end
+
+          private
+
+          def set_#{m.underscore}
+            @#{m.underscore} = #{m}.find(params[:id])
+          end
+        end
+      RUBY
+      File.write(File.join(dir, "app/views/#{m.underscore.pluralize}/show.html.erb"),
+                 "<h1><%= @#{m.underscore}.name %></h1>\n")
+    end
     if host.fetch(:controller, true)
       File.write(File.join(dir, "app/controllers/application_controller.rb"),
                  "class ApplicationController < ActionController::Base\nend\n")
@@ -244,6 +264,92 @@ RSpec.describe AuditLog::Generators::ActivityGenerator do
     it "still overwrites when --force is passed" do
       @dir, _, concern = install_then_add(%w[Order Product --force])
       expect(File.read(concern)).to match(/def audit_activity_visible\?\s*\n\s*false/)
+    end
+  end
+
+  # Wiring the show page is the step a host is most likely to get subtly wrong by
+  # hand -- the ivar has to match, and a mismatch renders an empty feed rather
+  # than an error, which reads as "the audit log has no data".
+  describe "wiring up a model's show page" do
+    it "loads the activities in #show and renders the feed in the view" do
+      @dir, output = generate(%w[Order], host: { models: %w[Order] })
+
+      expect(read(@dir, "app/controllers/orders_controller.rb"))
+        .to match(/def show\n\s*@activities, @more_activity = recent_activity\(@order\)/)
+      expect(read(@dir, "app/views/orders/show.html.erb"))
+        .to include('render "shared/activity_section", record: @order')
+      expect(output).to match(/inject.*orders_controller/)
+      expect(output).to match(/append.*orders\/show/)
+    end
+
+    # The second invocation wires the NEW model's page while leaving the first
+    # model's -- already edited by then -- alone.
+    it "wires only the model named in this invocation" do
+      dir, = generate(%w[Order], host: { models: %w[Order Product] })
+      before = File.read(File.join(dir, "app/views/orders/show.html.erb"))
+
+      out = StringIO.new
+      o, e = $stdout, $stderr
+      $stdout = $stderr = out
+      described_class.start(%w[Product], destination_root: dir)
+      $stdout, $stderr = o, e
+
+      @dir = dir
+      expect(read(@dir, "app/views/products/show.html.erb")).to include("record: @product")
+      expect(File.read(File.join(dir, "app/views/orders/show.html.erb"))).to eq(before)
+      expect(out.string).to include("Product added to ActivityController::VIEWABLE")
+    end
+
+    it "does not wire the same page twice" do
+      dir, = generate(%w[Order], host: { models: %w[Order] })
+      out = StringIO.new
+      o, e = $stdout, $stderr
+      $stdout = $stderr = out
+      described_class.start(%w[Order], destination_root: dir)
+      $stdout, $stderr = o, e
+
+      @dir = dir
+      expect(read(@dir, "app/views/orders/show.html.erb").scan("activity_section").size).to eq(1)
+      expect(read(@dir, "app/controllers/orders_controller.rb").scan("recent_activity").size).to eq(1)
+    end
+
+    # THE IVAR IS THE ONE THING THAT CANNOT BE INFERRED. Guessing @order when the
+    # controller calls it something else produces a page that renders an empty
+    # feed and reports nothing, so the generator declines and says the line.
+    it "reports rather than guesses when it cannot find the ivar" do
+      @dir, output = generate(%w[Order], host: { models: %w[Order] })
+      FileUtils.rm_rf(@dir)
+
+      dir = Dir.mktmpdir("audit_log_activity")
+      %w[config config/locales app/controllers app/helpers app/assets/stylesheets
+         app/views/orders].each { |d| FileUtils.mkdir_p(File.join(dir, d)) }
+      File.write(File.join(dir, "config/routes.rb"), "Rails.application.routes.draw do\nend\n")
+      File.write(File.join(dir, "app/controllers/application_controller.rb"),
+                 "class ApplicationController < ActionController::Base\nend\n")
+      File.write(File.join(dir, "app/controllers/orders_controller.rb"), <<~RUBY)
+        class OrdersController < ApplicationController
+          def show
+            @sales_order = Order.find(params[:id])
+          end
+        end
+      RUBY
+      File.write(File.join(dir, "app/views/orders/show.html.erb"), "<h1>x</h1>\n")
+
+      out = StringIO.new
+      o, e = $stdout, $stderr
+      $stdout = $stderr = out
+      described_class.start(%w[Order], destination_root: dir)
+      $stdout, $stderr = o, e
+
+      @dir = dir
+      expect(read(@dir, "app/controllers/orders_controller.rb")).not_to include("recent_activity")
+      expect(out.string).to include("never mentions @order")
+      expect(out.string).to include("recent_activity(@order)")
+    end
+
+    it "leaves show pages alone with --skip-show-pages" do
+      @dir, = generate(%w[Order --skip-show-pages], host: { models: %w[Order] })
+      expect(read(@dir, "app/views/orders/show.html.erb")).not_to include("activity_section")
     end
   end
 

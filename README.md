@@ -802,16 +802,25 @@ The models you name become `ActivityController::VIEWABLE`, an allowlist checked
 **before** `constantize` — `/activity/User/1` is a URL anyone can type. The
 generator refuses to run without them rather than emitting an empty one.
 
+**It wires up each model's show page too**, where it safely can: the
+`recent_activity` call into `#show`, and the render into the view. Where it
+can't — no `def show`, an ivar it cannot infer, a namespaced model — it declines
+and prints the two exact lines for that model rather than guessing. Guessing
+`@order` when the controller calls it `@sales_order` produces a page that renders
+an *empty feed* and reports nothing, which reads as the audit log having no data.
+`--skip-show-pages` opts out.
+
 **Adding a model later is the same command again:**
 
 ```bash
 rails generate audit_log:activity Product
 ```
 
-It adds `Product` to the allowlist and **leaves every generated file alone** —
-they are yours the moment they land, and a generator that quietly reverses an
-edited authorization rule is worse than no generator. `--force` re-baselines
-everything against the current templates when you actually want that.
+That second run adds `Product` to the allowlist, wires up `products/show`, and
+**leaves every generated file alone** — they are yours the moment they land, and
+a generator that quietly reverses an edited authorization rule is worse than no
+generator. `--force` re-baselines everything against the current templates when
+you actually want that.
 
 ### A worked example
 
