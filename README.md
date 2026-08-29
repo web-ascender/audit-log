@@ -12,6 +12,48 @@ A two-layer, compliance-grade audit log for Rails 8 + PostgreSQL. Implements
 [`DESIGN.md`](DESIGN.md) — the design record, which sits next to this file and is
 the authority on *why* any of this is shaped the way it is.
 
+## Contents
+
+- [Summary](#summary)
+  - [Why this one](#why-this-one)
+  - [Why not one of the popular gems?](#why-not-one-of-the-popular-gems)
+- [What you get, and what is optional](#what-you-get-and-what-is-optional)
+- [The two layers](#the-two-layers)
+- [Getting started, end to end](#getting-started-end-to-end)
+  - [The generators](#the-generators)
+- [Installing into a Rails 8 app](#installing-into-a-rails-8-app)
+  - [Requirements](#requirements)
+  - [Then run the generator](#then-run-the-generator)
+  - [The two manual steps](#the-two-manual-steps)
+  - [What a model needs](#what-a-model-needs)
+  - [Attaching to a table that already exists](#attaching-to-a-table-that-already-exists)
+  - [Re-attaching, and changing a table's exclusions](#re-attaching-and-changing-a-tables-exclusions)
+  - [Emitting events from a controller action](#emitting-events-from-a-controller-action)
+- [Reading one record's history](#reading-one-records-history)
+- [Building an activity history in your own app](#building-an-activity-history-in-your-own-app)
+  - [Use `AuditLog::Pagination`, do not hand-roll one](#use-auditlogpagination-do-not-hand-roll-one)
+  - [Why objects and not relations](#why-objects-and-not-relations)
+  - [Four things to know](#four-things-to-know)
+  - [Bounding it](#bounding-it)
+  - [What the timeline covers](#what-the-timeline-covers)
+  - [Generate it](#generate-it)
+  - [A worked example](#a-worked-example)
+- [Making association ids readable (optional)](#making-association-ids-readable-optional)
+  - [The four things a cell can say](#the-four-things-a-cell-can-say)
+  - [Configuration](#configuration)
+  - [Two things to know before turning it on](#two-things-to-know-before-turning-it-on)
+- [Rake tasks](#rake-tasks)
+  - [Run on a schedule](#run-on-a-schedule)
+  - [Run when something needs it](#run-when-something-needs-it)
+  - [Retention, in the order you would run them](#retention-in-the-order-you-would-run-them)
+  - [Only on a scratch database](#only-on-a-scratch-database)
+- [Files](#files)
+- [Working on the library: what reloads and what does not](#working-on-the-library-what-reloads-and-what-does-not)
+- [Before you change anything](#before-you-change-anything)
+- [Not implemented (deliberately)](#not-implemented-deliberately)
+
+---
+
 ## Summary
 
 An audit log that **cannot be bypassed**, because it does not run in Ruby.
@@ -424,7 +466,7 @@ to be certain, so confirm.
 9. **Schedule `AuditLog::Partitions.ensure!` daily** (or
    `rake audit_log:partitions`). **A missing future partition is a write-path
    outage**, not a degraded report. Nothing else in `partitions.rb` belongs in a
-   cron — see [The partition lifecycle](#the-partition-lifecycle).
+   cron — see [Rake tasks](#rake-tasks).
 
 ### What a model needs
 
@@ -1174,6 +1216,57 @@ not exist. The `belongs_to` carries `class_name: "User"` and gets it right.
 Cost is one primary-key lookup per record type per page, batched before the table
 renders. A type that cannot produce a label is skipped with no query at all, so an
 application that has opted nothing in pays nothing.
+
+---
+
+## Rake tasks
+
+Registered by the engine, so they appear in any host app's `bin/rails -T`.
+
+**Only one of these belongs in a cron.** `audit_log:partitions` is operationally
+required. The rest are maintenance you run deliberately, and three of them take
+`ACCESS EXCLUSIVE` on an audit table — which blocks *every audited write in your
+application* while it runs. They fail fast rather than queueing
+(`config.maintenance_lock_timeout`, 5s), because a pending `ACCESS EXCLUSIVE`
+blocks every lock behind it: an unbounded wait behind one long reader would stall
+the write path.
+
+### Run on a schedule
+
+| Task | What it does | Why, and when |
+|---|---|---|
+| `audit_log:partitions` | Creates missing monthly partitions; warns on default-partition overflow and on retired leftovers | **Daily, in cron.** The only task that belongs there. A missing future partition is a **write-path outage**, not a degraded report — every audited write fails once the calendar passes the last partition. Keeps `config.partition_months_ahead` (3) provisioned. |
+
+### Run when something needs it
+
+| Task | What it does | Why, and when |
+|---|---|---|
+| `audit_log:coverage` | Lists tables in the primary database with no audit trigger | The forcing function. Fails for any table that is neither audited nor in `config.unaudited_tables` **with a written reason**. Run it in CI — it is what stops a table added next month being quietly unaudited. |
+| `audit_log:reconcile` | Reports correlated changes with no registered action | Tells you which narratives are still missing, so layer 2 fills in over time instead of being an up-front project. Run after adding controllers. |
+| `audit_log:drain_default` | Moves rows out of the default partition into the ones that should hold them | When `partitions` reports default-partition overflow — which means a write landed in a month that had no partition. Takes `ACCESS EXCLUSIVE`. Stages through a temp table in one transaction, so a failure leaves the rows where they started. |
+| `audit_log:redact` | Removes a record's **values** from the log, keeping the structure | An erasure request. `RECORD=Customer:42 REASON=DSR-1182 [FIELDS=email,phone] [DRY_RUN=1]`. The only thing permitted to modify audit rows; it narrates itself in the same transaction. `changed_columns` survives, so *"the email changed at 14:02, by Jane"* stays provable. |
+
+### Retention, in the order you would run them
+
+| Task | What it does | Why, and when |
+|---|---|---|
+| `audit_log:rollup` | Consolidates closed years of monthly partitions into yearly ones | Fewer partitions to plan against once a year is cold. `DRY_RUN=1` to preview. Only rolls up years past `config.rollup_after` (2y) — **it coarsens retention**, since a yearly partition can only be retired whole. Takes `ACCESS EXCLUSIVE`. |
+| `audit_log:retention` | Detaches (or drops) partitions past the horizon | `config.retention` (7y). Defaults to **detach**, not drop: detaching is reversible with one `ATTACH`, and dropping seven-year-old audit data is not. `DRY_RUN=1` to preview. Takes `ACCESS EXCLUSIVE`. |
+| `audit_log:export` | Streams retired partitions to gzipped CSV plus a manifest | `DIR=/backups/audit`. Run **after** `retention` and **before** `drop_exported`. Needs no server filesystem, no superuser and no extension, so it works on managed Postgres. Moving the files somewhere durable is yours. |
+| `audit_log:drop_exported` | Drops only the retired partitions whose export in `DIR` verifies | `DIR=/backups/audit`. Verifies by checksum **and** row count first, and refuses anything that does not. This is the one that actually deletes data. |
+| `audit_log:freeze` | `VACUUM FREEZE` on every closed partition | Optional. A closed partition never changes again, so freezing it deliberately beats waiting for an anti-wraparound vacuum to do it later on your largest table. |
+
+### Only on a scratch database
+
+| Task | What it does | Why, and when |
+|---|---|---|
+| `audit_log:benchmark` | Generates volume and `EXPLAIN`s the canonical auditor queries | `ROWS=100000`. **Writes synthetic rows into your real audit tables.** Use a scratch database or clean up after. |
+| `audit_log:benchmark_cleanup` | Deletes the synthetic rows `benchmark` wrote | Immediately after `benchmark`, unless the database is disposable. |
+
+> **`redact` takes `FIELDS=`, never `COLUMNS=`.** `COLUMNS` is a reserved shell
+> variable holding your terminal width, so `COLUMNS=email rails audit_log:redact`
+> arrives as a number, matches no column, and **redacts nothing while reporting
+> success**. Found by running it.
 
 ---
 

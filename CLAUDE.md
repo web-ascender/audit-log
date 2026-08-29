@@ -612,6 +612,9 @@ bin/rails audit_log:benchmark ROWS=n   # generate volume, EXPLAIN the canonical 
 bin/rails audit_log:benchmark_cleanup  # remove the synthetic rows
 ```
 
+The README carries the full reference — what each does, why, and when. Keep the
+two in step: a task added here and not there is a task nobody runs.
+
 `audit_log:benchmark` writes synthetic rows into the real audit tables. Run it
 against a scratch database or clean up after. Drive any new benchmark query
 through the library's own query objects — an earlier version hand-rolled
