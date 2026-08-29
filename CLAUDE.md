@@ -389,12 +389,22 @@ Do not "fix" these without reading the linked reasoning first.
 - **`audit_log:redact` takes `FIELDS=`, never `COLUMNS=`.** `COLUMNS` is a
   reserved shell variable holding the terminal width, so it silently arrives as
   a number, matches nothing, and redacts nothing while reporting success.
-- **Only `audit_log:partitions` belongs in a cron.** `drain_default`, `rollup`
-  and `retention` each take `ACCESS EXCLUSIVE` on an audit table, which blocks
-  every audited write in the application. They run under
-  `config.maintenance_lock_timeout` (5s) so they fail fast rather than queueing —
-  a pending `ACCESS EXCLUSIVE` request blocks every lock behind it, so an
-  unbounded wait behind one long reader stalls the write path.
+- **`audit_log:partitions` is the only task that belongs in the DAILY cron — but
+  that is not the same as "the only task you may schedule", which is what this
+  said until 2026-08-29.** `retention`, `rollup` and `freeze` are exactly what an
+  app with a compliance horizon should schedule monthly: retention that waits on
+  somebody remembering, for seven years, is an intention rather than a policy,
+  which is DESIGN §16's own argument about forcing functions. The real rules are
+  cadence and conditions. All three take `ACCESS EXCLUSIVE` on an audit table and
+  block every audited write while they run, so they want a low-traffic window;
+  they run under `config.maintenance_lock_timeout` (5s) and RAISE on contention
+  rather than queueing, so a bad moment is a non-zero exit and a retry next cycle
+  — but only if the scheduler surfaces it. `retire!` and `rollup!` commit per
+  partition, so a mid-run failure leaves earlier ones done and the output matters
+  more than the exit status. **`drain_default` is the one that genuinely must not
+  be scheduled**: needing it means a row reached the default partition, which
+  means rotation was not running, and scheduling the repair hides the fault.
+  DESIGN §8 carries the amendment.
 - **`with_maintenance_lock` wraps its advisory-lock calls in
   `connection.uncached`.** `pg_try_advisory_lock` is a `SELECT` with a side
   effect, so ActiveRecord's query cache treats it as an ordinary read: acquire,
@@ -679,6 +689,7 @@ property from different angles — **that nothing goes missing without saying so
 | `archive_spec` | a partition is dropped without a verified export |
 | `redaction_spec` | redaction removes structure, not just values |
 | `association_labels_spec` | a label replaces a stored id, or a failed lookup reads as an absent one |
+| `readme_spec` | the README's contents table drifts from its headings, an internal link dangles, or a rake task exists that the docs never mention |
 | `record_timeline_spec` | an unsubjected action vanishes from a record's narrative, or a capped section does not admit it is capped |
 | `timeline_spec` | the published host-facing contract changes shape, a unit of work is dropped or repeated across pages, an event that wrote no change row falls off the timeline, or `headline` starts inventing sentences |
 | `install_generator_spec` | the ControllerContext include lands ahead of authentication, or a skipped step reports success |

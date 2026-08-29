@@ -1332,12 +1332,34 @@ Two costs to state plainly. It rewrites a full year of data. And it coarsens ret
 partition can only be retired whole, so up to eleven extra months are kept past the horizon. Both
 are acceptable for cold years and neither is for warm ones, which is what `rollup_after` bounds.
 
-**Only the rotation task belongs in a cron.** `drain_default!`, `rollup!` and `retire!` each take
-`ACCESS EXCLUSIVE` on an audit table, which blocks every audited write in the application. All three
-run under `config.maintenance_lock_timeout` (5s): a pending `ACCESS EXCLUSIVE` request blocks every
-lock request queued behind it, so an unbounded wait behind one long-running reader stalls the audit
-write path for the whole application. Failing fast and reporting beats a maintenance task that takes
-production down.
+**Only the rotation task belongs in the DAILY cron.** `drain_default!`, `rollup!` and `retire!` each
+take `ACCESS EXCLUSIVE` on an audit table, which blocks every audited write in the application. All
+three run under `config.maintenance_lock_timeout` (5s): a pending `ACCESS EXCLUSIVE` request blocks
+every lock request queued behind it, so an unbounded wait behind one long-running reader stalls the
+audit write path for the whole application. Failing fast and reporting beats a maintenance task that
+takes production down.
+
+> **Amended 2026-08-29.** This section previously read *"only the rotation task belongs in a cron"*,
+> which was too strong and contradicted §16's own principle that **a forcing function which runs
+> when somebody remembers is not one**. An app with a seven-year horizon whose retention depends on
+> a human remembering, monthly, for seven years, does not have retention — it has an intention. The
+> rule being defended is about *cadence and conditions*, not prohibition:
+>
+> - **`partitions` must be scheduled**, daily, and its failure is a write-path outage rather than a
+>   degraded report. Non-negotiable.
+> - **`retention`, `rollup` and `freeze` may be scheduled** — monthly or quarterly, in a low-traffic
+>   window — provided the scheduler *surfaces failures*. Lock contention raises
+>   (`with_maintenance_lock`) and a lock-timeout raises, so a bad moment produces a non-zero exit
+>   and a retry next cycle, not a silent no-op. A cron that discards output turns that design into
+>   the silent skip it exists to prevent. Note also that `retire!` and `rollup!` commit **per
+>   partition** and yield as they go, so a mid-run failure leaves earlier partitions already done;
+>   the schedule has to keep the output, not just the exit status.
+> - **`drain_default` should NOT be scheduled**, and this is the one real prohibition. Needing it
+>   means a row landed in the default partition, which means the rotation task was not running.
+>   Scheduling the repair hides the fault that made it necessary.
+> - **`retention_action = :drop` is automating destruction.** The `:detach` default is reversible
+>   with one `ATTACH`; scheduling a `:drop` deserves to be a decision somebody made on purpose,
+>   ideally behind `audit_log:export` and `drop_exported`, which verifies before it deletes.
 
 Because `audit_changes` will be the largest table in the database, keep an eye on:
 - Autovacuum settings — the table is insert-only, so freezing behaviour matters far more than

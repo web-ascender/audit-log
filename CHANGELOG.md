@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### "Only partitions belongs in a cron" was too strong  **[2026-08-29]**
+
+DESIGN §8, CLAUDE.md and the new task reference all said only
+`audit_log:partitions` belonged in a cron. The reason behind it is real — three
+maintenance tasks take `ACCESS EXCLUSIVE` and block every audited write while
+they run — but the conclusion overshot, and contradicted DESIGN §16's own
+principle that **a forcing function which runs when somebody remembers is not
+one**. An app with a seven-year horizon whose retention waits on a human
+remembering, monthly, for seven years, does not have retention.
+
+The rule is cadence and conditions, not prohibition:
+
+- **`partitions`** — daily, mandatory. Failure is a write-path outage.
+- **`retention`, `rollup`, `freeze`** — schedule them, monthly or quarterly, in a
+  low-traffic window. Lock contention and lock timeouts **raise**, so a bad
+  moment is a non-zero exit and a retry next cycle rather than a silent skip —
+  which is only true if the scheduler surfaces failures. Both `retire!` and
+  `rollup!` commit *per partition*, so a mid-run failure leaves earlier ones done
+  and the output matters more than the exit status.
+- **`drain_default`** — the one real prohibition. Needing it means a row reached
+  the default partition, which means rotation was not running. Scheduling the
+  repair hides the fault that caused it.
+- **`retention_action = :drop`** — automating destruction. The `:detach` default
+  is reversible with one `ATTACH`; a scheduled `:drop` should be a decision
+  somebody made deliberately, ideally behind `export` and `drop_exported`, which
+  verifies before deleting.
+
+DESIGN §8 carries a dated amendment rather than a silent edit, since the original
+claim is cited from CLAUDE.md and the README.
+
+
 ### PostgreSQL 16 is the floor, and CI now proves it  **[2026-08-29]**
 
 The README called PostgreSQL 18 a hard requirement. DESIGN §20 has said the

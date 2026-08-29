@@ -43,9 +43,9 @@ the authority on *why* any of this is shaped the way it is.
   - [Configuration](#configuration)
   - [Two things to know before turning it on](#two-things-to-know-before-turning-it-on)
 - [Rake tasks](#rake-tasks)
-  - [Run on a schedule](#run-on-a-schedule)
+  - [Schedule this one](#schedule-this-one)
   - [Run when something needs it](#run-when-something-needs-it)
-  - [Retention, in the order you would run them](#retention-in-the-order-you-would-run-them)
+  - [Retention — schedulable, in this order](#retention-schedulable-in-this-order)
   - [Only on a scratch database](#only-on-a-scratch-database)
 - [Files](#files)
 - [Working on the library: what reloads and what does not](#working-on-the-library-what-reloads-and-what-does-not)
@@ -1223,38 +1223,49 @@ application that has opted nothing in pays nothing.
 
 Registered by the engine, so they appear in any host app's `bin/rails -T`.
 
-**Only one of these belongs in a cron.** `audit_log:partitions` is operationally
-required. The rest are maintenance you run deliberately, and three of them take
-`ACCESS EXCLUSIVE` on an audit table — which blocks *every audited write in your
-application* while it runs. They fail fast rather than queueing
-(`config.maintenance_lock_timeout`, 5s), because a pending `ACCESS EXCLUSIVE`
-blocks every lock behind it: an unbounded wait behind one long reader would stall
-the write path.
+**One is mandatory in cron; several others belong there too, with conditions.**
+`audit_log:partitions` is operationally required. `retention`, `rollup` and
+`freeze` are the ones an app with a compliance horizon will *want* scheduled —
+retention that depends on somebody remembering, monthly, for seven years, is not
+retention.
 
-### Run on a schedule
+The condition on all three is the same. They take `ACCESS EXCLUSIVE` on an audit
+table, which blocks **every audited write in your application** while it runs, so
+they belong in a low-traffic window. They fail fast rather than queueing
+(`config.maintenance_lock_timeout`, 5s) because a pending `ACCESS EXCLUSIVE`
+blocks every lock behind it — an unbounded wait behind one long reader would
+stall the write path.
+
+> **A scheduler that discards output turns that design into a silent skip.** Lock
+> contention and lock timeouts **raise**, so a bad moment gives you a non-zero
+> exit and a retry next cycle. That is only true if something is watching. And
+> `retention` and `rollup` commit **per partition**, so a mid-run failure leaves
+> the earlier ones already done — keep the output, not just the exit status.
+
+### Schedule this one
 
 | Task | What it does | Why, and when |
 |---|---|---|
-| `audit_log:partitions` | Creates missing monthly partitions; warns on default-partition overflow and on retired leftovers | **Daily, in cron.** The only task that belongs there. A missing future partition is a **write-path outage**, not a degraded report — every audited write fails once the calendar passes the last partition. Keeps `config.partition_months_ahead` (3) provisioned. |
+| `audit_log:partitions` | Creates missing monthly partitions; warns on default-partition overflow and on retired leftovers | **Daily, in cron. Non-negotiable.** A missing future partition is a **write-path outage**, not a degraded report — every audited write fails once the calendar passes the last partition. Keeps `config.partition_months_ahead` (3) provisioned. |
 
 ### Run when something needs it
 
 | Task | What it does | Why, and when |
 |---|---|---|
-| `audit_log:coverage` | Lists tables in the primary database with no audit trigger | The forcing function. Fails for any table that is neither audited nor in `config.unaudited_tables` **with a written reason**. Run it in CI — it is what stops a table added next month being quietly unaudited. |
+| `audit_log:coverage` | Lists tables in the primary database with no audit trigger | **In CI, not cron.** The forcing function. Fails for any table that is neither audited nor in `config.unaudited_tables` **with a written reason**. Run it in CI — it is what stops a table added next month being quietly unaudited. |
 | `audit_log:reconcile` | Reports correlated changes with no registered action | Tells you which narratives are still missing, so layer 2 fills in over time instead of being an up-front project. Run after adding controllers. |
-| `audit_log:drain_default` | Moves rows out of the default partition into the ones that should hold them | When `partitions` reports default-partition overflow — which means a write landed in a month that had no partition. Takes `ACCESS EXCLUSIVE`. Stages through a temp table in one transaction, so a failure leaves the rows where they started. |
+| `audit_log:drain_default` | Moves rows out of the default partition into the ones that should hold them | When `partitions` reports default-partition overflow. **Do not schedule this one.** Needing it means a row landed in the default partition, which means the rotation task was not running — scheduling the repair hides the fault that caused it. Takes `ACCESS EXCLUSIVE`. Stages through a temp table in one transaction, so a failure leaves the rows where they started. |
 | `audit_log:redact` | Removes a record's **values** from the log, keeping the structure | An erasure request. `RECORD=Customer:42 REASON=DSR-1182 [FIELDS=email,phone] [DRY_RUN=1]`. The only thing permitted to modify audit rows; it narrates itself in the same transaction. `changed_columns` survives, so *"the email changed at 14:02, by Jane"* stays provable. |
 
-### Retention, in the order you would run them
+### Retention — schedulable, in this order
 
 | Task | What it does | Why, and when |
 |---|---|---|
-| `audit_log:rollup` | Consolidates closed years of monthly partitions into yearly ones | Fewer partitions to plan against once a year is cold. `DRY_RUN=1` to preview. Only rolls up years past `config.rollup_after` (2y) — **it coarsens retention**, since a yearly partition can only be retired whole. Takes `ACCESS EXCLUSIVE`. |
-| `audit_log:retention` | Detaches (or drops) partitions past the horizon | `config.retention` (7y). Defaults to **detach**, not drop: detaching is reversible with one `ATTACH`, and dropping seven-year-old audit data is not. `DRY_RUN=1` to preview. Takes `ACCESS EXCLUSIVE`. |
+| `audit_log:rollup` | Consolidates closed years of monthly partitions into yearly ones | **Monthly or quarterly** is reasonable. Fewer partitions to plan against once a year is cold. `DRY_RUN=1` to preview. Only rolls up years past `config.rollup_after` (2y) — **it coarsens retention**, since a yearly partition can only be retired whole. Takes `ACCESS EXCLUSIVE`. |
+| `audit_log:retention` | Detaches (or drops) partitions past the horizon | **Monthly** is the obvious cadence, and scheduling it is the point of having a horizon. `config.retention` (7y). Defaults to **detach**, not drop: detaching is reversible with one `ATTACH`, and dropping seven-year-old audit data is not. `DRY_RUN=1` to preview. Takes `ACCESS EXCLUSIVE`. |
 | `audit_log:export` | Streams retired partitions to gzipped CSV plus a manifest | `DIR=/backups/audit`. Run **after** `retention` and **before** `drop_exported`. Needs no server filesystem, no superuser and no extension, so it works on managed Postgres. Moving the files somewhere durable is yours. |
-| `audit_log:drop_exported` | Drops only the retired partitions whose export in `DIR` verifies | `DIR=/backups/audit`. Verifies by checksum **and** row count first, and refuses anything that does not. This is the one that actually deletes data. |
-| `audit_log:freeze` | `VACUUM FREEZE` on every closed partition | Optional. A closed partition never changes again, so freezing it deliberately beats waiting for an anti-wraparound vacuum to do it later on your largest table. |
+| `audit_log:drop_exported` | Drops only the retired partitions whose export in `DIR` verifies | `DIR=/backups/audit`. Verifies by checksum **and** row count first, and refuses anything that does not. **This is the one that actually deletes data** — schedule it only once you trust the export destination, and note that `config.retention_action = :drop` skips this path entirely by dropping at retention time. |
+| `audit_log:freeze` | `VACUUM FREEZE` on every closed partition | Safe to schedule monthly. A closed partition never changes again, so freezing it deliberately beats waiting for an anti-wraparound vacuum to storm the largest table in your database months later. |
 
 ### Only on a scratch database
 
