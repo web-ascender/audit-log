@@ -2253,8 +2253,9 @@ The failure mode to design against is **silent under-auditing**, so tests assert
 behavior.
 
 > **They run on every push.**  **[added 2026-08-28]** A forcing function that runs when someone
-> remembers is not one. CI executes the suite against `spec/dummy` on PostgreSQL 18, on two Ruby
-> legs: the floor `required_ruby_version` claims, and the version the library is developed on. The
+> remembers is not one. CI executes the suite against `spec/dummy` across four legs — two Ruby, two
+> PostgreSQL — each dimension being the floor the project claims and the version it is developed on.
+> The
 > floor leg is not ceremony — it was added claiming 3.2, failed on `SecureRandom.uuid_v7` being
 > 3.3+, and so caught a gemspec that would have broken every correlated write in an adopting app.
 >
@@ -2459,7 +2460,16 @@ where it is one line and already correct.
 
 ### 20.4 Recommendation
 
-Build against PG 16 as specified. Adopt `SecureRandom.uuid_v7` and the server-side correlation id
+Build against PG 16 as specified.
+
+> **Verified 2026-08-29.** The whole suite (332 examples), the schema install and the
+> `coverage` / `partitions` / `reconcile` tasks all pass against PostgreSQL **16.13**, and CI now
+> runs a 16 leg alongside the 18 one for the same reason the Ruby 3.3 leg exists: §2.1 claimed a
+> floor of 3.2 for months and was wrong, and nothing caught it until a leg ran there. The README
+> had drifted to calling PG 18 a hard requirement, which this section never said. The newest thing
+> the library uses anywhere is `gen_random_uuid()` (PG 13) in the benchmark task; the partitioning
+> is all PG 11-era. `uuidv7()` is PG 18 and belongs to the *reference app's seeds* — `spec/dummy`
+> has no seeds at all. Adopt `SecureRandom.uuid_v7` and the server-side correlation id
 immediately — that is a correctness fix and a performance win at once. Treat PG 18 as a worthwhile
 but non-blocking upgrade whose main payoff here is eager freezing, which becomes more valuable the
 longer the retention window in Q2 turns out to be.

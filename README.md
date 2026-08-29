@@ -1,3 +1,9 @@
+> **Copyright (c) 2026 Web Ascender. All rights reserved.**
+> **CONFIDENTIAL AND PROPRIETARY PROPERTY.** This software is for internal
+> company use on company projects only. Unauthorized copying, modification, or
+> distribution via the public internet or any cloud environment is strictly
+> prohibited. See [`LICENSE.txt`](LICENSE.txt).
+
 # AuditLog
 
 [![CI](https://github.com/web-ascender/audit-log/actions/workflows/ci.yml/badge.svg)](https://github.com/web-ascender/audit-log/actions/workflows/ci.yml)
@@ -5,21 +11,6 @@
 A two-layer, compliance-grade audit log for Rails 8 + PostgreSQL. Implements
 [`DESIGN.md`](DESIGN.md) — the design record, which sits next to this file and is
 the authority on *why* any of this is shaped the way it is.
-
-> **Copyright (c) 2026 Web Ascender. All rights reserved.**
-> **CONFIDENTIAL AND PROPRIETARY PROPERTY.** This software is for internal
-> company use on company projects only. Unauthorized copying, modification, or
-> distribution via the public internet or any cloud environment is strictly
-> prohibited. See [`LICENSE.txt`](LICENSE.txt).
->
-> The gemspec sets `allowed_push_host` to a non-host on purpose, so `gem push`
-> fails instead of publishing to rubygems.org. Install from the private repo or a
-> path, never from a public source.
-
-Nothing in this gem references an application constant, an authentication gem, or
-a model name — every coupling point is a lambda on `AuditLog.config`. That is
-what lets one library serve every internal app without knowing anything about any
-of them.
 
 ## Summary
 
@@ -93,8 +84,9 @@ consequences of it.
 
 **Where this gem is the wrong choice**, stated plainly:
 
-- **PostgreSQL only**, and PG 18. Layer 1 *is* a plpgsql trigger writing jsonb
-  into range-partitioned tables. There is no MySQL path.
+- **PostgreSQL only.** Layer 1 *is* a plpgsql trigger writing jsonb into
+  range-partitioned tables. Any Postgres from 16 up, but there is no MySQL path
+  and there will not be one.
 - **It requires `schema_format = :sql`**, which must be set before your first
   migration. An established app switching to it re-dumps its whole schema.
 - **No object restoration.** No `reify`, no "roll this record back". It answers
@@ -315,7 +307,7 @@ duplicates rows across a page boundary after a single concurrent write. See
 |---|---|---|
 | Ruby | **>= 3.3** | `SecureRandom.uuid_v7`, which is `Context.new_request_id`. On 3.2 every correlated write raises. UUIDv7 gives the `audit_changes(request_id)` index insert locality, and its embedded timestamp is what bounds the drill-down. DESIGN §2.1. |
 | Rails | **`~> 8.0`** | 8.0 floor for `Rails.event` (with a fallback); ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. DESIGN §2.2. |
-| PostgreSQL | **18** | Layer 1 *is* a plpgsql trigger writing jsonb into range-partitioned tables. Not swappable for another database. DESIGN §20. |
+| PostgreSQL | **>= 16** | Layer 1 *is* a plpgsql trigger writing jsonb into range-partitioned tables, so this is not swappable for another database — but nothing here needs a recent Postgres. 16, 17 and 18 are all supported; CI runs the suite on 16 and 18. DESIGN §20. |
 
 `pg` is deliberately *not* a dependency, so your app picks its own build.
 

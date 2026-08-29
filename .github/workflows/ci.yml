@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   spec:
-    name: rspec (Ruby ${{ matrix.ruby }}, PostgreSQL 18)
+    name: rspec (Ruby ${{ matrix.ruby }}, PostgreSQL ${{ matrix.postgres }})
     runs-on: ubuntu-latest
 
     strategy:
@@ -45,15 +45,32 @@ jobs:
         # reference application pin.
         ruby: ["3.3", "4.0.6"]
 
+        # 16 is the FLOOR DESIGN §20 claims, and it is here for the same reason
+        # the 3.3 Ruby leg is: a floor nothing runs against is a guess. §20 says
+        # the design "targets PG 16 and requires nothing newer", and a code audit
+        # agrees -- the newest thing used anywhere is gen_random_uuid() (PG 13) in
+        # the benchmark task, and the partitioning is all PG 11-era. But agreeing
+        # with a grep is not the same as passing, which is the whole argument for
+        # the Ruby floor leg.
+        #
+        # If this leg fails, fix the code or raise the floor in DESIGN §20, the
+        # README and CLAUDE.md together. Dropping it is not one of the options.
+        #
+        # 18 is what the library is developed on, and what §20.2 records real wins
+        # from -- eager page freezing on insert-only partitions above all.
+        postgres: ["16", "18"]
+
     services:
-      # PostgreSQL 18 specifically. This is not a "latest is fine" dependency:
-      # DESIGN §20 records what the design takes from PG 18 (uuidv7() in seeds,
-      # the partition/planner behaviour the query plans assume), and §20.3 records
-      # that ALTER TABLE ... MERGE PARTITIONS does NOT exist in 18 -- which is why
-      # rollup_year! is a hand-rolled copy-and-swap. A different major version
-      # would silently change what these specs prove.
+      # Both ends of the supported range, per DESIGN §20: 16 because that is the
+      # floor the design claims, 18 because that is what it is developed on.
+      #
+      # The gem itself uses nothing newer than PG 13. uuidv7() is PG 18 and is
+      # used by the REFERENCE APP's seeds, not by this library -- spec/dummy has
+      # no seeds at all. §20.3 records that ALTER TABLE ... MERGE PARTITIONS does
+      # not exist in any version, which is why rollup_year! is a hand-rolled
+      # copy-and-swap; that is a constraint, not a dependency.
       postgres:
-        image: postgres:18
+        image: postgres:${{ matrix.postgres }}
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -78,7 +95,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # A PostgreSQL 18 CLIENT, not just an 18 server. The runner image ships
+      # A PostgreSQL 18 CLIENT on every leg, including the 16 one. pg_dump refuses
+      # to dump a server NEWER than itself but is happy with an older one, so the
+      # 18 client covers both matrix legs while the runner's stock client-16 would
+      # fail the 18 leg. The runner image ships
       # postgresql-client-16, and pg_dump refuses to dump a server newer than
       # itself -- "aborting because of server version mismatch". That is a real
       # hazard for this library rather than a CI detail: schema_format = :sql is
@@ -116,13 +136,13 @@ jobs:
           pg_dump --version | grep -qE " 18\." \
             || { echo "::error::pg_dump is not 18; schema dumps will refuse to run."; exit 1; }
 
-      - name: Assert PostgreSQL 18
+      - name: Assert the PostgreSQL version under test
         run: |
           version=$(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d postgres -tAc "SHOW server_version")
           echo "server_version = $version"
           case "$version" in
-            18*) ;;
-            *) echo "::error::Expected PostgreSQL 18, got $version. See DESIGN.md §20."; exit 1 ;;
+            ${{ matrix.postgres }}*) ;;
+            *) echo "::error::Expected PostgreSQL ${{ matrix.postgres }}, got $version. See DESIGN.md §20."; exit 1 ;;
           esac
 
       - name: Prepare the dummy app's database

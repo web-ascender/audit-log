@@ -61,7 +61,7 @@ Update it when you change behaviour.
 |---|---|
 | Ruby | **>= 3.3** — the floor is `SecureRandom.uuid_v7` (DESIGN §2.1), not a preference. 3.3.0 exactly also cannot run Rails 8.1, for a reason of Rails' own. Developed on 4.0.6. |
 | Rails | **`~> 8.0`** — floor 8.0 (DESIGN §2.2), and a real ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. Developed on 8.1.3.1. |
-| PostgreSQL | **18.6 on port 5438** — not the workspace default 5437 |
+| PostgreSQL | **>= 16.** Developed on 18.6, port 5438 — not the workspace default 5437. CI runs 16 and 18; DESIGN §20 is the authority and says the design "targets PG 16 and requires nothing newer". Verified: the whole suite passes on 16.13. |
 | Tests | RSpec against `spec/dummy` (308 examples), on every push via GitHub Actions |
 | Runtime deps | `rails`, `pagy` (keyset paging), `csv` (export). **`pg` deliberately is not one** — the host app picks its build. |
 
@@ -713,6 +713,8 @@ Two parallel legs, and the pairing is deliberate:
 |---|---|
 | Ruby **3.3** | the floor `required_ruby_version` claims. Testing only the development Ruby leaves that claim unverified — and it *was* wrong: the gemspec said 3.2 until this leg failed on `SecureRandom.uuid_v7` being 3.3+. |
 | Ruby **4.0.6** | what the library is developed on |
+| PostgreSQL **16** | the floor DESIGN §20 claims, for the same reason the 3.3 leg exists: a floor nothing runs against is a guess |
+| PostgreSQL **18** | what the library is developed on, and what §20.2 records real wins from |
 
 If the floor leg fails, the honest responses are to fix the code or **raise the
 floor**. Dropping the leg is not one of them.

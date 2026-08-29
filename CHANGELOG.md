@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### PostgreSQL 16 is the floor, and CI now proves it  **[2026-08-29]**
+
+The README called PostgreSQL 18 a hard requirement. DESIGN §20 has said the
+opposite since it was written — *"targets PG 16 and requires nothing newer"* —
+and a code audit agrees: the newest thing the library uses anywhere is
+`gen_random_uuid()` (PG 13) in the benchmark task, and the partitioning is all
+PG 11-era. `uuidv7()` is PG 18 and belongs to the reference app's **seeds**;
+`spec/dummy` has none.
+
+Verified rather than reasoned about: the full suite (332 examples), the schema
+install, and `audit_log:coverage` / `partitions` / `reconcile` all pass against
+**PostgreSQL 16.13**.
+
+CI gains a Postgres dimension — 16 and 18 — for the same reason the Ruby 3.3 leg
+exists. That leg was added claiming 3.2, matching the gemspec, and failed
+immediately on `SecureRandom.uuid_v7`: a floor nothing runs against is a guess,
+and this one had been wrong in the docs for a while without anybody noticing. If
+the 16 leg ever fails, fix the code or raise the floor in DESIGN §20, the README
+and CLAUDE.md together.
+
+The CI comment justifying `postgres:18` was wrong too — it cited "uuidv7() in
+seeds", which is not this repo's code.
+
+
 ### `rails generate audit_log:views:activity`  **[2026-08-29]**
 
 The auditor UI at `/audit` is for auditors. This generates the *other* screen —
@@ -371,7 +395,7 @@ a host app's Gemfile order, which happened to be right inside the demo:
 - `AuditLog::RecordLabel` and display-time association labels — a diff renders
   `product_id (not set) → Grommet 10mm (id: 51)`. Opt-in per model via
   `to_audit_label`; the id is never replaced. See DESIGN §11.8.
-- GitHub Actions CI: the suite against `spec/dummy` on PostgreSQL 18, across Ruby
+- GitHub Actions CI: the suite against `spec/dummy` on PostgreSQL 16 and 18, across Ruby
   3.3 (the gemspec floor) and 4.0.6, plus packaging gates asserting `gem build` is
   warning-free and `LICENSE.txt` travels inside the built gem.
 
