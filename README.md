@@ -21,6 +21,88 @@ a model name — every coupling point is a lambda on `AuditLog.config`. That is
 what lets one library serve every internal app without knowing anything about any
 of them.
 
+## Summary
+
+An audit log that **cannot be bypassed**, because it does not run in Ruby.
+PostgreSQL triggers write a field-level diff of every INSERT, UPDATE and DELETE,
+so `update_all`, `delete_all`, `insert_all`, `upsert_all`, raw SQL, a database
+cascade, a rake task and a console session are all captured — with the actor
+attached — and no model has to opt in or even know.
+
+- **Nothing in a model class.** No concern, no callback, no base class. The
+  entire per-model cost is one line in a migration.
+- **A callback-based gem cannot see `update_all`.** This one has no callbacks to
+  bypass.
+- **One `request_id` per unit of work.** A form submit that writes a parent and
+  forty children reads as *one action with forty children*, not forty unrelated rows.
+- **The actor comes along for free** — including into background jobs, which also
+  record the request that enqueued them.
+- **Coverage is a forcing function.** The build fails for any table that is
+  neither audited nor exempted *with a written reason*. You cannot forget a table.
+- **Two layers.** Field-level diffs (complete by construction) *plus* named
+  business events with human sentences, joined by the same correlation id.
+- **A finished auditor UI at `/audit`**, served by the gem — actor activity,
+  record history, action reports, out-of-band review, drill-down, CSV export.
+- **Optional starter views** for your own pages, generated into your app and
+  yours to rewrite. Plain CSS, Tailwind or Bootstrap.
+- **Built for volume from day one.** Monthly range partitions, automatic
+  rotation, retention, yearly rollup, verified export, `VACUUM FREEZE`.
+- **GDPR erasure that keeps the evidence.** Redaction removes *values* and keeps
+  the structure — "the email changed at 14:02, by Jane" stays provable after the
+  address is gone.
+- **Uncorrelated writes are surfaced, not hidden.** A console edit gets its own
+  screen rather than blending in.
+- **No silent truncation, anywhere.** Keyset paging, disclosed date bounds,
+  uncapped exports. Every screen says what it searched.
+- **Timestamps are UTC by construction**, not by convention — the app's
+  `time_zone` cannot reach them.
+- **A reconciler tells you what you have not named yet**, so the readable layer
+  fills in over time instead of being an up-front project.
+- **Ids in a diff read as records.** `product_id → Grommet 10mm (id: 51)`, with
+  the recorded id never dropped.
+- **Zero application constants.** Every coupling point is a lambda on
+  `AuditLog.config`, so one library serves every app.
+
+### Why this one
+
+Most audit gems hook Active Record callbacks, which works until the first
+`update_all`, the first `dependent: :delete_all`, the first data-fix script — and
+then the log is missing exactly the writes somebody will later ask about, with
+nothing anywhere reporting the gap. Being *mostly* complete is the one property
+an audit log cannot trade away, and you discover you traded it at the worst
+possible moment.
+
+Integration is genuinely small: a generator, one migration line per table, and
+two `include`s the generator writes for you. Nothing about your models changes.
+Bending it is small too — every hook into your app is a lambda you own, the
+auditor UI needs nothing from you, and the optional activity views are generated
+*into* your app rather than served from the gem, so you can rewrite them
+completely and nothing here will notice.
+
+### Why not one of the popular gems?
+
+They are good gems. This exists because of one architectural difference and a few
+consequences of it.
+
+| | Why not |
+|---|---|
+| **paper_trail** | Model callbacks, so bulk writes and raw SQL never reach it, and every model must opt in — nothing tells you which one you forgot. Excellent at *versioning*: if you want `reify` to restore a record to a previous state, use it. This gem records what changed, and does not rebuild past objects. |
+| **audited** | Same callback architecture, same blind spots, same per-model opt-in. Simpler to adopt than this if your writes all go through Active Record and you do not need partitioning, retention or an auditor UI. |
+| **logidze** | Also trigger-based, and the closest relative here. It stores history **in the audited row itself** (a `log_data` column), which is elegant and fast — but it means deleting the record deletes its history, the row carries its own past forever, and there is no separate table to partition, retire or export. If what you need is "what did this row look like last Tuesday", it is a very good answer. If you need the record of a deletion to outlive the record, it structurally cannot be. |
+| **Rolling your own triggers** | Entirely reasonable, and roughly the first two days of this. The rest is what took the time: correlation through jobs, partition lifecycle, retention, redaction that survives an audit, and the forcing function that stops a new table being quietly unaudited. |
+
+**Where this gem is the wrong choice**, stated plainly:
+
+- **PostgreSQL only**, and PG 18. Layer 1 *is* a plpgsql trigger writing jsonb
+  into range-partitioned tables. There is no MySQL path.
+- **It requires `schema_format = :sql`**, which must be set before your first
+  migration. An established app switching to it re-dumps its whole schema.
+- **No object restoration.** No `reify`, no "roll this record back". It answers
+  what changed and who did it, not "give me the January version of this order".
+- **Read-access logging is out of scope.** This records changes, not views.
+
+---
+
 ## What you get, and what is optional
 
 Two different things ship here, and the difference matters when you are deciding
