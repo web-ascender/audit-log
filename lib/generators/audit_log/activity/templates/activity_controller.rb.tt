@@ -30,12 +30,18 @@ class ActivityController < ApplicationController
   # show-page widget, so there is a single place to edit.
   include RecordActivity
 
-  # NEVER constantize a URL parameter. This is an allowlist first and a lookup
-  # second: without it, `/activity/User/1` is a URL anyone can type, and audit
-  # diffs are exactly the place where that matters.
+  # A safe default, not an opinion about how you do authorization.
   #
-  # It is also the app's answer to "which histories may a manager read at all" —
-  # a question the gem deliberately leaves here.
+  # It is doing TWO jobs, and they come apart:
+  #
+  #   1. Which record types have a readable history at all. If you already have
+  #      Pundit, Action Policy, CanCanCan or your own policy layer, that decision
+  #      probably belongs there instead — see #set_record below.
+  #   2. Keeping `constantize` off a URL parameter. This one is not an
+  #      authorization question and does not go away when you adopt a policy
+  #      layer.
+  #
+  # Replace job 1 freely. Keep job 2 however you rewrite this.
   VIEWABLE = %w[<%= viewable.join(" ") %>].freeze
 
   PER_PAGE = 20
@@ -68,6 +74,29 @@ class ActivityController < ApplicationController
 
   def set_record
     @record_type = params[:record_type]
+
+    # SWAP THIS FOR YOUR OWN AUTHORIZATION if you have one. It is a placeholder
+    # that fails closed, not a recommendation — this gem has no idea what you
+    # use.
+    #
+    # What must survive the swap is the ORDER: something has to constrain
+    # @record_type to a known set BEFORE the constantize below, because
+    # `/<%= options[:path] %>/User/1` is a URL anyone can type and this page renders previous
+    # values of audited columns. An allowlist is simply the smallest thing that
+    # does it with no dependencies.
+    #
+    # A policy layer replaces the first half and not the second:
+    #
+    #   raise ActionController::RoutingError, "Not viewable" unless VIEWABLE.include?(@record_type)
+    #   @record = @record_type.constantize.find_by(id: @record_id)
+    #   authorize @record, :history?          # Pundit
+    #   authorize! :history, @record          # CanCanCan
+    #   authorize @record, to: :history?      # Action Policy
+    #
+    # Per-record rules ("this manager may read THIS order") only work once the
+    # record is loaded, so they go after the find and not instead of the check.
+    # A deleted record has no object to authorize — decide deliberately whether
+    # its history stays readable.
     raise ActionController::RoutingError, "Not viewable" unless VIEWABLE.include?(@record_type)
 
     @record_id = params[:record_id]
