@@ -21,6 +21,40 @@ a model name — every coupling point is a lambda on `AuditLog.config`. That is
 what lets one library serve every internal app without knowing anything about any
 of them.
 
+## What you get, and what is optional
+
+Two different things ship here, and the difference matters when you are deciding
+how much of your app this touches.
+
+**The library, and a finished auditor UI.** The audit tables, the PostgreSQL
+triggers that fill them, the correlation between a request and everything it
+wrote, the partition lifecycle, retention, export, redaction — and a complete
+auditor interface mounted at `/audit`. That UI is **served by the gem**: it is
+not copied into your app, you do not maintain it, and it upgrades with the gem.
+Install the gem and it is there.
+
+**Optional starter views for your own pages.** Separately, a generator
+(`audit_log:activity`) writes an activity history *into your app* — a controller,
+a concern, a helper and three views — so a record's history can appear on your
+own `orders/show` for people who should not hold the auditor role.
+
+Those views are **yours the moment they land**:
+
+- **Nothing depends on them.** Skip the generator entirely and the gem is
+  complete. `/audit` does not need them and neither does anything else.
+- **No markup lock-in.** They are plain ERB with semantic class names.
+  `--css=plain|tailwind|bootstrap` changes the class attributes and nothing else;
+  after that, rewrite the markup however you like.
+- **They are not managed.** The gem never re-generates or upgrades them, and a
+  second run leaves them alone. Restyle them, rename them, replace them with your
+  own — nothing here will argue.
+- **Or use neither.** If you would rather write your own view from scratch,
+  `AuditLog::Timeline`'s value objects are the actual contract; the generated
+  files are one worked answer, not the interface.
+
+The one thing worth keeping whatever you do to them is called out in comments in
+the files themselves.
+
 ---
 
 ## The two layers
@@ -642,6 +676,13 @@ a "recent activity" list that quietly stops short is worse than no list.
 ---
 
 ## Building an activity history in your own app
+
+**Optional, and starter code.** The gem is complete without any of this —
+`/audit` is a finished auditor UI served by the engine, and nothing depends on
+what the generator writes. What it produces lands in your app and belongs to you:
+plain ERB, no markup lock-in, never re-generated, never upgraded. If you would
+rather write the view yourself, `AuditLog::Timeline`'s value objects below are
+the real contract, and the generated files are one worked answer to it.
 
 The auditor UI is for auditors. For an *"activity history"* on your own
 `orders/show`, in your own markup, use `AuditLog::Timeline` — a paginated list of

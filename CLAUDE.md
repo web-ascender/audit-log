@@ -15,7 +15,7 @@ it is, and the section numbers cited from source comments (`plan §6.1`,
 
 | | For | Contains |
 |---|---|---|
-| `README.md` | someone installing the gem | install, use, the auditor UI |
+| `README.md` | someone installing the gem | install, use, the auditor UI, and the optional generated views |
 | **`CLAUDE.md`** (this file) | you | terse rules, and what not to "fix" |
 | `DESIGN.md` | someone changing the library | the reasoning, in full |
 | `CHANGELOG.md` | everyone | what changed and why |
@@ -466,6 +466,16 @@ browsable results. `config.page_size` is the only knob.
   millisecond; that example returns 2 of 6 rows if the lambda is removed.
 
 ## The activity generator
+
+**What this generates is OPTIONAL and the host owns it.** Two different things
+ship from this repo and the boundary matters: the library and the auditor UI at
+`/audit` are *served by the engine* — not copied, not the host's to maintain, and
+they upgrade with the gem. What `audit_log:activity` writes goes *into the host
+app* and is theirs outright: never re-generated, never upgraded, no markup
+lock-in, and nothing in the gem depends on it existing. Do not add a gem-side
+dependency on a generated file, and do not add a "check your generated views are
+current" mechanism — that would turn owned code back into managed code.
+
 
 `rails generate audit_log:activity Order Product Customer` emits the reference
 app's timeline UI into a host app. It takes any number of models, and running it
