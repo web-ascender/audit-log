@@ -34,7 +34,7 @@ not copied into your app, you do not maintain it, and it upgrades with the gem.
 Install the gem and it is there.
 
 **Optional starter views for your own pages.** Separately, a generator
-(`audit_log:activity`) writes an activity history *into your app* — a controller,
+(`audit_log:views:activity`) writes an activity history *into your app* — a controller,
 a concern, a helper and three views — so a record's history can appear on your
 own `orders/show` for people who should not hold the auditor role.
 
@@ -114,7 +114,7 @@ bin/rails audit_log:coverage
 #    the log readable rather than merely complete.
 
 # 5. Give your own pages an activity history. Takes any number of models.
-bin/rails generate audit_log:activity Order Product LineItem
+bin/rails generate audit_log:views:activity Order Product LineItem
 ```
 
 Then edit `RecordActivity#audit_activity_visible?` — the generator prints this in
@@ -123,7 +123,7 @@ red, because it denies everyone until you do.
 **Later, when a new model needs one:**
 
 ```bash
-bin/rails generate audit_log:activity Invoice
+bin/rails generate audit_log:views:activity Invoice
 ```
 
 The second run adds `Invoice` to the allowlist and wires up its show page. Every
@@ -135,16 +135,16 @@ file already generated is left alone.
 |---|---|---|
 | `audit_log:install` | initializer, schema migration, `ControllerContext` and `JobContext` includes, mounts the engine, coverage spec | once |
 | `audit_log:trigger TABLE --model=Model` | a migration with one `attach_audit_trigger` line | once per audited table |
-| `audit_log:activity Model [Model...]` | controller, concern, helper, views, route, locale, stylesheet — and wires each model's show page | once, then again per new model |
+| `audit_log:views:activity Model [Model...]` | controller, concern, helper, views, route, locale, stylesheet — and wires each model's show page | once, then again per new model |
 
-`audit_log:activity` takes **any number of models in one call**, and calling it
+`audit_log:views:activity` takes **any number of models in one call**, and calling it
 again later is how you add more. Both reach the same place:
 
 ```bash
-bin/rails generate audit_log:activity Order Product LineItem
+bin/rails generate audit_log:views:activity Order Product LineItem
 # ...is equivalent to:
-bin/rails generate audit_log:activity Order
-bin/rails generate audit_log:activity Product LineItem
+bin/rails generate audit_log:views:activity Order
+bin/rails generate audit_log:views:activity Product LineItem
 ```
 
 A model with no show page — `LineItem` usually — is still added to the allowlist
@@ -884,7 +884,7 @@ contract cannot drift from what the auditor UI does.
 You do not have to write any of the above by hand:
 
 ```bash
-rails generate audit_log:activity Order Product Customer
+rails generate audit_log:views:activity Order Product Customer
 ```
 
 **Any number of models, in one call or several.** That produces a controller, a
@@ -925,7 +925,7 @@ an *empty feed* and reports nothing, which reads as the audit log having no data
 **Adding a model later is the same command again:**
 
 ```bash
-rails generate audit_log:activity Invoice Shipment
+rails generate audit_log:views:activity Invoice Shipment
 ```
 
 That second run adds both to the allowlist, wires up their show pages, and

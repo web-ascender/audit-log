@@ -42,7 +42,7 @@ AuditLog.configure do |config|
   # ->(type, id) { } -> a path/URL string, or nil.
   #
   # Where THIS app shows the record a (type, id) names. Used by an activity
-  # history you render on your own pages (`rails generate audit_log:activity`) --
+  # history you render on your own pages (`rails generate audit_log:views:activity`) --
   # the "also touched" list and the actor byline. Nothing in the gem's own
   # screens calls it; the auditor UI links into the auditor UI.
   #

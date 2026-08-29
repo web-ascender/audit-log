@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-### `rails generate audit_log:activity`  **[2026-08-29]**
+### `rails generate audit_log:views:activity`  **[2026-08-29]**
 
 The auditor UI at `/audit` is for auditors. This generates the *other* screen —
 an activity history a host app renders on its own pages, for people who should
@@ -10,7 +10,7 @@ not hold the auditor role — as the reference app's implementation extracted in
 templates.
 
 ```bash
-rails generate audit_log:activity Order Product Customer --css=tailwind
+rails generate audit_log:views:activity Order Product Customer --css=tailwind
 ```
 
 Produces a controller, a concern, a helper, three views, a route, a locale file

@@ -3,7 +3,7 @@
 require "rails_helper"
 require "tmpdir"
 require "erb"
-require "generators/audit_log/activity/activity_generator"
+require "generators/audit_log/views/activity/activity_generator"
 
 # The activity generator hands a host application a working audit UI it then
 # owns. Two things make it worth specs rather than a smoke test:
@@ -13,7 +13,7 @@ require "generators/audit_log/activity/activity_generator"
 #     blows up at generate time or renders its own source.
 #   * it decides who may read an audit history, and the safe default is the one
 #     nobody notices is missing.
-RSpec.describe AuditLog::Generators::ActivityGenerator do
+RSpec.describe AuditLog::Generators::Views::ActivityGenerator do
   def generate(args, host: {})
     dir = Dir.mktmpdir("audit_log_activity")
     %w[config config/locales app/controllers app/helpers app/assets/stylesheets].each do |d|

@@ -467,17 +467,26 @@ browsable results. `config.page_size` is the only knob.
 
 ## The activity generator
 
+**It is `audit_log:views:activity`, under a `views:` namespace, and the namespace
+is the point.** `audit_log:activity` reads like `rails g model Activity` — as
+though it created an Activity model — when what it does is copy starter views
+into a host app. Any generator added here that writes presentational code into a
+host app belongs under `views:` for the same reason. The class must live at
+`AuditLog::Generators::Views::ActivityGenerator` for Rails to derive that
+namespace; `activity_generator_spec` would fail on the require path if it moved.
+
+
 **What this generates is OPTIONAL and the host owns it.** Two different things
 ship from this repo and the boundary matters: the library and the auditor UI at
 `/audit` are *served by the engine* — not copied, not the host's to maintain, and
-they upgrade with the gem. What `audit_log:activity` writes goes *into the host
+they upgrade with the gem. What `audit_log:views:activity` writes goes *into the host
 app* and is theirs outright: never re-generated, never upgraded, no markup
 lock-in, and nothing in the gem depends on it existing. Do not add a gem-side
 dependency on a generated file, and do not add a "check your generated views are
 current" mechanism — that would turn owned code back into managed code.
 
 
-`rails generate audit_log:activity Order Product Customer` emits the reference
+`rails generate audit_log:views:activity Order Product Customer` emits the reference
 app's timeline UI into a host app. It takes any number of models, and running it
 again later adds more — that second run is the one to think about when changing
 anything here, because it meets files the host has since edited.
