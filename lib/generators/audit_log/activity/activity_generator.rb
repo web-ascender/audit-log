@@ -127,28 +127,46 @@ module AuditLog
 
       # ---------------------------------------------------------------- step 1
       def create_concern
-        template "record_activity.rb.tt", "app/controllers/concerns/record_activity.rb"
+        once "record_activity.rb.tt", "app/controllers/concerns/record_activity.rb"
       end
 
       # ---------------------------------------------------------------- step 2
+      # The ONE file a second run does change, and only one line of it: adding a
+      # model later is adding it to the allowlist.
       def create_controller
-        template "activity_controller.rb.tt", "app/controllers/activity_controller.rb"
+        path = "app/controllers/activity_controller.rb"
+        return once("activity_controller.rb.tt", path) unless regenerating?(path)
+
+        listed  = read(path)[/VIEWABLE\s*=\s*%w\[([^\]]*)\]/, 1].to_s.split
+        missing = viewable - listed
+
+        if listed.empty?
+          manual("could not read VIEWABLE in #{path}",
+                 %(VIEWABLE = %w[#{viewable.join(" ")}].freeze))
+        elsif missing.empty?
+          skip("#{path} already lists #{viewable.join(", ")}")
+        else
+          gsub_file path, /VIEWABLE\s*=\s*%w\[[^\]]*\]/,
+                    "VIEWABLE = %w[#{(listed + missing).join(" ")}]", verbose: false
+          @added = missing
+          say_status :update, "#{path} — added #{missing.join(", ")} to VIEWABLE", :green
+        end
       end
 
       # ---------------------------------------------------------------- step 3
       def create_helper
-        template "activity_helper.rb.tt", "app/helpers/activity_helper.rb"
+        once "activity_helper.rb.tt", "app/helpers/activity_helper.rb"
       end
 
       # ---------------------------------------------------------------- step 4
       def create_views
         return if options[:skip_views]
 
-        template "views/activity/show.html.erb.tt", "app/views/activity/show.html.erb"
-        template "views/shared/_activity_feed.html.erb.tt",
-                 "app/views/shared/_activity_feed.html.erb"
-        template "views/shared/_activity_section.html.erb.tt",
-                 "app/views/shared/_activity_section.html.erb"
+        once "views/activity/show.html.erb.tt", "app/views/activity/show.html.erb"
+        once "views/shared/_activity_feed.html.erb.tt",
+             "app/views/shared/_activity_feed.html.erb"
+        once "views/shared/_activity_section.html.erb.tt",
+             "app/views/shared/_activity_section.html.erb"
       end
 
       # ---------------------------------------------------------------- step 5
@@ -157,7 +175,7 @@ module AuditLog
       def create_locale
         return if options[:skip_locale]
 
-        template "activity.en.yml.tt", "config/locales/audit_log_activity.en.yml"
+        once "activity.en.yml.tt", "config/locales/audit_log_activity.en.yml"
       end
 
       # ---------------------------------------------------------------- step 6
@@ -176,7 +194,7 @@ module AuditLog
                         "The markup carries semantic class names; style it however you build CSS.")
         end
 
-        template "activity.css.tt", "#{dir}/audit_log_activity.css"
+        once "activity.css.tt", "#{dir}/audit_log_activity.css"
         verify("If you use Sprockets, require audit_log_activity.css from your manifest.",
                "Propshaft and cssbundling pick it up on their own; Sprockets does not.")
       end
@@ -217,6 +235,8 @@ module AuditLog
       # ---------------------------------------------------------------- report
       def report
         say ""
+        return report_added_model if @existing
+
         say "  Activity history generated.", :green
         say ""
         say "  IT DENIES EVERYONE UNTIL YOU EDIT ONE METHOD:", :red
@@ -261,9 +281,53 @@ module AuditLog
         say ""
       end
 
+      # A second run: the files are the host's now, so only the allowlist moved.
+      def report_added_model
+        if @added
+          say "  #{@added.join(", ")} added to ActivityController::VIEWABLE.", :green
+        else
+          say "  Nothing to do — everything you asked for is already there.", :green
+        end
+        say ""
+        say "  Your generated files were left alone. They are yours: an edited"
+        say "  authorization rule, a restyled view or a translated sentence is not"
+        say "  something a generator should quietly reverse."
+        say ""
+        say "  To render the new history on a show page:"
+        say ""
+        say "    @activities, @more_activity = recent_activity(@record)"
+        say ""
+        say "    <%= render \"shared/activity_section\", record: @record,"
+        say "          activities: @activities, more: @more_activity %>"
+        say ""
+        say "  To re-baseline every file against this version of the gem's templates,"
+        say "  re-run with --force. It overwrites your edits, so diff afterwards."
+        say ""
+      end
+
       private
 
       def viewable = models.map { |m| m.to_s.camelize }
+
+      def read(path) = File.read(File.join(destination_root, path))
+      def file_exists?(path) = File.exist?(File.join(destination_root, path))
+
+      # WHAT IS GENERATED BELONGS TO THE HOST THE MOMENT IT LANDS. A second run
+      # -- which is how you add a model six months later -- must not rewrite an
+      # edited authorization rule, a restyled view, or a translated sentence.
+      # Without this, the run either overwrites them (--force) or blocks on
+      # Thor's interactive overwrite prompt, and the first is the dangerous one.
+      #
+      # --force still overwrites, for deliberately re-baselining against a newer
+      # version of the gem's templates. That is a decision, not a default.
+      def regenerating?(path) = file_exists?(path) && !options[:force]
+
+      def once(source, path)
+        return template(source, path) unless regenerating?(path)
+
+        @existing = true
+        say_status :yours, "#{path} — left alone", :blue
+      end
 
       # Resolved at GENERATE time. The generated view holds plain strings, so
       # nothing at runtime depends on this generator or on the gem.

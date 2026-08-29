@@ -483,6 +483,13 @@ app's timeline UI into a host app. Four things about it are load-bearing:
 - **`audit_activity_visible?` is generated as `false`.** Never change that to
   `true` "for convenience". It is the difference between a host that has decided
   who may read audit diffs and one that has published them by default.
+- **A second run is create-once, not overwrite.** It updates
+  `ActivityController::VIEWABLE` and leaves every file alone, because adding a
+  model six months later runs against files the host has since edited. Before
+  this, `--force` silently reverted an edited `audit_activity_visible?` — which
+  reopens a history to everyone and reports nothing — and without `--force` Thor
+  blocked on an interactive overwrite prompt. `--force` still overwrites, for
+  deliberate re-baselining; that is how the reference app is regenerated.
 - **`--css` changes `class=` and NOTHING else.** The spec asserts the three
   frameworks produce byte-identical markup once class attributes are masked. If a
   framework needs different structure, the abstraction is wrong — fix the

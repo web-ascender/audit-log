@@ -802,6 +802,17 @@ The models you name become `ActivityController::VIEWABLE`, an allowlist checked
 **before** `constantize` — `/activity/User/1` is a URL anyone can type. The
 generator refuses to run without them rather than emitting an empty one.
 
+**Adding a model later is the same command again:**
+
+```bash
+rails generate audit_log:activity Product
+```
+
+It adds `Product` to the allowlist and **leaves every generated file alone** —
+they are yours the moment they land, and a generator that quietly reverses an
+edited authorization rule is worse than no generator. `--force` re-baselines
+everything against the current templates when you actually want that.
+
 ### A worked example
 
 The reference app renders this on its order, product and customer pages, and on

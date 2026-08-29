@@ -187,6 +187,66 @@ RSpec.describe AuditLog::Generators::ActivityGenerator do
     end
   end
 
+  # ADDING A SECOND MODEL LATER. This is the run that happens six months after
+  # the first one, against files the host has since edited, and it is the run
+  # most likely to do damage: overwriting an edited authorization rule reopens a
+  # history to everyone, and nothing reports it.
+  describe "running it again to add another model" do
+    def install_then_add(second_args)
+      dir, = generate(%w[Order])
+      concern = File.join(dir, "app/controllers/concerns/record_activity.rb")
+      # The host does the one thing the generator told it to.
+      File.write(concern, File.read(concern).sub("    false\n", "    current_user&.staff?\n"))
+      # ...and restyles a view, as hosts do.
+      view = File.join(dir, "app/views/shared/_activity_feed.html.erb")
+      File.write(view, File.read(view) + "\n<%# host tweak %>\n")
+
+      output = begin
+        out = StringIO.new
+        o, e = $stdout, $stderr
+        $stdout = $stderr = out
+        described_class.start(second_args, destination_root: dir)
+        out.string
+      ensure
+        $stdout, $stderr = o, e
+      end
+      [dir, output, concern, view]
+    end
+
+    it "adds the model to the allowlist and leaves every file alone" do
+      @dir, output, concern, view = install_then_add(%w[Order Product])
+
+      expect(read(@dir, "app/controllers/activity_controller.rb"))
+        .to include("VIEWABLE = %w[Order Product]")
+      expect(File.read(concern)).to include("current_user&.staff?")
+      expect(File.read(concern)).not_to match(/def audit_activity_visible\?\s*\n\s*false/)
+      expect(File.read(view)).to include("host tweak")
+      expect(output).to include("added to ActivityController::VIEWABLE")
+    end
+
+    # Naming only the new model is the natural thing to type, and must not drop
+    # the model already there.
+    it "keeps models already in the allowlist when only the new one is named" do
+      @dir, = install_then_add(%w[Product])
+      expect(read(@dir, "app/controllers/activity_controller.rb"))
+        .to include("VIEWABLE = %w[Order Product]")
+    end
+
+    it "does nothing, loudly, when the model is already listed" do
+      @dir, output = install_then_add(%w[Order])
+      expect(output).to include("Nothing to do")
+      expect(read(@dir, "app/controllers/activity_controller.rb"))
+        .to include("VIEWABLE = %w[Order]")
+    end
+
+    # The escape hatch stays available, because re-baselining against newer
+    # templates is a real thing to want -- it just has to be asked for.
+    it "still overwrites when --force is passed" do
+      @dir, _, concern = install_then_add(%w[Order Product --force])
+      expect(File.read(concern)).to match(/def audit_activity_visible\?\s*\n\s*false/)
+    end
+  end
+
   describe "when the host is not shaped as expected" do
     it "reports a missing ApplicationController instead of claiming success" do
       @dir, output = generate(%w[Order], host: { controller: false })
