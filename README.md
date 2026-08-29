@@ -101,7 +101,7 @@ bin/rails generate audit_log:install
 # 2. One line per audited table. Which tables deserve auditing is a judgement
 #    about your domain, so nothing can infer it.
 bin/rails generate audit_log:trigger orders   --model=Order
-bin/rails generate audit_log:trigger products --model=Product
+bin/rails generate audit_log:trigger products --model=Product --exclude=search_vector
 bin/rails db:migrate
 
 # 3. Prove nothing escaped the decision. Fails until every table is either
@@ -135,7 +135,56 @@ file already generated is left alone.
 |---|---|---|
 | `audit_log:install` | initializer, schema migration, `ControllerContext` and `JobContext` includes, mounts the engine, coverage spec | once |
 | `audit_log:trigger TABLE --model=Model` | a migration with one `attach_audit_trigger` line | once per audited table |
+| `audit_log:trigger TABLE --replace` | detach-then-attach, to change a table's model or exclusions | when those change |
 | `audit_log:views:activity Model [Model...]` | controller, concern, helper, views, route, locale, stylesheet — and wires each model's show page | once, then again per new model |
+
+#### `audit_log:trigger` options
+
+```bash
+bin/rails generate audit_log:trigger orders \
+  --model=Order \
+  --exclude=internal_notes search_vector
+```
+
+| | |
+|---|---|
+| `--model=Order` | the model name recorded on every `audit_changes` row. Defaults to the table name classified — pass it when they differ, because this string is what every screen filters and groups on. |
+| `--exclude=a b c` | columns kept **out of the diff**, on top of `config.default_excluded_columns` |
+| `--replace` | detach first. Required to change an existing trigger's model or exclusions — see [Re-attaching](#re-attaching-and-changing-a-tables-exclusions). |
+
+**What `--exclude` is for.** The trigger writes a diff of every column that
+changed. Some columns change constantly and mean nothing to an auditor, and a few
+should never be copied anywhere at all:
+
+- **Noise that would drown the signal.** A `search_vector`, a denormalised
+  counter, a `last_seen_at` touched on every request. Left in, an auditor reading
+  "what changed on this order" wades through a column nobody asked about, and the
+  jsonb `diff` grows for no benefit.
+- **Values you do not want a second copy of.** `config.default_excluded_columns`
+  already covers the usual suspects — `created_at`, `updated_at`,
+  `lock_version`, `password_digest`, `encrypted_password`, and Devise's reset
+  tokens. `--exclude` is for the ones only your schema knows about: an API secret,
+  a bearer token, a column holding something a customer can ask you to erase.
+
+**What it does not do.** Excluding a column does not stop the row being audited.
+The change is still recorded — who, when, under which `request_id`, and every
+*other* column that moved. Only that column's before/after values are left out.
+
+That distinction is the reason to reach for `--exclude` rather than
+`unaudited_tables`: the latter drops the whole table from the log and needs a
+written reason to pass `audit_log:coverage`.
+
+> **Excluding is not retroactive, in either direction.** A newly excluded column
+> stops appearing from the re-attach forward and **stays in the history written
+> before it** — `AuditLog::Redaction` is the tool for values already recorded.
+> And un-excluding one does not recover the values that were never captured.
+
+Changing exclusions later means `--replace`, because attaching is deliberately
+not idempotent: a second attach on the same table fails with `42710` rather than
+letting two triggers coexist and write two rows per change under different
+exclusion sets.
+
+#### `audit_log:views:activity` options
 
 `audit_log:views:activity` takes **any number of models in one call**, and calling it
 again later is how you add more. Both reach the same place:
