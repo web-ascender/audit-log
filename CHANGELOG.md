@@ -164,7 +164,7 @@ every `<details>` on the page.
 
 `audit_operation_badge(change)` now delegates to a new
 `audit_operation_chip(operation)`, so a caller holding a bare operation code —
-`Timeline::Entry#operations`, which is a value object's list of codes — gets the
+`Timeline::Activity#operations`, which is a value object's list of codes — gets the
 same badge without a screen re-spelling the code-to-colour mapping.
 
 Also: `Change.grouped_by_request` moved up to `AuditLog::Record`. Both tables
@@ -219,10 +219,10 @@ Two things found while building it:
   through **`AuditLog::Change.grouped_by_request`**, one implementation, bounded
   by the page's own events so the window infers nothing.
 
-Also: `spec/preview.rb` renders 15 screens rather than 13, and its bulk price
-change now emits the `price.bulk_adjusted` it was always registered for — it is
-the action with no `subject:`, so it is what gives the product preview something
-to render in the correlated section.
+Also: `spec/preview.rb` grew screens for the new tabs (17 in total by the end of
+this release), and its bulk price change now emits the `price.bulk_adjusted` it
+was always registered for — it is the action with no `subject:`, so it is what
+gives the product preview something to render in the correlated section.
 
 
 ### Extracted from the reference application

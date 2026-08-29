@@ -516,8 +516,9 @@ narratives are still missing.
 
 ## Reading one record's history
 
-Two tabs on `/audit/records/:record_type/:record_id/history`, one per layer,
-because they answer different questions and neither substitutes for the other.
+Three tabs on `/audit/records/:record_type/:record_id/history`. The first two are
+one per layer, because they answer different questions and neither substitutes
+for the other; the third puts them together.
 
 **Changes** (the default) is `audit_changes` — every INSERT, UPDATE and DELETE
 against this record, field by field, complete regardless of how the write was
@@ -539,6 +540,13 @@ The second section is **capped and says so**: it reads a bounded number of the
 record's most recent change rows, prints how many it read, and offers `?scan=` to
 widen it. That is the same treatment the request drill-down gives its date window
 — a narrowed query must never be mistaken for a complete one.
+
+**Timeline** is both layers interleaved, at the grain a person reads: one
+*activity* per unit of work rather than one row per audit row, so a save that
+wrote this record and forty children is one card and not forty. It is rendered
+entirely from `AuditLog::Timeline`'s value objects — the same published contract
+described in the next section — so the auditor UI cannot drift from what a host
+app gets. `?days=` bounds it; unbounded is the default.
 
 Both sections are reachable as query objects if you would rather build your own
 view than link to the engine's:
@@ -856,8 +864,9 @@ application that has opted nothing in pays nothing.
 | `db/sql/audit_tables.sql` | The two partitioned tables and their indexes. |
 | `db/sql/audit_row_change.sql` | The trigger function. The heart of layer 1. |
 | `app/queries/` | One object per auditor question (`ActorActivity`, `RecordHistory`, `RecordTimeline`, `ActionReport`, `Reconciler`, `Coverage`), plus `LabelResolver` — the per-request association-label cache. |
-| `app/queries/audit_log/timeline*` | The **host-facing** contract: units of work as value objects (`Entry`, `FieldChange`, `TouchedRecord`, `Actor`), for an activity history in your own app. |
-| `app/controllers/`, `app/views/` | The auditor UI. `shared/_event_payload` renders `audit_events.metadata` in three states — present, absent, redacted. |
+| `app/queries/audit_log/timeline.rb` | The **host-facing** contract: one record's history as units of work, for an activity history in your own app. |
+| `app/queries/audit_log/timeline/` | Its value objects — `Activity` (one thing that happened, loaded), `ActivityKey` (its identity before loading), `FieldChange`, `TouchedRecord`, `Actor`. |
+| `app/controllers/`, `app/views/` | The auditor UI. `shared/_event_payload` and `records/_timeline_activities` both render `audit_events.metadata` in three states — present, absent, redacted. |
 | `lib/audit_log/rspec.rb` | Shared examples a host app uses instead of copying a spec. Not loaded by `lib/audit_log.rb` — rspec is the host's test dependency. |
 | `lib/generators/audit_log/` | `audit_log:install` and `audit_log:trigger`, with templates. |
 | `DESIGN.md` | Why every decision here is what it is. Cited by section number from source comments. |
@@ -913,7 +922,7 @@ sections most likely to matter, and the shape of the mistake each one prevents:
 | `event_subscriber.rb`, `record.rb` | §7, §12 | `readonly?` keyed on `true` breaks **inserts**, silently disabling layer 2 |
 | `partitions.rb`, the SQL, migrations | §8 | every boundary is UTC midnight, and the three manual operations must not overlap |
 | a query object or a screen | §11 | mandatory date bounds are what make the screens prune |
-| `timeline.rb` or its value objects | §11.2b | it is a PUBLISHED contract host apps render — and `headline` returning nil, not a generated sentence, is part of it |
+| `timeline.rb` or its value objects | §11.2b | it is a PUBLISHED contract host apps render — `headline` returning nil rather than a generated sentence is part of it, and so is the two-type split |
 | `record_timeline.rb`, the record screen | §11.2a | `where.not(subject_type:, subject_id:)` is NULL-unsafe and silently drops every event with no subject — which is the exact population the correlated section exists to show |
 | `pagination.rb` or a screen's scope | §11.0 | the cursor must carry microseconds, or rows vanish between pages — and a `.limit` below the controller is a silent truncation |
 | `csv_export.rb` | §11.4a | an export with a row cap reintroduces exactly what the paging removed |
