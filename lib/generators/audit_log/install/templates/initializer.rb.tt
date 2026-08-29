@@ -39,6 +39,27 @@ AuditLog.configure do |config|
   # THE AUDIT SCREENS ARE A PRIVILEGED SURFACE AND THIS DEFAULTS TO A NO-OP.
   # Anyone who can reach the mount point can read every change every user ever
   # made. Replace this before deploying.
+  # ->(type, id) { } -> a path/URL string, or nil.
+  #
+  # Where THIS app shows the record a (type, id) names. Used by an activity
+  # history you render on your own pages (`rails generate audit_log:activity`) --
+  # the "also touched" list and the actor byline. Nothing in the gem's own
+  # screens calls it; the auditor UI links into the auditor UI.
+  #
+  # nil is the default and a legitimate answer. This gem will not guess
+  # `product_path` from "Product": a wrong link on an audit screen is worse than
+  # no link, and it fails at RENDER time on a page an auditor is reading. Return
+  # nil for a type you have no page for, and for a record this viewer may not
+  # open.
+  #
+  #   config.record_url = lambda do |type, id|
+  #     routes = Rails.application.routes.url_helpers
+  #     case type
+  #     when "Order"   then routes.order_path(id)
+  #     when "Product" then routes.product_path(id)
+  #     end
+  #   end
+
   config.authorize = lambda do |controller|
     unless controller.current_user&.respond_to?(:auditor?) && controller.current_user.auditor?
       raise ActionController::RoutingError, "Not authorized to view the audit log"

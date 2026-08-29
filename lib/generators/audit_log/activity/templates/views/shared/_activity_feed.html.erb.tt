@@ -1,0 +1,92 @@
+<%%# ONE definition of how an activity renders in this app, used by the order
+    show page and by the full history at /activity/:type/:id. Same fidelity in
+    both: two renderings that drift is how a manager sees one thing on the order
+    page and something else on its history, and cannot tell which is right. Only
+    HOW MANY activities differs, never how much of each one.
+
+    Built entirely from AuditLog::Timeline's value objects. The gem sets
+    isolate_namespace, so none of its helpers, partials or route helpers are
+    reachable here -- this is deliberately not the engine's markup, and proving
+    the published contract is enough to rebuild that screen is the point. %>
+<ol class="<%= css(:feed) %>">
+  <%% activities.each do |activity| %>
+    <li class="<%%= activity_card_class(activity) %>">
+      <div class="<%= css(:meta) %>">
+        <time title="<%%= activity.occurred_at.iso8601 %>"><%%= l activity.occurred_at, format: :short %></time>
+        <%%= safe_join(activity.operations.map { |op|
+              tag.span(activity_operation(op), class: "<%= css(:badge) %> op-#{op.downcase}") }, " ") %>
+        <%% if activity.source %><span class="<%= css(:badge) %> source-<%%= activity.source %>"><%%= activity.source %></span><%% end %>
+        <%% if activity.out_of_band? %><span class="<%= css(:badge) %> out-of-band">out of band</span><%% end %>
+      </div>
+
+      <p class="<%= css(:headline) %>"><%%= activity_sentence(activity) %></p>
+
+      <p class="<%= css(:who) %>">
+        <%%= activity_actor(activity) %>
+        <%% if activity.action %>· <code><%%= activity.action %></code><%% end %>
+      </p>
+
+      <%%# Redaction leaves no flag column by design, so this note is the only
+          trace distinguishing an erased payload from one that never existed --
+          which is why it is never tucked inside a <details>. A disclosure the
+          reader has to click for is not a disclosure. %>
+      <%% if activity.redacted? %>
+        <p class="<%= css(:redaction_note) %>">Values redacted. What changed, when and by whom is intact.</p>
+      <%% end %>
+
+      <%% if activity.field_changes.any? %>
+        <details class="<%= css(:details) %>" <%%= "open" if activity.field_changes.size <= 6 %>>
+          <summary><%%= pluralize(activity.field_changes.size, "field") %> changed</summary>
+          <ul class="<%= css(:fields) %>">
+            <%% model = activity.record_type.safe_constantize %>
+            <%% activity.field_changes.each do |change| %>
+              <li>
+                <span class="<%= css(:fname) %>"><%%= human_field(model, change.column) %></span>
+                <%%= activity_value(change.from, side: :old, label: change.from_label) %>
+                <span class="<%= css(:arrow) %>">→</span>
+                <%%= activity_value(change.to, side: :new, cleared: change.cleared?,
+                                   label: change.to_label) %>
+              </li>
+            <%% end %>
+          </ul>
+        </details>
+      <%% end %>
+
+      <%% if activity.also_touched.any? %>
+        <details>
+          <summary><%%= pluralize(activity.also_touched.size, "other record") %> changed in this action</summary>
+          <ul class="<%= css(:record_list) %>">
+            <%% activity.also_touched.each do |touched| %>
+              <li>
+                <%%= safe_join(touched.operations.map { |op|
+                      tag.span(activity_operation(op), class: "<%= css(:badge) %> op-#{op.downcase}") }, " ") %>
+                <%%= activity_touched(touched) %>
+                <%% if touched.label_failed? %><span class="<%= css(:muted) %>">(label unavailable)</span><%% end %>
+                <%%= safe_join(touched.columns.map { |c| tag.code(c, class: "<%= css(:chip) %>") }, " ") %>
+              </li>
+            <%% end %>
+          </ul>
+        </details>
+      <%% end %>
+
+      <%%# The structured evidence behind the sentence, rendered UNTRUNCATED: an
+          ellipsis here is the page under-reporting, and these are a handful of
+          scalars. %>
+      <%% if activity.metadata.any? %>
+        <details>
+          <summary><%%= pluralize(activity.metadata.size, "payload field") %></summary>
+          <dl class="<%= css(:payload) %>">
+            <%% activity.metadata.sort.each do |key, value| %>
+              <dt><%%= key %></dt>
+              <dd><%%= value.is_a?(Enumerable) ? value.to_json : value.to_s %></dd>
+            <%% end %>
+          </dl>
+        </details>
+      <%% end %>
+    </li>
+  <%% end %>
+
+  <%% if activities.empty? %>
+    <li class="<%= css(:empty) %>">Nothing recorded yet.</li>
+  <%% end %>
+</ol>

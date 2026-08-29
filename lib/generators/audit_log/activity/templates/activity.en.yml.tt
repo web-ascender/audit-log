@@ -1,0 +1,20 @@
+# The sentence for an activity that NO registered action covered.
+#
+# AuditLog::Timeline::Activity#headline returns nil in that case rather than
+# composing a sentence from column names. Three reasons, and the third is the one
+# that matters: it would be the gem's phrasing rather than yours; it would
+# re-render differently after a gem upgrade, while a stored summary is frozen at
+# emit time; and on the page it would be indistinguishable from a summary that
+# WAS frozen at emit time.
+#
+# So you write it. You are also the only side that knows these are "Orders" and
+# "Line items" rather than "Order" and "LineItem".
+#
+# A separate file rather than an edit to config/locales/en.yml, so nothing here
+# can clobber a key of yours.
+en:
+  activity:
+    created: "%{model} created"
+    updated: "Changed %{fields}"
+    deleted: "%{model} deleted"
+    touched: "%{model} changed"

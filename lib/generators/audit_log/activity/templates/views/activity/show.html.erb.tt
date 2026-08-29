@@ -1,0 +1,70 @@
+<div class="<%= css(:page_head) %>">
+  <h1>
+    <%%= @record ? @record.to_s : "#{@record_type} ##{@record_id}" %>
+    <span class="<%= css(:badge) %>">history</span>
+  </h1>
+  <div class="<%= css(:actions) %>">
+    <%% if @record && (url = AuditLog.config.record_url&.call(@record_type, @record_id)) %>
+      <%%= link_to "← Back to #{@record_type.downcase}", url, class: "<%= css(:button) %>" %>
+    <%% end %>
+  </div>
+</div>
+
+<%%# The record may be GONE. An audit trail outlives what it describes, and a
+    deleted order's history is exactly when somebody reads it. %>
+<%% unless @record %>
+  <p class="<%= css(:note_warn) %>">
+    This <%%= @record_type.downcase %> no longer exists. Its history is below —
+    which is the point of keeping one.
+  </p>
+<%% end %>
+
+<p class="<%= css(:note) %>">
+  Every action against this record, at the grain a person reads: one entry per
+  <strong>unit of work</strong> rather than one per audit row. Complete for every write —
+  <code>update_all</code>, raw SQL and cascading deletes all land here — plus the actions that
+  named this record without writing to it.
+</p>
+
+<%%# A narrowed query must never be mistaken for a complete one. %>
+<p class="<%= css(:note_small) %>">
+  Searched <strong><%%= @timeline.scope_description %></strong>.
+  <%% if @timeline.bounded? %>
+    <%%= link_to "Search all retained history",
+          activity_path(record_type: @record_type, record_id: @record_id) %>
+  <%% else %>
+    <%%= safe_join([30, 90, 365].map { |d|
+          link_to "last #{d} days",
+            activity_path(record_type: @record_type, record_id: @record_id, days: d)
+        }, " · ") %>
+    — faster on a record with long history.
+  <%% end %>
+</p>
+
+<%%= render "shared/activity_feed", activities: @activities %>
+
+<%%# Keyset paging: a cursor and "older", never page numbers or a total. OFFSET
+    re-reads every skipped row and COUNT(*) blocks the page, and both get worse
+    exactly as the log becomes worth reading. %>
+<nav class="<%= css(:pagination) %>">
+  <span class="<%= css(:small) %>"><%%= pluralize(@activities.size, "entry") %> on this page</span>
+  <%% if params[:page].present? %>
+    <%%= link_to "Back to newest", url_for(page: nil), class: "<%= css(:button) %>" %>
+  <%% end %>
+  <%% if @pagy.next %>
+    <%%= link_to "Older →", url_for(page: @pagy.next), class: "<%= css(:button) %>" %>
+  <%% else %>
+    <span class="<%= css(:small_muted) %>">End of results.</span>
+  <%% end %>
+</nav>
+
+<%%# older_than_window? is opt-in and deliberately looks BELOW the bound, so it is
+    called once, here, and never per page: running it on every page would hand
+    back the partition pruning the bound just bought. %>
+<%% if @timeline.bounded? && @pagy.next.nil? && @timeline.older_than_window? %>
+  <p class="<%= css(:note_small) %>">
+    That is the end of this window, <strong>not the end of this record's history</strong>.
+    <%%= link_to "Search all retained history",
+          activity_path(record_type: @record_type, record_id: @record_id) %>
+  </p>
+<%% end %>

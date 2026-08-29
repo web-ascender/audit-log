@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+### `rails generate audit_log:activity`  **[2026-08-29]**
+
+The auditor UI at `/audit` is for auditors. This generates the *other* screen —
+an activity history a host app renders on its own pages, for people who should
+not hold the auditor role — as the reference app's implementation extracted into
+templates.
+
+```bash
+rails generate audit_log:activity Order Product Customer --css=tailwind
+```
+
+Produces a controller, a concern, a helper, three views, a route, a locale file
+and (for `--css=plain`) a stylesheet. What it produces is the host's: plain
+Rails, no gem-side indirection, never re-generated or upgraded later.
+
+**`--css=plain|tailwind|bootstrap` changes `class=` and nothing else.** The
+markup structure is byte-identical across all three — asserted by masking class
+attributes and comparing — so switching frameworks later is rewriting strings
+rather than re-deriving the view. Neither framework option installs anything.
+
+**It denies everyone until one method is edited.** `audit_activity_visible?` is
+generated as `false` and the generator says so in red. `Timeline` exposes
+previous values of every audited column and the other records each action
+touched, which on a shared action can be another customer's row; defaulting to
+visible would publish that to every signed-in user of an app whose roles this gem
+cannot see, and nothing would report it. The same method serves the show-page
+widget and the full page, so the two cannot disagree about who may read a
+history.
+
+**The models named become an allowlist checked BEFORE `constantize`**, because
+`/activity/User/1` is a URL anyone can type. The generator refuses to run without
+them rather than emitting an empty one and 404ing on every record.
+
+**The templates ARE the reference app's files.** `../audit-log-demo` is now
+regenerated from them and differs by exactly one line — its
+`audit_activity_visible?` returns `current_user&.manager?`. That is the whole
+point: two hand-maintained copies drift, and the app that consumes the templates
+is the only thing that can catch it when they do. It caught one immediately —
+`audit_activity_visible?` is a private controller method, so the section partial
+raised `NoMethodError` until the concern exposed it with `helper_method`. Nothing
+in the gem's own specs would have found that, because nothing in the gem renders
+those views.
+
+The install generator's initializer template now documents `config.record_url`,
+which the generated UI uses for links.
+
+323 examples, 0 failures.
+
+
 ### Dead code audit  **[2026-08-29]**
 
 Every public method, class, constant, config attribute and view partial in the

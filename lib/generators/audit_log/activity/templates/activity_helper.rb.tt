@@ -1,0 +1,112 @@
+# frozen_string_literal: true
+
+# Rendering helpers for AuditLog::Timeline's value objects, in THIS app's words.
+#
+# The gem deliberately ships no view helpers a host can reach: it sets
+# `isolate_namespace`, so its helpers and route helpers are not available here,
+# and its markup would not match this app's CSS anyway. What it ships instead is
+# the value objects, and everything below is written against those alone.
+#
+# That constraint is the point. If an activity history could not be built from
+# the published contract, the contract would be wrong -- and this file is where
+# that gets tested for real rather than asserted in the gem's own specs.
+module ActivityHelper
+  # The class list for one activity's card.
+  #
+  # KIND HAS TO STAY VISIBLE. A registered action stored its sentence at emit
+  # time and that is history; a :change_only sentence is composed by this app,
+  # now, from column names. They must not look identical on the page, or a
+  # recomputed string wears the costume of an immutable one. Whatever you restyle
+  # here, keep those two distinguishable.
+  def activity_card_class(activity)
+    [
+      "<%= css(:card) %>",
+      activity.narrative? ? "<%= css(:narrated) %>" : "<%= css(:bare) %>",
+      ("<%= css(:redacted) %>" if activity.redacted?)
+    ].compact.join(" ")
+  end
+
+  # The sentence for one activity.
+  #
+  # A registered action stored its summary at emit time, and that is history --
+  # rendered verbatim, never recomposed. `headline` is nil when nothing
+  # registered covered the write, and the gem will not invent a sentence from
+  # column names, so this app writes one. It is also the only side that knows an
+  # an "Order" is called an Order and a `total_cents` is called a Total.
+  def activity_sentence(activity)
+    return activity.headline if activity.headline
+
+    model  = activity.record_type.safe_constantize
+    name   = model ? model.model_name.human : activity.record_type
+    fields = activity.changed_columns.map { |c| human_field(model, c) }
+
+    if activity.created?      then t("activity.created", model: name)
+    elsif activity.deleted?   then t("activity.deleted", model: name)
+    elsif fields.any?         then t("activity.updated", fields: fields.to_sentence)
+    else                           t("activity.touched", model: name)
+    end
+  end
+
+  # I / U / D read as Created / Updated / Deleted. The gem owns that mapping, so
+  # this app does not invent a fourth spelling for a delete.
+  def activity_operation(operation)
+    AuditLog::Change.operation_name(operation)
+  end
+
+  def human_field(model, column)
+    model ? model.human_attribute_name(column) : column.humanize
+  end
+
+  # An actor, linked only when there is somebody to link to.
+  #
+  # `linkable?` exists because a NULL actor is a real and common state -- a rake
+  # task, a migration, a console session -- and `display` renders it as "System"
+  # without the database ever storing that string. Calling a route helper on a
+  # nil id is how the gem's own action screen once 500'd.
+  def activity_actor(activity)
+    actor = activity.actor
+    return tag.span(actor.display, class: "muted") unless actor.linkable?
+
+    actor.url ? link_to(actor.display, actor.url) : actor.display
+  end
+
+  # A record the same action also wrote.
+  #
+  # `to_s` and never `label` alone: the label is resolved live from the record's
+  # current row, the id is what the log actually recorded, and showing only the
+  # label would let a later rename rewrite what this page says happened.
+  def activity_touched(touched)
+    label = touched.to_s
+    touched.url ? link_to(label, touched.url) : tag.span(label)
+  end
+
+  # [old, new] has three shapes and they do NOT mean the same thing. The gem
+  # names them so this app cannot render "was emptied" and "was filled in"
+  # identically by accident.
+  # `side` is :old or :new, and carries the red/green the auditor UI uses. It is
+  # on the value itself rather than on a wrapper <span> for a reason -- see the
+  # one-element rule below.
+  #
+  # ALWAYS returns exactly ONE element, and that is load-bearing rather than
+  # tidiness: the field list is a CSS grid whose <li> is `display: contents`, so
+  # every child of the <li> becomes a grid cell in its own right. Returning two
+  # elements for a labelled association id -- the label and its id -- silently
+  # pushed every later cell one column right and scrambled the whole grid. Found
+  # by looking at the page, not by a spec; the markup was valid and the values
+  # were all correct.
+  def activity_value(value, side:, cleared: false, label: nil)
+    # An absence is not "old" or "new" in the red/green sense, so it stays muted
+    # -- and the distinction between never-set and just-cleared is the whole
+    # reason FieldChange names those two states apart.
+    return tag.em(cleared ? "cleared" : "not set", class: "muted") if value.nil?
+    return tag.em("empty", class: "muted") if value.to_s.empty?
+    return tag.span(value.to_s, class: side) unless label
+
+    # The id stays visible beside the label. DESIGN §11.8: the label is current
+    # state, the id is what the log recorded, and dropping it would let a rename
+    # rewrite what this page says happened.
+    tag.span(class: side) do
+      safe_join([label.to_s, tag.small("(#{value})", class: "assoc-id")], " ")
+    end
+  end
+end

@@ -465,6 +465,29 @@ browsable results. `config.page_size` is the only knob.
   `spec/audit_log/pagination_spec.rb` pins it with six rows inside one
   millisecond; that example returns 2 of 6 rows if the lambda is removed.
 
+## The activity generator
+
+`rails generate audit_log:activity Order Product Customer` emits the reference
+app's timeline UI into a host app. Four things about it are load-bearing:
+
+- **The templates ARE the reference app's files.** `../audit-log-demo` is
+  regenerated from them and differs by exactly one line — its
+  `audit_activity_visible?` returns `current_user&.manager?` where the template
+  returns `false`. Change a template, regenerate the demo, run its suite. Two
+  hand-maintained copies is the failure this arrangement exists to prevent.
+- **View templates emit ERB THROUGH ERB.** Every runtime tag is escaped `<%%`,
+  and only the class slots (`<%= css(:card) %>`) are generate-time. Get it wrong
+  and you ship a view that renders its own source, which reads as a styling bug.
+  `activity_generator_spec` compiles every generated `.erb` and asserts no `<%%`
+  survives.
+- **`audit_activity_visible?` is generated as `false`.** Never change that to
+  `true` "for convenience". It is the difference between a host that has decided
+  who may read audit diffs and one that has published them by default.
+- **`--css` changes `class=` and NOTHING else.** The spec asserts the three
+  frameworks produce byte-identical markup once class attributes are masked. If a
+  framework needs different structure, the abstraction is wrong — fix the
+  structure, do not fork the template.
+
 ## Things that look DEAD and are not
 
 A grep for callers marks all of these unused. Audited 2026-08-29 — 163 public

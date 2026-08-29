@@ -1,0 +1,205 @@
+# frozen_string_literal: true
+
+require "rails_helper"
+require "tmpdir"
+require "erb"
+require "generators/audit_log/activity/activity_generator"
+
+# The activity generator hands a host application a working audit UI it then
+# owns. Two things make it worth specs rather than a smoke test:
+#
+#   * it emits ERB THROUGH ERB. Every runtime tag in a view template has to
+#     survive generation escaped, and a mistake there produces a file that either
+#     blows up at generate time or renders its own source.
+#   * it decides who may read an audit history, and the safe default is the one
+#     nobody notices is missing.
+RSpec.describe AuditLog::Generators::ActivityGenerator do
+  def generate(args, host: {})
+    dir = Dir.mktmpdir("audit_log_activity")
+    %w[config config/locales app/controllers app/helpers app/assets/stylesheets].each do |d|
+      FileUtils.mkdir_p(File.join(dir, d))
+    end
+    File.write(File.join(dir, "config/routes.rb"), host.fetch(:routes, "Rails.application.routes.draw do\nend\n"))
+    if host.fetch(:controller, true)
+      File.write(File.join(dir, "app/controllers/application_controller.rb"),
+                 "class ApplicationController < ActionController::Base\nend\n")
+    end
+
+    # Both streams: Thor's own refusals go to stderr, and "it refused" is a
+    # property worth asserting rather than a message worth losing.
+    output = StringIO.new
+    out, err = $stdout, $stderr
+    $stdout = $stderr = output
+    described_class.start(args, destination_root: dir)
+    [dir, output.string]
+  ensure
+    $stdout, $stderr = out, err
+  end
+
+  def read(dir, path) = File.read(File.join(dir, path))
+  def exist?(dir, path) = File.exist?(File.join(dir, path))
+
+  after { FileUtils.rm_rf(@dir) if @dir }
+
+  describe "what it produces" do
+    it "generates a working set of files and a route" do
+      @dir, = generate(%w[Order Product])
+
+      %w[
+        app/controllers/concerns/record_activity.rb
+        app/controllers/activity_controller.rb
+        app/helpers/activity_helper.rb
+        app/views/activity/show.html.erb
+        app/views/shared/_activity_feed.html.erb
+        app/views/shared/_activity_section.html.erb
+        config/locales/audit_log_activity.en.yml
+      ].each { |f| expect(exist?(@dir, f)).to be(true), "missing #{f}" }
+
+      expect(read(@dir, "config/routes.rb")).to include('to: "activity#show"')
+      expect(read(@dir, "app/controllers/application_controller.rb")).to include("include RecordActivity")
+    end
+
+    # The generated Ruby has to parse and the generated ERB has to compile. This
+    # is the guard for the escaping: a template that leaks a generate-time tag
+    # produces a view rendering its own source, which looks like a styling bug.
+    it "generates syntactically valid Ruby, ERB and YAML" do
+      @dir, = generate(%w[Order])
+
+      Dir.glob("#{@dir}/app/**/*.rb").each do |f|
+        expect(system("ruby", "-c", f, out: File::NULL, err: File::NULL)).to be(true), "bad Ruby: #{f}"
+      end
+      Dir.glob("#{@dir}/app/views/**/*.erb").each do |f|
+        expect { ERB.new(File.read(f), trim_mode: "-").src }.not_to raise_error, "bad ERB: #{f}"
+      end
+      expect { YAML.load_file("#{@dir}/config/locales/audit_log_activity.en.yml") }.not_to raise_error
+    end
+
+    # Runtime ERB must arrive as ERB, not as its result.
+    it "keeps the views' own ERB intact through generation" do
+      @dir, = generate(%w[Order])
+      feed = read(@dir, "app/views/shared/_activity_feed.html.erb")
+
+      expect(feed).to include("<% activities.each do |activity| %>")
+      expect(feed).to include("<%= activity_sentence(activity) %>")
+      expect(feed).not_to include("<%%")          # nothing left double-escaped
+    end
+
+    it "names the models it was given as the allowlist" do
+      @dir, = generate(%w[Order Product Customer])
+      expect(read(@dir, "app/controllers/activity_controller.rb"))
+        .to include('VIEWABLE = %w[Order Product Customer].freeze')
+    end
+
+    # Thor prints a Thor::Error rather than re-raising, so the property that
+    # matters is that it produced NOTHING -- a half-generated activity UI with an
+    # empty allowlist would 404 on every record and look like a routing bug.
+    it "refuses, and generates nothing, when given no models" do
+      @dir, output = generate([])
+
+      expect(output).to match(/Name the models/)
+      expect(exist?(@dir, "app/controllers/activity_controller.rb")).to be(false)
+      expect(exist?(@dir, "app/views/shared/_activity_feed.html.erb")).to be(false)
+      expect(read(@dir, "config/routes.rb")).not_to include("activity#show")
+    end
+  end
+
+  # THE SAFE DEFAULT. A generated `true` here would publish previous values of
+  # every audited column -- and other records touched by the same action -- to
+  # every signed-in user of an app whose roles this gem cannot see.
+  describe "authorization" do
+    it "denies everyone until the host edits one method" do
+      @dir, = generate(%w[Order])
+      concern = read(@dir, "app/controllers/concerns/record_activity.rb")
+
+      expect(concern).to match(/def audit_activity_visible\?\s*\n\s*false\s*\n\s*end/)
+      expect(concern).to include("THE ONE METHOD YOU MUST EDIT")
+    end
+
+    it "says so in the report, in red, rather than only in a comment" do
+      @dir, output = generate(%w[Order])
+      expect(output).to include("DENIES EVERYONE UNTIL YOU EDIT ONE METHOD")
+      expect(output).to include("audit_activity_visible?")
+    end
+
+    # The section partial asks the same question the controller does, so it has
+    # to reach view scope -- without this the widget raises NoMethodError on a
+    # private controller method.
+    it "exposes the rule to views" do
+      @dir, = generate(%w[Order])
+      expect(read(@dir, "app/controllers/concerns/record_activity.rb"))
+        .to include("helper_method :audit_activity_visible?")
+    end
+
+    it "is asked by both the page and the widget, so they cannot disagree" do
+      @dir, = generate(%w[Order])
+      expect(read(@dir, "app/controllers/activity_controller.rb")).to include("audit_activity_visible?")
+      expect(read(@dir, "app/views/shared/_activity_section.html.erb")).to include("audit_activity_visible?")
+    end
+  end
+
+  describe "--css" do
+    it "ships a stylesheet for plain and none for a framework that has its own" do
+      @dir, = generate(%w[Order])
+      expect(exist?(@dir, "app/assets/stylesheets/audit_log_activity.css")).to be(true)
+      FileUtils.rm_rf(@dir)
+
+      %w[tailwind bootstrap].each do |framework|
+        @dir, = generate(%W[Order --css=#{framework}])
+        expect(exist?(@dir, "app/assets/stylesheets/audit_log_activity.css")).to be(false)
+        FileUtils.rm_rf(@dir)
+      end
+      @dir = nil
+    end
+
+    # SAME MARKUP, different class attributes. Only `class=` changes, so a host
+    # switching frameworks rewrites strings rather than re-deriving the view.
+    it "keeps the structure identical across frameworks" do
+      structure = %w[plain tailwind bootstrap].map do |framework|
+        dir, = generate(%W[Order --css=#{framework}])
+        html = read(dir, "app/views/shared/_activity_feed.html.erb")
+        FileUtils.rm_rf(dir)
+        html.gsub(/class="[^"]*"/, 'class="X"').gsub(/class: "[^"]*"/, 'class: "X"')
+      end
+
+      expect(structure.uniq.size).to eq(1)
+    end
+
+    it "emits the framework's own class names" do
+      @dir, = generate(%w[Order --css=tailwind])
+      expect(read(@dir, "app/helpers/activity_helper.rb")).to include("rounded-lg")
+      FileUtils.rm_rf(@dir)
+
+      @dir, = generate(%w[Order --css=bootstrap])
+      expect(read(@dir, "app/helpers/activity_helper.rb")).to include("card-body")
+    end
+
+    # Whichever framework, a registered summary and a sentence the host composed
+    # must not look the same -- one is frozen history, the other is recomputed.
+    it "keeps narrated and unnarrated visually distinguishable in every framework" do
+      %w[plain tailwind bootstrap].each do |framework|
+        dir, = generate(%W[Order --css=#{framework}])
+        helper = read(dir, "app/helpers/activity_helper.rb")
+        narrated, bare = helper[/narrative\? \? "([^"]*)" : "([^"]*)"/, 1], Regexp.last_match(2)
+        FileUtils.rm_rf(dir)
+
+        expect(narrated).not_to eq(bare), "#{framework} renders both kinds identically"
+      end
+    end
+  end
+
+  describe "when the host is not shaped as expected" do
+    it "reports a missing ApplicationController instead of claiming success" do
+      @dir, output = generate(%w[Order], host: { controller: false })
+      expect(output).to include("include RecordActivity")
+      expect(output).to match(/manual/i)
+    end
+
+    it "does not add a second route when one is already there" do
+      routes = %(Rails.application.routes.draw do\n  get "x", to: "activity#show"\nend\n)
+      @dir, output = generate(%w[Order], host: { routes: routes })
+
+      expect(read(@dir, "config/routes.rb").scan("activity#show").size).to eq(1)
+      expect(output).to match(/skip/i)
+    end
+  end
+end

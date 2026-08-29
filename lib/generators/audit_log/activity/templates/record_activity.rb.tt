@@ -1,0 +1,64 @@
+# frozen_string_literal: true
+
+# The show-page activity widget, for every model that has one.
+#
+# ONE definition on purpose. Three controllers each rolling their own is how the
+# order page ends up capping at 8 and the product page at 25, with only one of
+# them saying so -- which is the silent truncation this library exists to
+# prevent, reintroduced by copy-paste rather than by design.
+module RecordActivity
+  extend ActiveSupport::Concern
+
+  included do
+    # The section partial asks this too, so it has to cross into view scope.
+    # Without it the widget raises NoMethodError on a private controller method
+    # -- found by the reference app rendering these templates for real.
+    helper_method :audit_activity_visible? if respond_to?(:helper_method)
+  end
+
+  # How many ACTIVITIES a show page renders -- a row count, not a time window.
+  # (Bounding by age instead is `AuditLog::Timeline.for(record, range: ...)`;
+  # ActivityController does that with `?days=`.)
+  #
+  # A show page is a "most recent" widget, not a browsable audit screen --
+  # /activity/:type/:id is where you page through everything. But a cap that does
+  # not SAY it is a cap is a truncation, so this fetches one extra key purely so
+  # the view can tell the reader there is more.
+  RECENT_ACTIVITY_LIMIT = 8
+
+  private
+
+  # ==========================================================================
+  # THE ONE METHOD YOU MUST EDIT. It denies everyone until you do.
+  #
+  # That default is deliberate and it is not laziness. AuditLog::Timeline
+  # exposes everything the log holds -- previous values of every audited
+  # column, and the other records each action touched, which on a shared
+  # action can mean another customer's row. A generated default of `true`
+  # would publish all of that to every signed-in user of an application whose
+  # roles this gem cannot see, and nothing would report it.
+  #
+  # The gem exposes everything and says gating it is yours: `config.authorize`
+  # guards the auditor UI at /audit, and these are your pages.
+  #
+  #   def audit_activity_visible?
+  #     current_user&.admin?
+  #   end
+  # ==========================================================================
+  def audit_activity_visible?
+    false
+  end
+
+  # Returns [activities, more?]. Empty for a viewer you do not trust with the
+  # history.
+  def recent_activity(record)
+    return [[], false] unless audit_activity_visible?
+
+    timeline = AuditLog::Timeline.for(record)
+
+    # The keys are two columns and cost nothing; nothing is loaded until
+    # #activities, which hydrates the whole page in three queries.
+    keys = timeline.activity_keys.limit(RECENT_ACTIVITY_LIMIT + 1).to_a
+    [timeline.activities(keys.first(RECENT_ACTIVITY_LIMIT)), keys.size > RECENT_ACTIVITY_LIMIT]
+  end
+end

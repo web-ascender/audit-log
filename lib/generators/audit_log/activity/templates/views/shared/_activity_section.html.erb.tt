@@ -1,0 +1,31 @@
+<%%# The show-page activity section, identical on orders, products and customers.
+    `note` lets a page add something true about ITS model -- products emit no
+    registered action, so theirs are all :change_only -- without any page
+    re-deriving how an activity renders. %>
+<%% record_type = record.class.name %>
+<h2>Activity</h2>
+
+<%% if audit_activity_visible? %>
+  <p class="<%= css(:note) %>">
+    <%% if local_assigns[:note] %><%%= note %><%% end %>
+    One entry per <strong>unit of work</strong>, not one per audit row. Same fidelity as the
+    auditor timeline, built from the same value objects.
+    <%%= link_to "Full history →", activity_path(record_type: record_type, record_id: record.id) %>
+  </p>
+
+  <%%= render "shared/activity_feed", activities: activities %>
+
+  <%% if more %>
+    <p class="<%= css(:note_small) %>">
+      Showing the <strong><%%= RecordActivity::RECENT_ACTIVITY_LIMIT %></strong> most recent.
+      <%%= link_to "See everything →", activity_path(record_type: record_type, record_id: record.id) %>
+    </p>
+  <%% end %>
+<%% else %>
+  <p class="<%= css(:note) %>">
+    You cannot see this <%%= record_type.downcase %>'s history. The timeline exposes previous
+    values and the other records each action touched, so this app gates it — the gem exposes
+    everything and leaves that decision to
+    <code>RecordActivity#audit_activity_visible?</code>.
+  </p>
+<%% end %>

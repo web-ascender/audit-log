@@ -767,6 +767,41 @@ fixes.
 The engine's own **Timeline** tab is rendered from these same objects, so the
 contract cannot drift from what the auditor UI does.
 
+### Generate it
+
+You do not have to write any of the above by hand:
+
+```bash
+rails generate audit_log:activity Order Product Customer
+```
+
+That produces a controller, a concern, a helper, three views, a route, a locale
+file and a stylesheet — the reference app's implementation, extracted into
+templates. It is **yours**: plain Rails, no gem-side indirection, never
+re-generated or upgraded later.
+
+| | |
+|---|---|
+| `--css=plain` (default) | ships `audit_log_activity.css`, no framework needed |
+| `--css=tailwind` | Tailwind utility classes in the markup, no stylesheet |
+| `--css=bootstrap` | Bootstrap classes in the markup, no stylesheet |
+
+The markup **structure is identical** across all three — only `class=` changes,
+so switching later is rewriting strings rather than re-deriving the view. Neither
+framework option installs anything; both assume you already have it working.
+
+**It denies everyone until you edit one method.**
+`RecordActivity#audit_activity_visible?` is generated as `false`, and the
+generator says so in red. That default is deliberate: `Timeline` exposes previous
+values of every audited column and the other records each action touched — which
+on a shared action can be another customer's row. Defaulting to visible would
+publish all of it to every signed-in user of an app whose roles this gem cannot
+see, and nothing would report it.
+
+The models you name become `ActivityController::VIEWABLE`, an allowlist checked
+**before** `constantize` — `/activity/User/1` is a URL anyone can type. The
+generator refuses to run without them rather than emitting an empty one.
+
 ### A worked example
 
 The reference app renders this on its order, product and customer pages, and on
