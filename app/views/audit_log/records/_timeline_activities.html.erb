@@ -3,17 +3,17 @@
     of the screen: if a host app cannot build this view from the published
     contract, neither can we, and we find out here rather than in their app. %>
 <ol class="timeline">
-  <% entries.each do |entry| %>
-    <li class="entry kind-<%= entry.kind %><%= " redacted" if entry.redacted? %>">
+  <% activities.each do |activity| %>
+    <li class="activity kind-<%= activity.kind %><%= " redacted" if activity.redacted? %>">
       <div class="meta">
-        <%= audit_time(entry.occurred_at) %>
-        <%= safe_join(entry.operations.map { |op| audit_operation_chip(op) }, " ") %>
-        <%= audit_source_badge(entry.source) if entry.source %>
-        <% if entry.out_of_band? %>
+        <%= audit_time(activity.occurred_at) %>
+        <%= safe_join(activity.operations.map { |op| audit_operation_chip(op) }, " ") %>
+        <%= audit_source_badge(activity.source) if activity.source %>
+        <% if activity.out_of_band? %>
           <span class="badge out-of-band">out of band</span>
         <% else %>
-          <%= link_to audit_short_id(entry.request_id), request_path(entry.request_id),
-                class: "mono req", title: entry.request_id %>
+          <%= link_to audit_short_id(activity.request_id), request_path(activity.request_id),
+                class: "mono req", title: activity.request_id %>
         <% end %>
       </div>
 
@@ -24,27 +24,27 @@
             the raw materials instead. This screen composes the fallback from the
             same public methods a host app would use -- which is the point of
             rendering this tab from the published contract. %>
-        <% if entry.headline %>
-          <span class="summary"><%= entry.headline %></span>
+        <% if activity.headline %>
+          <span class="summary"><%= activity.headline %></span>
         <% else %>
           <span class="summary derived">
-            <%= entry.record_type %>
-            <% if entry.changed_columns.any? %>
-              — <%= safe_join(entry.changed_columns.first(6).map { |c| tag.code(c, class: "col-chip") }, " ") %>
-              <%= "+#{entry.changed_columns.size - 6} more" if entry.changed_columns.size > 6 %>
+            <%= activity.record_type %>
+            <% if activity.changed_columns.any? %>
+              — <%= safe_join(activity.changed_columns.first(6).map { |c| tag.code(c, class: "col-chip") }, " ") %>
+              <%= "+#{activity.changed_columns.size - 6} more" if activity.changed_columns.size > 6 %>
             <% end %>
           </span>
         <% end %>
       </p>
 
       <p class="who">
-        <% if entry.actor.linkable? %>
-          <%= link_to entry.actor.display, actor_path(entry.actor.id, actor_type: entry.actor.type) %>
+        <% if activity.actor.linkable? %>
+          <%= link_to activity.actor.display, actor_path(activity.actor.id, actor_type: activity.actor.type) %>
         <% else %>
-          <span class="muted" title="No actor recorded"><%= entry.actor.display %></span>
+          <span class="muted" title="No actor recorded"><%= activity.actor.display %></span>
         <% end %>
-        <% if entry.action %>
-          · <%= link_to entry.action, action_path(entry.action), class: "mono" %>
+        <% if activity.action %>
+          · <%= link_to activity.action, action_path(activity.action), class: "mono" %>
         <% else %>
           · <span class="hint">no registered action</span>
         <% end %>
@@ -58,16 +58,16 @@
           Redaction.marker? -- redaction leaves no flag column by design, so the
           marker string is the only trace and no view may re-spell that regex.
           Same rule as shared/_event_payload. %>
-      <% if entry.redacted? %>
+      <% if activity.redacted? %>
         <p class="redaction-note">
           Values redacted. The action, actor, time and correlation id are
           untouched, and <code>changed_columns</code> still records which fields changed.
         </p>
       <% end %>
 
-      <% if entry.field_changes.any? %>
+      <% if activity.field_changes.any? %>
         <ul class="fields">
-          <% entry.field_changes.each do |fc| %>
+          <% activity.field_changes.each do |fc| %>
             <li>
               <code class="fname"><%= fc.column %></code>
               <span class="old"><%= audit_value(fc.from, label: fc.from_label) %></span>
@@ -78,11 +78,11 @@
         </ul>
       <% end %>
 
-      <% if entry.also_touched.any? %>
+      <% if activity.also_touched.any? %>
         <details>
-          <summary><%= pluralize(entry.also_touched.size, "other record") %> changed in this action</summary>
+          <summary><%= pluralize(activity.also_touched.size, "other record") %> changed in this action</summary>
           <ul class="record-list">
-            <% entry.also_touched.each do |touched| %>
+            <% activity.also_touched.each do |touched| %>
               <li>
                 <%# to_s, never `label` alone: the id is what the log recorded and
                     the label is resolved live from current state. DESIGN §11.8. %>
@@ -98,11 +98,11 @@
         </details>
       <% end %>
 
-      <% if entry.metadata.any? %>
+      <% if activity.metadata.any? %>
         <details>
-          <summary><%= pluralize(entry.metadata.size, "payload field") %></summary>
+          <summary><%= pluralize(activity.metadata.size, "payload field") %></summary>
           <dl class="payload">
-            <% entry.metadata.sort.each do |key, value| %>
+            <% activity.metadata.sort.each do |key, value| %>
               <dt class="mono"><%= key %></dt>
               <dd><%= audit_metadata_value(value) %></dd>
             <% end %>
@@ -111,7 +111,7 @@
       <% end %>
     </li>
   <% end %>
-  <% if entries.empty? %>
+  <% if activities.empty? %>
     <li class="empty">Nothing recorded for this record.</li>
   <% end %>
 </ol>

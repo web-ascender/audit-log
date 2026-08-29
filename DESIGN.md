@@ -1660,16 +1660,16 @@ actor renders "System" but is never stored that way (§6.2), that a redacted pay
 one are the same empty jsonb and only the marker separates them (§13), that an association label
 annotates a recorded id and must never replace it (§11.8), that `LabelResolver` has four outcomes
 and not two. Ship the relations alone and every host app re-derives those. Some get them wrong, on
-a screen that looks fine. `Timeline::Entry`, `FieldChange`, `TouchedRecord` and `Actor` exist to
+a screen that looks fine. `Timeline::Activity`, `FieldChange`, `TouchedRecord` and `Actor` exist to
 make each of those rules a method call.
 
 **The grain is the unit of work, not the audit row.** A form submit that saves an order and forty
-line items is ONE entry — the order's own field changes on it, the forty line items beside it —
+line items is ONE activity — the order's own field changes on it, the forty line items beside it —
 rather than forty rows a reader reassembles. That is what a correlation id was for (§3).
 
-#### The spine is a union over both tables
+#### The activity keys are a union over both tables
 
-An entry belongs on a record's timeline for either of two reasons, and both are real:
+An activity belongs on a record's timeline for either of two reasons, and both are real:
 
 | Leg | Predicate | Says |
 |---|---|---|
@@ -1684,7 +1684,7 @@ The second leg is not a nicety. Without it the timeline silently drops four thin
 2. **An action whose write landed elsewhere** — `order.emailed`, writing a `deliveries` row.
 3. **An action that wrote nothing** — `order.exported`.
 4. **Every action on a record whose table is in `unaudited_tables`** — no trigger, therefore no
-   change rows ever, therefore a changes-only spine renders an empty page for a record that has a
+   change rows ever, therefore a changes-only index renders an empty page for a record that has a
    full narrative history. A category, not an edge case.
 
 **What it still does not reach**, stated here rather than discovered later: an *unregistered* action
@@ -1699,13 +1699,13 @@ is the tool that reports it.
 #### The unit-of-work key, and the NULL trap it exists to avoid
 
 ```sql
-SELECT uow, max(occurred_at) AS occurred_at FROM (
-  SELECT COALESCE(request_id::text, 'row:' || id) AS uow, occurred_at
+SELECT "key", max(occurred_at) AS occurred_at FROM (
+  SELECT COALESCE(request_id::text, 'row:' || id) AS "key", occurred_at
     FROM audit_changes WHERE record_type = ? AND record_id = ?   -- [+ bound]
   UNION ALL
-  SELECT request_id::text AS uow, occurred_at
+  SELECT request_id::text AS "key", occurred_at
     FROM audit_events   WHERE subject_type = ? AND subject_id = ? -- [+ bound]
-) legs GROUP BY uow
+) legs GROUP BY "key"
 ```
 
 An out-of-band write has no `request_id` (§9) and each one is its own unit of work, so it takes a
@@ -1718,10 +1718,29 @@ synthetic key rather than every uncorrelated write in the log collapsing into on
 > `where.not(subject_type:, subject_id:)` wrong in `RecordTimeline` (§11.2a); it is worth knowing
 > that it has now bitten this feature twice, in two different disguises.
 
-**One spine row is one entry, so there is no page-boundary rule.** An earlier changes-only spine
-paged over change *rows* and grouped them, so a unit of work could straddle a cursor and needed a
-de-duplication pass. Keying the spine on the unit itself deletes that problem rather than managing
-it — the union is not merely a coverage win, it is also a simplification.
+**One unit of work is one activity, so there is no page-boundary rule.** An earlier changes-only
+index paged over change *rows* and grouped them, so a unit could straddle a cursor and needed a
+de-duplication pass. Keying on the unit itself deletes that problem rather than managing it — the
+union is not merely a coverage win, it is also a simplification.
+
+#### Two types, and why one will not do
+
+`Timeline::ActivityKey` is the *identity* of an activity — its unit-of-work key and its timestamp,
+nothing more. `Timeline::Activity` is that identity with the events, change rows, actor, field
+changes and labels loaded. Same thing, two stages, and the split is forced rather than chosen:
+
+1. **Pagy needs an ActiveRecord relation** to apply the keyset predicate and mint a cursor, and a
+   relation yields ActiveRecord objects — so whatever comes out of pagination cannot be a plain
+   value object.
+2. **Hydration must be batched** — three queries for a page. Self-loading items would make it three
+   per activity.
+3. **§11.0 Rule 2 keeps the limit above the controller**, so the library cannot paginate and hydrate
+   in one call.
+
+Collapsing them means making `Activity` the ActiveRecord model and populating it in place, which
+drags `.where` / `.find` / `save` into a published contract — and leaves an unhydrated `Activity`
+answering `headline` with `nil`, which is the quiet under-report this library exists to prevent.
+`ActivityKey` therefore has **no `as_json`**: it is a handle to pass back, not content to render.
 
 #### Paginating a subquery: three non-obvious requirements
 
@@ -1729,13 +1748,12 @@ it — the union is not merely a coverage win, it is also a simplification.
 if all three hold. All three are pinned by `timeline_spec`, so a Rails or Pagy upgrade that breaks
 one fails a spec rather than a screen.
 
-1. **`SpineRow.table_name` must be a real table, and the subquery must alias to that same name.**
-   Without a real table ActiveRecord raises `PG::UndefinedTable` on `spine::regclass` while merely
-   loading the class. The column that must be typed is `occurred_at`: Pagy serialises the cursor
+1. **`ActivityKey.table_name` must be a real table, and the subquery must alias to that same name.**
+   Without a real table ActiveRecord raises `PG::UndefinedTable` while merely loading the class. The column that must be typed is `occurred_at`: Pagy serialises the cursor
    from it, and a timestamptz arriving as a String cannot be rendered at microsecond precision —
    which is exactly the bug `Pagination::FULL_PRECISION` exists to prevent.
-2. **`attribute :uow, :string`** declares the synthetic column, which no table has.
-3. **Order with `arel_table[:uow]`, never `order(uow: :desc)`.** A name that is not a real column
+2. **`attribute :key, :string`** declares the synthetic column, which no table has.
+3. **Order with `arel_table[:key]`, never `order(key: :desc)`.** A name that is not a real column
    renders as an `Arel::Nodes::SqlLiteral`, and `Pagy::Keyset#extract_keyset` calls `.name` on
    every order value: `undefined method 'name' for an instance of Arel::Nodes::SqlLiteral`.
 
@@ -1803,8 +1821,8 @@ Same discipline as `RecordLabel`'s chain ending in nil (§11.8). The host has i1
 models are called, and may have STI names the gem could never guess; it gets `operations`,
 `record_type` and `changed_columns`. `kind` (`:narrative` / `:change_only`) says which it holds.
 
-**An entry may legitimately have no change rows at all** — that is the whole point of the second leg
-— so `occurred_at` comes from the spine row, not from `max()` over an empty list.
+**An activity may legitimately have no change rows at all** — that is the whole point of the events
+leg — so `occurred_at` comes from its `ActivityKey`, not from `max()` over an empty list.
 
 **`config.record_url` is nil by default and the default is not a placeholder.** Inferring
 `product_path` from `"Product"` is the same mistake as sniffing a `name` column for a label, and it
@@ -1816,8 +1834,8 @@ it, because "admins only" is a policy question about the host's own roles that n
 would express better than its existing authorization layer. `config.authorize` gates the auditor UI;
 a host-rendered timeline is the host's screen.
 
-**The CSV export is not the spine.** The timeline tab exports the record's *change rows*, because a
-spine row is a derived grouping this library invented and not something the database recorded, and
+**The CSV export is not this index.** The timeline tab exports the record's *change rows*, because a
+unit of work is a derived grouping this library invented and not something the database recorded, and
 the export is the evidence artifact (§11.4a).
 
 **The engine renders this tab from the value objects**, not from its own relations, and offers

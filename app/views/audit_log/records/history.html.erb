@@ -12,9 +12,9 @@
 
 <% if @view == "timeline" %>
   <p class="note">
-    Both layers, interleaved, at the grain a person reads: one entry per
+    Both layers, interleaved, at the grain a person reads: one <strong>activity</strong> per
     <strong>unit of work</strong> rather than one per audit row, so a save that wrote this
-    record and forty children is one entry and not forty. Anchored on
+    record and forty children is one activity and not forty. Anchored on
     <code>audit_changes</code>, so no write to this record can be missing — an action that
     named this record but wrote nothing to it lives on the <strong>Actions</strong> tab.
   </p>
@@ -40,7 +40,7 @@
       — faster on a record with long history.
     <% end %>
   </p>
-  <%= render "audit_log/records/timeline_entries", entries: @entries %>
+  <%= render "audit_log/records/timeline_activities", activities: @activities %>
   <%= render "audit_log/shared/pagination", pagy: @pagy, rows: @pagy.records %>
 <% elsif @view == "actions" %>
   <p class="note">

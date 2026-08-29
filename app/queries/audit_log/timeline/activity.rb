@@ -2,7 +2,7 @@
 
 module AuditLog
   class Timeline
-    # ONE UNIT OF WORK against one record: what a human means by "an activity".
+    # ONE THING THAT HAPPENED to this record, loaded and ready to render.
     #
     # The grain is the request_id, not the audit row. A form submit that saves an
     # order and forty line items is ONE entry -- "Jane submitted this order",
@@ -27,7 +27,7 @@ module AuditLog
     # re-render differently after a gem upgrade, and would be indistinguishable
     # on the page from a summary that was frozen at emit time. The host has i18n
     # and knows what its models are called; it gets the raw materials.
-    class Entry
+    class Activity
       attr_reader :request_id, :occurred_at, :record_type, :record_id, :events, :changes
 
       def initialize(record_type:, record_id:, request_id:, occurred_at:, events:, changes:, labels: nil)

@@ -185,15 +185,15 @@ Do not "fix" these without reading the linked reasoning first.
   Do not restructure it into something a new screen can silently skip. **CSV export
   is deliberately unlabelled** — it is the evidence artifact and ships recorded ids.
 - **`AuditLog::Timeline` is a PUBLISHED CONTRACT host apps render, not an
-  internal query object.** Its value objects (`Entry`, `FieldChange`,
+  internal query object.** Its value objects (`Activity`, `FieldChange`,
   `TouchedRecord`, `Actor`) exist because the auditor screens encode rules that
   are invisible from outside the gem — the three nil shapes of a diff value, the
   nil-actor fallback, the redaction marker, the four `LabelResolver` outcomes,
   the never-drop-the-id rule. Handed a relation, every host app re-derives those
   and some get them wrong on a screen that looks fine. Changing a method name or
   a return shape here breaks apps you cannot see. DESIGN §11.2b.
-- **`Entry#headline` returns nil when no registered action covered the write, and
-  that nil is the contract — do NOT add a generated sentence.** A phrasing
+- **`Activity#headline` returns nil when no registered action covered the write,
+  and that nil is the contract — do NOT add a generated sentence.** A phrasing
   composed from column names would be this gem's wording rather than the app
   author's, would re-render differently after a gem upgrade, and — the part that
   matters — would be indistinguishable on the page from a `summary` frozen at
@@ -201,8 +201,8 @@ Do not "fix" these without reading the linked reasoning first.
   ending in nil. The host has i18n, knows its model names, and may have STI names
   the gem could never guess; it gets `operations`, `record_type` and
   `changed_columns`. `kind` (`:narrative` / `:change_only`) says which it holds.
-- **The timeline's spine is a UNION over both tables, keyed on the unit of work,
-  and the key must be ONE non-null text column.** `COALESCE(request_id::text,
+- **The timeline's index is a UNION over both tables, keyed on the unit of work,
+  and that key must be ONE non-null text column.** `COALESCE(request_id::text,
   'row:' || id)` — an out-of-band write has no `request_id` and each one is its
   own unit, so a synthetic key stops every uncorrelated write in the log
   collapsing into one NULL group. Keying on `(request_id, id)` instead, with a
@@ -214,26 +214,37 @@ Do not "fix" these without reading the linked reasoning first.
   an action that wrote only children (a line item added to an order that itself
   did not change), one whose write landed in another table, one that wrote
   nothing, and EVERY action on a record whose table is in `unaudited_tables` —
-  which has no trigger, so a changes-only spine renders an empty page for a
+  which has no trigger, so a changes-only index renders an empty page for a
   record with a full narrative history. What it still does not reach is an
   *unregistered* child-only write, and that is a registry gap for
   `audit_log:reconcile`, not something to chase through a child's foreign key: it
   would need a live join to a business table, which is what keeps these screens
   truthful about deleted records. DESIGN §11.2b.
-- **`SpineRow` has three requirements that all look like clutter and are not.**
-  (1) `table_name` must be a REAL table and the subquery must alias to that same
-  name, or ActiveRecord raises `PG::UndefinedTable` on `spine::regclass` just
-  loading the class — and `occurred_at` must be a typed timestamptz or Pagy
+- **`ActivityKey` and `Activity` are the same thing at two stages of loading, and
+  the split is forced rather than chosen.** `ActivityKey` is the identity (which
+  unit of work, and when); `Activity` is that with the events, change rows and
+  labels loaded. Pagy needs a RELATION to mint a cursor, so what comes out of
+  pagination must be an ActiveRecord object; hydration must be batched (three
+  queries a page, not three an activity); and Rule 2 keeps the limit above the
+  controller, so the library cannot paginate and hydrate in one call. Do not
+  "simplify" this into one type — that means making `Activity` an
+  `ActiveRecord::Base`, which drags `.where`/`.find`/`save` into a published
+  contract and leaves an unhydrated `Activity` answering `headline` with nil.
+  `ActivityKey` has NO `as_json` on purpose: it is a handle to hand back, not
+  content to render.
+- **`Timeline::ActivityKey` has three requirements that all look like clutter and
+  are not.** (1) `table_name` must be a REAL table and the subquery must alias to
+  that same name, or ActiveRecord raises `PG::UndefinedTable` just loading the class — and `occurred_at` must be a typed timestamptz or Pagy
   cannot render the cursor at microsecond precision, which is the
-  `FULL_PRECISION` bug all over again. (2) `attribute :uow, :string` declares the
-  synthetic column. (3) Callers must order with `arel_table[:uow]`, never
-  `order(uow: :desc)` — a non-column name renders as an `Arel::Nodes::SqlLiteral`
+  `FULL_PRECISION` bug all over again. (2) `attribute :key, :string` declares the
+  synthetic column. (3) Callers must order with `arel_table[:key]`, never
+  `order(key: :desc)` — a non-column name renders as an `Arel::Nodes::SqlLiteral`
   and `Pagy::Keyset#extract_keyset` calls `.name` on it. `timeline_spec` pins all
   three, so an upgrade that breaks one fails a spec rather than a screen.
-- **One spine row is one entry, so there is deliberately NO page-boundary rule.**
-  An earlier changes-only spine paged over change *rows* and grouped them, so a
-  unit of work could straddle a cursor and needed a de-duplication pass. Keying
-  the spine on the unit deleted that problem. Do not reintroduce row-level paging
+- **One unit of work is one activity, so there is deliberately NO page-boundary
+  rule.** An earlier changes-only index paged over change *rows* and grouped them,
+  so a unit could straddle a cursor and needed a de-duplication pass. Keying on
+  the unit itself deleted that problem. Do not reintroduce row-level paging
   here "for simplicity" — it costs a de-dup pass and buys nothing.
 - **`Timeline` is unbounded by default and there is deliberately no config-level
   default bound.** A bound nobody asked for is invisible truncation. `range:`
@@ -244,7 +255,7 @@ Do not "fix" these without reading the linked reasoning first.
   endless range is closed at `Time.current`, which is safe because
   `clock_timestamp()` cannot produce a future row and is worth 3x. Measured:
   72 partitions unbounded, 4 at `30.days.ago..Time.current`.
-- **`older_than_window?` is opt-in and must never be called from `#entries`.** It
+- **`older_than_window?` is opt-in and must never be called from `#activities`.** It
   deliberately looks below `range.begin` — the one thing the bound exists to
   avoid — so calling it per page hands back the pruning the caller just bought.
 - **`config.record_url` defaults to nil and the default is not a placeholder.**
@@ -259,12 +270,13 @@ Do not "fix" these without reading the linked reasoning first.
   one that keeps it.
 - **The Timeline card renders `metadata` in the SAME three states as
   `shared/_event_payload`, and the redaction note is not inside the
-  `<details>`.** The first version of the card had only `if entry.metadata.any?`,
-  which renders a redacted entry — whose metadata was emptied — as nothing at
-  all: the card picked up its warm tint and said nothing about why. That is the
-  silent hole redaction exists to avoid, in a new screen. `Entry#redacted?` is
-  the discriminator and reads through `Redaction.marker?`; the note precedes the
-  field changes, because it explains the `[redacted ...]` values below it.
+  `<details>`.** The first version of the card had only
+  `if activity.metadata.any?`, which renders a redacted activity — whose metadata
+  was emptied — as nothing at all: the card picked up its warm tint and said
+  nothing about why. That is the silent hole redaction exists to avoid, in a new
+  screen. `Activity#redacted?` is the discriminator and reads through
+  `Redaction.marker?`; the note precedes the field changes, because it explains
+  the `[redacted ...]` values below it.
   `audit_ui_spec` asserts the note is outside every `<details>` on the page, not
   merely present somewhere.
 - **The engine's Timeline tab renders the value objects, not relations.** That is

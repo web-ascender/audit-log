@@ -15,9 +15,9 @@ module AuditLog
   # host app re-derives those, and some get them wrong on a screen that looks
   # fine. The value objects make each rule a method call.
   #
-  # THE SPINE IS A UNION OVER BOTH TABLES ("Spine B"), keyed on the unit of work.
-  # An entry belongs on this record's timeline for either of two reasons, and
-  # both are real:
+  # THE KEYS ARE A UNION OVER BOTH TABLES, keyed on the unit of work. An activity
+  # belongs on this record's timeline for either of two reasons, and both are
+  # real:
   #
   #   the unit WROTE this record   -- an audit_changes row. Complete by
   #                                   construction, whatever path the write took.
@@ -30,7 +30,7 @@ module AuditLog
   # (order.emailed -> deliveries), an action that wrote nothing at all
   # (order.exported), and EVERY action on a record whose table is in
   # config.unaudited_tables -- which has no trigger, so no change rows exist and
-  # a changes-only spine renders an empty page. DESIGN §11.2b.
+  # a changes-only index renders an empty page. DESIGN §11.2b.
   #
   # WHAT IT STILL DOES NOT REACH, stated rather than discovered: an UNREGISTERED
   # action that only wrote children. No event, because nobody registered one, and
@@ -43,10 +43,10 @@ module AuditLog
   # records. It is a registry gap, and `rake audit_log:reconcile` is the tool that
   # reports it.
   #
-  # ONE SPINE ROW IS ONE ENTRY, which is why there is no page-boundary rule here.
-  # An earlier changes-only spine paged over change ROWS and grouped them, so one
-  # unit of work could straddle a cursor and needed a de-duplication pass; keying
-  # the spine on the unit itself deletes that problem rather than managing it.
+  # ONE UNIT OF WORK IS ONE ACTIVITY, which is why there is no page-boundary
+  # rule here. An earlier changes-only index paged over change ROWS and grouped them,
+  # so one unit could straddle a cursor and needed a de-duplication pass; keying
+  # on the unit itself deletes that problem rather than managing it.
   class Timeline
     attr_reader :record_type, :record_id, :range, :labels
 
@@ -76,40 +76,45 @@ module AuditLog
       @labels      = labels || AuditLog::LabelResolver.new
     end
 
-    # The spine, as an ORDERED, UNLIMITED relation: the caller paginates it and
-    # hands the page to #entries. Two calls rather than one because a limit
-    # applied below the controller is invisible to the screen rendering it --
-    # DESIGN §11.0 Rule 2.
+    # The activity keys, as an ORDERED, UNLIMITED relation: the caller paginates
+    # this and hands the page to #activities. Two calls rather than one because a
+    # limit applied below the controller is invisible to the screen rendering it
+    # -- DESIGN §11.0 Rule 2.
     #
-    # Order through arel_table on BOTH columns; see SpineRow for why
-    # `order(uow: :desc)` breaks Pagy.
-    def spine
-      SpineRow
-        .from(Arel.sql("(#{spine_sql}) AS #{SpineRow.table_name}"))
-        .select("uow", "occurred_at")
-        .order(SpineRow.arel_table[:occurred_at].desc, SpineRow.arel_table[:uow].desc)
+    # Order through arel_table on BOTH columns; see ActivityKey for why
+    # `order(key: :desc)` breaks Pagy.
+    def activity_keys
+      ActivityKey
+        .from(Arel.sql("(#{activity_keys_sql}) AS #{ActivityKey.table_name}"))
+        .select("key", "occurred_at")
+        .order(ActivityKey.arel_table[:occurred_at].desc, ActivityKey.arel_table[:key].desc)
     end
 
-    # A page of spine rows -> [Entry], newest first.
+    # A page of ActivityKeys -> [Activity], newest first.
     #
     # Four queries for the whole page regardless of its size: the change rows of
     # every correlated unit on the page, its events, the out-of-band rows, and one
     # label warm. The correlated hydrations are date-bounded off the page's own
     # rows (Record.grouped_by_request), so they prune too.
-    def entries(page)
+    def activities(page)
       rows = Array(page)
       return [] if rows.empty?
 
-      correlated, out_of_band = rows.partition { |row| !row.out_of_band? }
+      correlated, out_of_band = rows.partition { |activity_key| !activity_key.out_of_band? }
 
-      changes    = AuditLog::Change.grouped_by_request(correlated)
-      events     = AuditLog::Event.grouped_by_request(correlated)
-      loose      = out_of_band_changes(out_of_band)
+      changes = AuditLog::Change.grouped_by_request(correlated)
+      events  = AuditLog::Event.grouped_by_request(correlated)
+      loose   = out_of_band_changes(out_of_band)
       labels.warm(changes.values.flatten + loose.values)
 
-      rows.map do |row|
-        related = row.out_of_band? ? Array(loose[row.change_id]) : Array(changes[row.request_id])
-        build(row, related, row.out_of_band? ? [] : Array(events[row.request_id]))
+      rows.map do |activity_key|
+        related = if activity_key.out_of_band?
+                    Array(loose[activity_key.change_id])
+                  else
+                    Array(changes[activity_key.request_id])
+                  end
+        build(activity_key, related,
+              activity_key.out_of_band? ? [] : Array(events[activity_key.request_id]))
       end
     end
 
@@ -123,7 +128,7 @@ module AuditLog
       "from #{from.to_date.iso8601} to #{to.to_date.iso8601}"
     end
 
-    # OPT-IN, and never called from #entries. It answers "is there history older
+    # OPT-IN, and never called from #activities. It answers "is there history older
     # than this window?" -- the difference between "end of results" and "end of
     # the window" -- with one indexed existence check per table.
     #
@@ -158,18 +163,19 @@ module AuditLog
     # discards 60 -- while a bound timestamp prunes at PLAN time, which is where
     # the relation locks and opens are. Measured; do not "simplify" these binds
     # into SQL.
-    def spine_sql
+    def activity_keys_sql
+      prefix = ActivityKey::OUT_OF_BAND_PREFIX
       AuditLog::Change.sanitize_sql_array([<<~SQL, record_type, record_id, record_type, record_id])
-        SELECT uow, max(occurred_at) AS occurred_at FROM (
-          SELECT COALESCE(request_id::text, '#{SpineRow::OOB_PREFIX}' || id) AS uow, occurred_at
+        SELECT "key", max(occurred_at) AS occurred_at FROM (
+          SELECT COALESCE(request_id::text, '#{prefix}' || id) AS "key", occurred_at
             FROM audit_changes
            WHERE record_type = ?::text AND record_id = ?::bigint#{bound_sql}
           UNION ALL
-          SELECT request_id::text AS uow, occurred_at
+          SELECT request_id::text AS "key", occurred_at
             FROM audit_events
            WHERE subject_type = ?::text AND subject_id = ?::bigint#{bound_sql}
         ) legs
-        GROUP BY uow
+        GROUP BY "key"
       SQL
     end
 
@@ -200,22 +206,22 @@ module AuditLog
       scope.index_by(&:id)
     end
 
-    def build(row, related, events)
+    def build(activity_key, related, events)
       mine = related.select do |change|
         change.record_type == record_type && change.record_id.to_s == record_id.to_s
       end
 
-      entry = Entry.new(
+      activity = Activity.new(
         record_type: record_type, record_id: record_id,
-        request_id: row.request_id,
-        # From the SPINE, not from `mine`: an entry can legitimately have no
+        request_id: activity_key.request_id,
+        # From the KEY, not from `mine`: an activity can legitimately have no
         # change rows for this record at all -- that is the whole point of the
-        # second leg -- and max() over an empty list is nil.
-        occurred_at: row.occurred_at,
+        # events leg -- and max() over an empty list is nil.
+        occurred_at: activity_key.occurred_at,
         events: events, changes: mine.sort_by(&:occurred_at), labels: labels
       )
-      entry.also_touched = touched(related)
-      entry
+      activity.also_touched = touched(related)
+      activity
     end
 
     # The OTHER records the unit wrote, one per (type, id) rather than one per

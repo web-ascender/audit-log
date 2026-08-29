@@ -135,8 +135,8 @@ RSpec.describe "the auditor UI", type: :request do
       expect(response).to have_http_status(:ok)
       expect(response.body).to include("Submitted order")
       expect(response.body).to include("unit of work")
-      # One entry per unit of work, not one per audit row.
-      expect(response.body.scan(/class="entry /).size)
+      # One activity per unit of work, not one per audit row.
+      expect(response.body.scan(/class="activity /).size)
         .to eq(AuditLog::Change.for_record("Order", @order.id).distinct.count(:request_id))
     end
 
@@ -144,7 +144,7 @@ RSpec.describe "the auditor UI", type: :request do
     # emptied payload and an action that carried none are the SAME empty jsonb,
     # so the notice must not be collapsed behind a <details>. Getting this wrong
     # renders an erasure as an absence -- the card just looks empty.
-    it "discloses a redacted entry outside the collapsed payload" do
+    it "discloses a redacted activity outside the collapsed payload" do
       customer = create_customer(name: "Erasure Target")
       as_actor(staff) { customer.update!(name: "Changed Once") }
       AuditLog::Redaction.redact_record!(record_type: "Customer", record_id: customer.id,

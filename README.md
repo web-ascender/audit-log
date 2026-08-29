@@ -572,36 +572,36 @@ and the other records the same action touched.
 ```ruby
 # app/controllers/orders_controller.rb
 def show
-  @order   = Order.find(params[:id])
-  timeline = AuditLog::Timeline.for(@order)
-  @pagy    = pagy_keyset(timeline.spine)         # or any keyset pager
-  @entries = timeline.entries(@pagy.records)
+  @order      = Order.find(params[:id])
+  timeline    = AuditLog::Timeline.for(@order)
+  @pagy       = pagy_keyset(timeline.activity_keys)   # paginate the keys
+  @activities = timeline.activities(@pagy.records)    # load the activities
 end
 ```
 
 ```erb
-<% @entries.each do |entry| %>
+<% @activities.each do |activity| %>
   <li>
-    <time><%= l entry.occurred_at, format: :short %></time>
+    <time><%= l activity.occurred_at, format: :short %></time>
 
     <%# A registered action stored this sentence at emit time. nil when none did. %>
-    <% if entry.headline %>
-      <%= entry.headline %>
+    <% if activity.headline %>
+      <%= activity.headline %>
     <% else %>
-      <%= t(".#{entry.operations.first}", model: Order.model_name.human) %>
-      <%= entry.changed_columns.map { |c| Order.human_attribute_name(c) }.to_sentence %>
+      <%= t(".#{activity.operations.first}", model: Order.model_name.human) %>
+      <%= activity.changed_columns.map { |c| Order.human_attribute_name(c) }.to_sentence %>
     <% end %>
 
-    <span><%= entry.actor.display %></span>
+    <span><%= activity.actor.display %></span>
 
-    <% entry.field_changes.each do |fc| %>
+    <% activity.field_changes.each do |fc| %>
       <div><%= fc.column %>: <%= fc.from %> → <%= fc.to %></div>
     <% end %>
 
-    <% if entry.also_touched.any? %>
+    <% if activity.also_touched.any? %>
       <details>
-        <summary><%= entry.also_touched.size %> other records</summary>
-        <% entry.also_touched.each do |touched| %>
+        <summary><%= activity.also_touched.size %> other records</summary>
+        <% activity.also_touched.each do |touched| %>
           <div><%= link_to touched.to_s, touched.url || "#" %></div>
         <% end %>
       </details>
@@ -621,12 +621,25 @@ screen that looks fine. The value objects make each one a method call.
 
 | Object | Reads |
 |---|---|
-| `Entry` | `kind` (`:narrative` / `:change_only`), `headline`, `action`, `source`, `actor`, `occurred_at`, `operations`, `changed_columns`, `field_changes`, `also_touched`, `metadata`, `redacted?`, `out_of_band?` |
+| `Activity` | `kind` (`:narrative` / `:change_only`), `headline`, `action`, `source`, `actor`, `occurred_at`, `operations`, `changed_columns`, `field_changes`, `also_touched`, `metadata`, `redacted?`, `out_of_band?` |
 | `FieldChange` | `column`, `from`, `to`, `cleared?`, `set?`, `from_label` / `to_label`, `association?` |
 | `TouchedRecord` | `type`, `id`, `identifier`, `label`, `label_failed?`, `operations`, `columns`, `url`, `to_s` |
 | `Actor` | `type`, `id`, `label`, `display`, `system?`, `linkable?`, `url` |
 
-Every one has `as_json`, so a JSON API or a JS frontend gets the same contract.
+`Activity`, `FieldChange`, `TouchedRecord` and `Actor` each have `as_json`, so a
+JSON API or a JS frontend gets the same contract.
+
+**Why two calls, and two types.** `activity_keys` is an ActiveRecord relation of
+`Timeline::ActivityKey` — the *identity* of each activity (which unit of work,
+and when), and nothing else. It is an opaque handle: paginate it, hand the page
+straight back, never render it. `activities` turns that page into
+`Timeline::Activity` objects, loading the events, change rows and labels for the
+whole page in three queries rather than three per row.
+
+They are separate because Pagy needs a *relation* to build a cursor from, because
+hydration has to be batched, and because the limit belongs above the controller
+where you can see it (DESIGN §11.0 Rule 2) — so the library cannot paginate and
+load in one call.
 
 ### Four things to know
 
@@ -663,7 +676,7 @@ so gate it with your own policy layer.
 
 ### Bounding it
 
-`range:` narrows both halves of the spine and is the biggest lever on cost.
+`range:` narrows both halves of the union and is the biggest lever on cost.
 Measured against a 36-month horizon (72 monthly partitions across the two
 tables):
 
@@ -707,7 +720,7 @@ bought. Call it once, at the bottom of the last page.
 
 ### What the timeline covers
 
-The spine is a union, so an entry appears if the unit of work either **wrote**
+The index is a union, so an entry appears if the unit of work either **wrote**
 this record or was **about** it (an `audit_events` row whose `subject` is this
 record). That second half is what catches an action that wrote only children, one
 whose write landed in another table, one that wrote nothing at all, and every

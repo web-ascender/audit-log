@@ -53,7 +53,7 @@ module AuditLog
         # contract can build a real view. A presenter nothing in the gem consumes
         # drifts from what the auditor UI actually does -- the same argument that
         # makes Coverage back both the rake task and the shared example.
-        @entries        = record_timeline.entries(@pagy.records)
+        @activities     = record_timeline.activities(@pagy.records)
         @timeline_scope = record_timeline
       else
         @changes = @pagy.records
@@ -109,12 +109,12 @@ module AuditLog
       )
     end
 
-    # What the screen PAGES. For the timeline that is the union spine -- one row
-    # per unit of work -- which is not a row of either audit table and is not
-    # what the export ships. See csv_scope.
+    # What the screen PAGES. For the timeline those are ActivityKeys -- one per
+    # unit of work, not a row of either audit table, and not what the export
+    # ships. See csv_scope.
     def paginated_scope
       return timeline.events if @view == "actions"
-      return record_timeline.spine if @view == "timeline"
+      return record_timeline.activity_keys if @view == "timeline"
 
       record_changes
     end
@@ -124,7 +124,7 @@ module AuditLog
     # The CSV is the evidence artifact, and DESIGN §11.4a is why it ships
     # recorded rows: the actions tab exports the subject-matched events only,
     # because the correlated section below it is a capped inference; the timeline
-    # tab exports the record's CHANGE ROWS, because a spine row is a derived
+    # tab exports the record's CHANGE ROWS, because a unit of work is a derived
     # grouping this library invented and not something the database recorded. An
     # export that shipped either one would be claiming more than the log holds.
     def csv_scope

@@ -3,7 +3,7 @@
 module AuditLog
   class Timeline
     # Another record written by the same unit of work: the "and this also
-    # changed" beside an entry. One of these per (type, id), not per change row,
+    # changed" beside an activity. One of these per (type, id), not per change row,
     # because a save that touches one record twice is still one record.
     #
     # THE ID IS NEVER DROPPED. `to_s` renders `Grommet 10mm (Product #51)` and

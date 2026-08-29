@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-### The timeline spine becomes a union, and takes a date bound  **[2026-08-28]**
+### The timeline reads both tables, and takes a date bound  **[2026-08-28]**
 
 `AuditLog::Timeline` was anchored on `audit_changes` alone, which made it
 complete for every **write** to a record and silently blind to four things — each
@@ -17,14 +17,14 @@ one an action that named the record and wrote no change row *to it*:
    so no change rows exist, so the page came back empty for a record with a full
    narrative history. A category, not an edge case.
 
-`Timeline#changes` is now `Timeline#spine`: a union of the record's change rows
-and the events whose `subject` is that record, grouped by unit of work. All four
-are covered by that one leg.
+`Timeline#changes` is now `Timeline#activity_keys`: a union of the record's change
+rows and the events whose `subject` is that record, grouped by unit of work. All
+four are covered by that one leg.
 
-**It also removed code.** The old spine paged over change *rows* and grouped
+**It also removed code.** The old index paged over change *rows* and grouped
 them, so a unit of work could straddle a cursor and needed a de-duplication pass.
-Keying the spine on the unit itself deletes that problem rather than managing it —
-one spine row is one entry and cannot split.
+Keying on the unit itself deletes that problem rather than managing it — one unit
+of work is one activity and cannot split.
 
 **`range:` bounds both legs**, and is the biggest lever on cost. Measured with
 `EXPLAIN` against a 36-month horizon, 72 monthly partitions across the two tables:
@@ -48,7 +48,7 @@ bound nobody asked for is invisible truncation. A bounded timeline discloses
 itself through `bounded?` / `scope_description`, the way `requests/show` discloses
 the drill-down's window, and the engine's tab offers `?days=` so both states get
 rendered — a disclosure that never renders is a disclosure nobody has tested.
-`older_than_window?` is opt-in and never called from `#entries`, because it looks
+`older_than_window?` is opt-in and never called from `#activities`, because it looks
 below the bound and would hand back the pruning the caller just bought.
 
 Four things found building it, each of which fails quietly rather than loudly:
@@ -66,14 +66,27 @@ Four things found building it, each of which fails quietly rather than loudly:
 - **The bound belongs inside each leg.** On the outer aggregate the planner cannot
   push a predicate on `max(occurred_at)` back through the `GROUP BY`.
 - **Pagy paginates the subquery, but only under three conditions** — a real
-  `table_name` that the subquery aliases to, `attribute :uow, :string`, and
-  ordering through `arel_table` rather than a symbol. `SpineRow` documents each
+  `table_name` that the subquery aliases to, `attribute :key, :string`, and
+  ordering through `arel_table` rather than a symbol. `ActivityKey` documents each
   and `timeline_spec` pins them, so a Rails or Pagy upgrade fails a spec instead
   of a screen.
 
-The CSV export is unchanged and deliberately not the spine: the timeline tab ships
-the record's change rows, because a spine row is a grouping this library invented
-rather than something the database recorded.
+The CSV export is unchanged and deliberately not this index: the timeline tab
+ships the record's change rows, because a unit of work is a grouping this library
+invented rather than something the database recorded.
+
+**Naming.** The two host-facing types are now `Timeline::Activity` — one thing
+that happened to a record, loaded and ready to render — and
+`Timeline::ActivityKey`, its identity before loading. They are the same thing at
+two stages, and naming the second one after the first is what makes that legible;
+an earlier pass called them `Entry` and `UnitOfWork`, two unrelated nouns for one
+concept, and before that `SpineRow` with a `uow` column — vocabulary from the
+design discussion that never earned its place in an API host applications read.
+*Unit of work* survives as the prose term for the grouping principle, which is
+what it always described.
+
+`ActivityKey` deliberately has no `as_json`: it is an opaque handle to paginate
+and hand back, not content to render.
 
 
 ### A host-facing activity timeline  **[2026-08-28]**
@@ -84,10 +97,10 @@ own markup, for its own staff.
 
 - **`AuditLog::Timeline.for(record)`** — a paginated list of **units of work**,
   not audit rows. A form submit that saves an order and forty line items is ONE
-  entry, with the order's field changes on it and the forty line items beside it.
-  `#changes` is the ordered, unlimited spine the caller paginates; `#entries(page)`
+  activity, with the order's field changes on it and the forty line items beside it.
+  `#activity_keys` is the ordered, unlimited index the caller paginates; `#activities(page)`
   turns a page into value objects with three queries regardless of page size.
-- **Value objects, not relations: `Entry`, `FieldChange`, `TouchedRecord`,
+- **Value objects, not relations: `Activity`, `FieldChange`, `TouchedRecord`,
   `Actor`,** each with `as_json`. This is the point of the feature. The auditor
   screens encode rules invisible from outside the gem — the three nil shapes of a
   diff value, the nil actor that renders "System" but is never stored that way,
@@ -105,7 +118,7 @@ own markup, for its own staff.
 
 Three decisions worth stating, since each looks like something to improve:
 
-- **`Entry#headline` returns nil when nothing registered covered the write.** The
+- **`Activity#headline` returns nil when nothing registered covered the write.** The
   library does not compose "Jane updated status and total" from column names.
   That would be this gem's phrasing rather than the app author's, would
   re-render differently after a gem upgrade, and would be indistinguishable on
@@ -113,16 +126,16 @@ Three decisions worth stating, since each looks like something to improve:
   the costume of immutable history. The host has i18n and its own model names;
   it gets `operations`, `record_type` and `changed_columns`, and `kind` says
   which it is holding.
-- **The page-boundary rule.** An entry is hydrated with every change row of its
+- **The page-boundary rule.** An activity is hydrated with every change row of its
   unit of work, including rows past the end of the page, so a cursor never splits
   one save in half. The next page therefore starts on one of those older rows, so
-  an entry whose newest row is newer than the page's own head was already shown
+  an activity whose newest row is newer than the page's own head was already shown
   in full and is dropped. Local, stateless, and can only ever drop a duplicate.
 - **No authorization in the object.** It exposes everything and the host gates
   it. "Admins only" is a question about the host's roles that no lambda here
   would express better than its existing policy layer.
 
-Spine A: the timeline is anchored on `audit_changes`, so no **write** to a record
+At this point the timeline was anchored on `audit_changes` alone, so no **write** to a record
 can be missing from it whatever path it took. An event that named the record but
 wrote no change row to it (`order.emailed`) does not appear, stays on the Actions
 tab, and DESIGN §11.2b carries the union query that would close it — including why
@@ -140,8 +153,8 @@ lives in the host app, as all of the auditor UI's does; the reference app's
 stylesheet gained it.
 
 Fixed while styling those cards, and it was a real hole rather than a cosmetic
-one: the Timeline card rendered `metadata` with a bare `if entry.metadata.any?`,
-so a **redacted** entry — whose metadata was emptied — rendered as nothing at
+one: the Timeline card rendered `metadata` with a bare `if activity.metadata.any?`,
+so a **redacted** activity — whose metadata was emptied — rendered as nothing at
 all. The card took its warm tint and said nothing about why. It now carries the
 same three states as `shared/_event_payload`, with the notice deliberately
 outside the `<details>`: a disclosure the reader has to click for is not a
