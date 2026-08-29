@@ -55,6 +55,77 @@ rows constituted "submitting an order".
 
 ---
 
+## Getting started, end to end
+
+An existing Rails app with existing models. Five steps, three of them generators.
+
+```bash
+# 1. Add the gem, then install: initializer, schema migration, integration
+#    points, the auditor UI at /audit, the coverage spec.
+bin/rails generate audit_log:install
+
+# 2. One line per audited table. Which tables deserve auditing is a judgement
+#    about your domain, so nothing can infer it.
+bin/rails generate audit_log:trigger orders   --model=Order
+bin/rails generate audit_log:trigger products --model=Product
+bin/rails db:migrate
+
+# 3. Prove nothing escaped the decision. Fails until every table is either
+#    audited or listed in config.unaudited_tables with a written reason.
+bin/rails audit_log:coverage
+
+# 4. Name the actions worth a sentence, in config/initializers/audit_log.rb,
+#    and call AuditLog.notify from the code that performs them. Optional --
+#    every change is already recorded without this; the registry is what makes
+#    the log readable rather than merely complete.
+
+# 5. Give your own pages an activity history. Takes any number of models.
+bin/rails generate audit_log:activity Order Product LineItem
+```
+
+Then edit `RecordActivity#audit_activity_visible?` — the generator prints this in
+red, because it denies everyone until you do.
+
+**Later, when a new model needs one:**
+
+```bash
+bin/rails generate audit_log:activity Invoice
+```
+
+The second run adds `Invoice` to the allowlist and wires up its show page. Every
+file already generated is left alone.
+
+### The generators
+
+| | Does | Run it |
+|---|---|---|
+| `audit_log:install` | initializer, schema migration, `ControllerContext` and `JobContext` includes, mounts the engine, coverage spec | once |
+| `audit_log:trigger TABLE --model=Model` | a migration with one `attach_audit_trigger` line | once per audited table |
+| `audit_log:activity Model [Model...]` | controller, concern, helper, views, route, locale, stylesheet — and wires each model's show page | once, then again per new model |
+
+`audit_log:activity` takes **any number of models in one call**, and calling it
+again later is how you add more. Both reach the same place:
+
+```bash
+bin/rails generate audit_log:activity Order Product LineItem
+# ...is equivalent to:
+bin/rails generate audit_log:activity Order
+bin/rails generate audit_log:activity Product LineItem
+```
+
+A model with no show page — `LineItem` usually — is still added to the allowlist
+and still readable at `/activity/LineItem/86`; the generator just reports that it
+could not find `line_items_controller.rb` and prints the two lines for when you
+do have one. **The allowlist and the show-page wiring are independent**, which is
+right: a child record often has a history worth reading and no page of its own.
+
+Options: `--css=plain|tailwind|bootstrap`, `--path=activity`,
+`--skip-show-pages`, `--skip-views`, `--skip-css`, `--skip-locale`,
+`--skip-routes`, and `--force` to re-baseline generated files against the current
+templates.
+
+---
+
 ## Installing into a Rails 8 app
 
 ```ruby
@@ -775,10 +846,10 @@ You do not have to write any of the above by hand:
 rails generate audit_log:activity Order Product Customer
 ```
 
-That produces a controller, a concern, a helper, three views, a route, a locale
-file and a stylesheet — the reference app's implementation, extracted into
-templates. It is **yours**: plain Rails, no gem-side indirection, never
-re-generated or upgraded later.
+**Any number of models, in one call or several.** That produces a controller, a
+concern, a helper, three views, a route, a locale file and a stylesheet — the
+reference app's implementation, extracted into templates. It is **yours**: plain
+Rails, no gem-side indirection, never re-generated or upgraded later.
 
 | | |
 |---|---|
@@ -813,10 +884,10 @@ an *empty feed* and reports nothing, which reads as the audit log having no data
 **Adding a model later is the same command again:**
 
 ```bash
-rails generate audit_log:activity Product
+rails generate audit_log:activity Invoice Shipment
 ```
 
-That second run adds `Product` to the allowlist, wires up `products/show`, and
+That second run adds both to the allowlist, wires up their show pages, and
 **leaves every generated file alone** — they are yours the moment they land, and
 a generator that quietly reverses an edited authorization rule is worse than no
 generator. `--force` re-baselines everything against the current templates when

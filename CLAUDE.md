@@ -468,7 +468,11 @@ browsable results. `config.page_size` is the only knob.
 ## The activity generator
 
 `rails generate audit_log:activity Order Product Customer` emits the reference
-app's timeline UI into a host app. Four things about it are load-bearing:
+app's timeline UI into a host app. It takes any number of models, and running it
+again later adds more — that second run is the one to think about when changing
+anything here, because it meets files the host has since edited.
+
+What is load-bearing about it:
 
 - **The templates ARE the reference app's files.** `../audit-log-demo` is
   regenerated from them and differs by exactly one line — its
