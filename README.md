@@ -900,7 +900,7 @@ application that has opted nothing in pays nothing.
 | `lib/audit_log/bypass.rb` | The one escape hatch, which logs itself. |
 | `lib/audit_log/redaction.rb` | The **only** thing allowed to modify audit rows. Values go, structure stays. |
 | `lib/audit_log/archive.rb` | Retired partitions → gzipped CSV + manifest; drops only what verifies. |
-| `lib/audit_log/pagination.rb` | Keyset paging for the screens. No page numbers, no counts. |
+| `lib/audit_log/pagination.rb` | Keyset paging, for the auditor screens **and for host apps** — `include AuditLog::Pagination`. No page numbers, no counts, and a microsecond cursor. |
 | `lib/audit_log/csv_export.rb` | Streaming CSV for the screens. No row cap. |
 | `lib/audit_log/engine.rb` | Initializers: the adapter prepend, the event subscriber, `PGTZ`. |
 | `lib/audit_log/console.rb` | Narrates console sessions. |

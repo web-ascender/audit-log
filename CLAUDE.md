@@ -465,6 +465,37 @@ browsable results. `config.page_size` is the only knob.
   `spec/audit_log/pagination_spec.rb` pins it with six rows inside one
   millisecond; that example returns 2 of 6 rows if the lambda is removed.
 
+## Things that look DEAD and are not
+
+A grep for callers marks all of these unused. Audited 2026-08-29 — 163 public
+methods, 3 genuinely dead and removed (`ActionReport.available_actions`,
+`Current#correlated?`, `Event::SOURCES`). Everything below survived that pass on
+purpose, so do not re-run the audit and delete them.
+
+| Looks unused | Actually |
+|---|---|
+| every public method in `lib/generators/` | Thor invokes each one as a generator step; naming them is the API |
+| `TransactionStamp#exec_rollback_db_transaction` / `#exec_rollback_to_savepoint` | ActiveRecord adapter hooks. Clearing the per-connection memo on rollback is load-bearing — see the entry above |
+| `JobContext#deserialize` | an ActiveJob hook |
+| the six controllers in `app/controllers/` | routed by `config/routes.rb`, so no source file names the constant |
+| `detach_audit_trigger` | published migration API; detach-then-attach is the supported way to change a table's exclusions |
+| `Redaction.redact_actor!` | a documented capability (DESIGN §13), reachable from a console rather than a rake task |
+| `RecordLabel.labelable?` / `.overridden_to_s?` | called inside `record_label.rb` itself |
+| `Timeline::FieldChange#association?`, `TouchedRecord#label_failed?`, `Actor#system?` | the published host-facing contract — a host renders these, this gem does not have to |
+
+**Two are kept for symmetry and that is a real reason.** `Change#updated?` and
+`Timeline::Activity#change_only?` are each the unused third of a set whose other
+members are used. A model answering `created?` and `deleted?` but not `updated?`
+is a surprise somebody re-adds within a month, and the re-adding is more churn
+than the three lines cost.
+
+**And one that looked dead was the opposite.** `Change#operation_name` had no
+callers because a refactor had inlined `OPERATION_NAMES.fetch(op, op)` into three
+places instead. Deleting it would have removed the one thing that should have
+been shared; it is now a class method both helpers call. When something in this
+library has no callers, check whether the thing it encapsulates has been copied
+rather than dropped.
+
 ## Adding a model (what a host app does)
 
 Nothing goes in the model class — no concern, no callback, no base class. The

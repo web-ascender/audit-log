@@ -1458,6 +1458,15 @@ Three properties are worth stating because each one is a way this could have gon
 grow and no COUNT to compute. The dashboard keeps fixed limits deliberately — its lists are "10
 most recent" summary widgets, not browsable result sets.
 
+**`AuditLog::Pagination` is part of the host-facing contract, not an engine internal**
+**[added 2026-08-29]**. A host application rendering a timeline (§11.2b) includes it and calls
+`paginate`, and the documentation says so outright rather than suggesting "any keyset pager". The
+reason is property 4 above: a host that hand-rolls one gets ActiveSupport's default millisecond
+cursor and silently drops rows between pages, as a rare flake, in an audit view. Every adopting
+application would rediscover the same defect one flake at a time. The module also carries the
+mismatched-cursor fallback, which is the other thing a hand-rolled pager gets wrong — by raising,
+or worse, by applying it.
+
 Both models are read-only (`def readonly? = persisted?` — **not** `= true`, which breaks inserts
 and silently disables layer 2; see §12) and paired with a query object per screen.
 

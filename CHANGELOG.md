@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+### Dead code audit  **[2026-08-29]**
+
+Every public method, class, constant, config attribute and view partial in the
+gem, checked against both this repo and the reference app. 163 public methods,
+11 candidates, 3 genuinely dead:
+
+- **`ActionReport.available_actions`** wrapped `Registry.keys` in a method nothing
+  called — `ActionsController#index` calls the registry directly. Its spec was the
+  interesting part: it asserted a method the screen does not use, so it passed
+  green while the real path went untested. Rewritten to assert the property the
+  controller actually has: an action that is registered and has never been emitted
+  still belongs in the picker, because one sourced from `audit_events` would hide
+  exactly the actions an auditor is most likely asking about.
+- **`Current#correlated?`** — no callers anywhere.
+- **`Event::SOURCES`** — unreferenced *and wrong*. It listed `migration`, which
+  nothing in this library ever writes; the values actually produced are `web`,
+  `api`, `job`, `system` and `console`. No CHECK constraint behind it and nothing
+  validating against it, so it was a list a host could read, believe, and build a
+  filter from that would never match. Worse than merely unused.
+
+**`Change#operation_name` looked like a fourth and was the opposite.** It had no
+callers because an earlier refactor inlined `OPERATION_NAMES.fetch(op, op)` into
+three places instead — this model, the gem's badge helper, and the reference
+app's. Deleting it would have removed the one thing that should have been shared.
+It is now a class method, since every caller holds a bare operation code rather
+than a row, and both helpers go through it.
+
+The audit's *negative* results are now recorded in CLAUDE.md under **"Things that
+look DEAD and are not"** — Thor generator steps, ActiveRecord and ActiveJob
+hooks, routed controllers, published API with no in-gem caller, and two
+predicates kept for symmetry. A future pass would otherwise delete them.
+
+### `AuditLog::Pagination` is host-facing  **[2026-08-29]**
+
+Documented in the README, DESIGN §11.0 and CLAUDE.md as something a host app
+`include`s, replacing a README line that suggested "any keyset pager". A
+hand-rolled one gets ActiveSupport's default millisecond cursor while
+`occurred_at` is microsecond `clock_timestamp()`, so rows vanish between pages,
+silently, as a rare flake — every adopting application rediscovering the same
+defect. The module also carries the mismatched-cursor fallback.
+
+
 ### The timeline reads both tables, and takes a date bound  **[2026-08-28]**
 
 `AuditLog::Timeline` was anchored on `audit_changes` alone, which made it
