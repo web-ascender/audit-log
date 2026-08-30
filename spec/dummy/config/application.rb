@@ -19,7 +19,11 @@ require "audit_log"
 
 module Dummy
   class Application < Rails::Application
-    config.load_defaults 8.1
+    # Tracks the Rails actually resolved, rather than a literal, because CI runs
+    # this app against BOTH ends of the gemspec's `rails ~> 8.0` (RAILS_VERSION
+    # in the Gemfile). A hardcoded 8.1 raises `Unknown version "8.1"` on the 8.0
+    # leg before a single example loads.
+    config.load_defaults "#{Rails::VERSION::MAJOR}.#{Rails::VERSION::MINOR}"
     config.root = File.expand_path("..", __dir__)
 
     # REQUIRED by the audit design, and required before the first migration

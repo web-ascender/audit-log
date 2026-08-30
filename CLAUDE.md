@@ -62,13 +62,14 @@ Update it when you change behaviour.
 | Ruby | **>= 3.3** — the floor is `SecureRandom.uuid_v7` (DESIGN §2.1), not a preference. 3.3.0 exactly also cannot run Rails 8.1, for a reason of Rails' own. Developed on 4.0.6. |
 | Rails | **`~> 8.0`** — floor 8.0 (DESIGN §2.2), and a real ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. Developed on 8.1.3.1. |
 | PostgreSQL | **>= 16.** Developed on 18.6, port 5438 — not the workspace default 5437. CI runs 16 and 18; DESIGN §20 is the authority and says the design "targets PG 16 and requires nothing newer". Verified: the whole suite passes on 16.13. |
-| Tests | RSpec against `spec/dummy` (346 examples), on every push via GitHub Actions |
+| Tests | RSpec against `spec/dummy` (350 examples), on every push via GitHub Actions — six legs: Ruby 3.3/4.0.6 × Rails 8.0/latest × PG 16/18 |
 | Runtime deps | `rails`, `csv` (export). **`pg` and `pagy` deliberately are not** — the host app picks its own `pg` build, and its own pagination gem. `AuditLog::Pagination` is this library's own keyset pager precisely so a `pagy` constraint does not propagate into the host. |
 
 ```bash
 bundle install
 cd spec/dummy && RAILS_ENV=test bundle exec bin/rails db:create db:migrate
 bundle exec rspec                       # from the gem root
+RAILS_VERSION="~> 8.0.0" bundle install && bundle exec rspec   # the Rails floor, as CI runs it
 bundle exec rspec spec/preview.rb       # renders all 17 engine screens to spec/dummy/public/
 ```
 
@@ -747,7 +748,7 @@ one. Do not reintroduce it.
 ## Testing
 
 ```bash
-bundle exec rspec                         # 346 examples, against spec/dummy
+bundle exec rspec                         # 350 examples, against spec/dummy
 bundle exec rspec spec/audit_log          # the library proper
 bundle exec rspec spec/requests           # the auditor UI and the CSV export
 bundle exec rspec spec/preview.rb         # dev tool: renders 17 screens to spec/dummy/public/
@@ -780,6 +781,7 @@ property from different angles — **that nothing goes missing without saying so
 | `record_timeline_spec` | an unsubjected action vanishes from a record's narrative, or a capped section does not admit it is capped |
 | `timeline_spec` | the published host-facing contract changes shape, a unit of work is dropped or repeated across pages, an event that wrote no change row falls off the timeline, or `headline` starts inventing sentences |
 | `install_generator_spec` | the ControllerContext include lands ahead of authentication, or a skipped step reports success |
+| `event_transport_spec` | layer 2 silently stops emitting on one end of `rails ~> 8.0`, or takes the wrong branch for the Rails it is on |
 
 A change that makes any of those pass *more easily* is a regression.
 

@@ -3,6 +3,26 @@
 Notable changes to `audit_log`. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **The Rails 8.0 CI gap is closed**, and it was a real gap rather than a
+  formality. `rails: ["8.0", "latest"]` joins the Ruby and PostgreSQL floor legs
+  on the same argument: a floor nothing runs against is a guess. It found one
+  breakage on the first run — `spec/dummy` pinned `config.load_defaults 8.1`,
+  which raises `Unknown version "8.1"` on Rails 8.0 before an example loads. The
+  library itself needed no change.
+- **`AuditLog.notify`'s fallback for the absent `Rails.event` is now exercised.**
+  Rails 8.0 has no event reporter, so the floor takes a different branch than the
+  development version — and it was the branch nothing ran. `event_transport_spec`
+  asserts which branch each Rails takes, in both directions, so the leg proves
+  the fallback works rather than that nothing raised.
+
+`latest` is unpinned on purpose: it is the newest Rails the gemspec admits, so
+8.2 is tested the day it ships. Six legs, not eight — Rails 8.0 runs at every
+floor at once (Ruby 3.3 / PG 16) and on the development pair (4.0.6 / PG 18).
+
 ## 0.2.0 — 2026-08-30
 
 **`pagy` is no longer a dependency.** `AuditLog::Pagination` is unchanged in shape

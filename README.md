@@ -135,7 +135,7 @@ end, along with the cases where this gem is the **wrong** choice.
 | | | Why it is a floor and not a preference |
 |---|---|---|
 | Ruby | **>= 3.3** | `SecureRandom.uuid_v7`, which is `Context.new_request_id`. On 3.2 every correlated write raises. UUIDv7 gives the `audit_changes(request_id)` index insert locality, and its embedded timestamp is what bounds the drill-down. DESIGN §2.1. |
-| Rails | **`~> 8.0`** | 8.0 floor for `Rails.event` (with a fallback); ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. DESIGN §2.2. |
+| Rails | **`~> 8.0`** | 8.0 floor for `Rails.event` (with a fallback, and CI runs the suite on 8.0 so the fallback is exercised rather than assumed); ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. DESIGN §2.2. |
 | PostgreSQL | **>= 16** | Layer 1 *is* a plpgsql trigger writing jsonb into range-partitioned tables, so this is not swappable for another database — but nothing here needs a recent Postgres. 16, 17 and 18 are all supported; CI runs the suite on 16 and 18. DESIGN §20. |
 
 `pg` is deliberately *not* a dependency, so your app picks its own build. Nor is

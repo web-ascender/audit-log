@@ -20,12 +20,12 @@ concurrency:
 
 jobs:
   spec:
-    name: rspec (Ruby ${{ matrix.ruby }}, PostgreSQL ${{ matrix.postgres }})
+    name: rspec (Ruby ${{ matrix.ruby }}, Rails ${{ matrix.rails }}, PostgreSQL ${{ matrix.postgres }})
     runs-on: ubuntu-latest
 
     strategy:
-      # Both legs always run: which Ruby broke is the whole point, so stopping at
-      # the first failure would throw away half the answer.
+      # Every leg always runs: which combination broke is the whole point, so
+      # stopping at the first failure would throw away most of the answer.
       fail-fast: false
       matrix:
         # 3.3 is the FLOOR (required_ruby_version), and it is here because testing
@@ -60,6 +60,41 @@ jobs:
         # from -- eager page freezing on insert-only partitions above all.
         postgres: ["16", "18"]
 
+        # 8.0 is the FLOOR `rails ~> 8.0` claims, and it is here for the third
+        # time on the same argument: an unrun floor is a guess. This one had
+        # already been WRITTEN DOWN as a guess -- CLAUDE.md carried the standing
+        # note "Unverified claim, deliberately left standing: `rails ~> 8.0`
+        # admits 8.0, but CI tests 8.1.3.1 only", and the 0.1.0 CHANGELOG listed
+        # it under Known gaps. It was not a hypothetical gap either: Rails 8.0
+        # has no `Rails.event`, so AuditLog.notify takes a DIFFERENT BRANCH there
+        # (falling back to calling the subscriber directly), and that branch was
+        # the one every adopter on the floor would use and the only one nothing
+        # ran. event_transport_spec asserts which branch is taken, in both
+        # directions, so this leg proves the fallback works rather than merely
+        # that nothing raised.
+        #
+        # Adding it found one real breakage immediately: spec/dummy pinned
+        # `config.load_defaults 8.1`, which raises `Unknown version "8.1"` on 8.0
+        # before a single example loads. It now tracks the resolved Rails.
+        #
+        # "latest" is UNPINNED on purpose and is not a synonym for 8.1: it is the
+        # newest Rails the gemspec admits, so when 8.2 ships this leg tests it
+        # without anybody editing this file. Pinning both ends would quietly stop
+        # testing the ceiling the day it moved.
+        rails: ["8.0", "latest"]
+
+        # Six legs, not eight. Rails 8.0 runs on the two combinations worth
+        # having -- every floor at once (3.3 / PG 16), and the floor Rails on the
+        # development Ruby and Postgres -- while `latest` keeps the full 2x2 it
+        # has always had. The excluded pair would only re-test a middle.
+        exclude:
+          - ruby: "3.3"
+            postgres: "18"
+            rails: "8.0"
+          - ruby: "4.0.6"
+            postgres: "16"
+            rails: "8.0"
+
     services:
       # Both ends of the supported range, per DESIGN §20: 16 because that is the
       # floor the design claims, 18 because that is what it is developed on.
@@ -85,6 +120,9 @@ jobs:
 
     env:
       RAILS_ENV: test
+      # Read by the Gemfile. Empty means "resolve normally", which is the
+      # `latest` leg -- see the note there and the one in the Gemfile.
+      RAILS_VERSION: ${{ matrix.rails == '8.0' && '~> 8.0.0' || '' }}
       # spec/dummy/config/database.yml reads all four, defaulting to the local
       # non-standard port 5438. CI is an ordinary 5432.
       AUDIT_LOG_DB_HOST: localhost
@@ -143,6 +181,21 @@ jobs:
           case "$version" in
             ${{ matrix.postgres }}*) ;;
             *) echo "::error::Expected PostgreSQL ${{ matrix.postgres }}, got $version. See DESIGN.md §20."; exit 1 ;;
+          esac
+
+      # Same discipline as the PostgreSQL version assertion above: a matrix leg
+      # that silently resolved the wrong Rails would report a floor as tested
+      # when it was not -- the exact failure this leg exists to close.
+      - name: Assert the Rails version under test
+        run: |
+          version=$(bundle exec ruby -e 'require "rails"; print Rails::VERSION::STRING')
+          echo "Rails $version"
+          case "${{ matrix.rails }}" in
+            latest) ;;
+            *) case "$version" in
+                 ${{ matrix.rails }}.*) ;;
+                 *) echo "::error::Expected Rails ${{ matrix.rails }}.x, got $version."; exit 1 ;;
+               esac ;;
           esac
 
       - name: Prepare the dummy app's database
