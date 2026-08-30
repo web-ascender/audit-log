@@ -23,11 +23,6 @@ the authority on *why* any of this is shaped the way it is.
   - [Then run the generator](#then-run-the-generator)
   - [The two manual steps](#the-two-manual-steps)
   - [What a model needs](#what-a-model-needs)
-- [Configuration](#configuration)
-  - [The ones you should look at before deploying](#the-ones-you-should-look-at-before-deploying)
-  - [Rendering and screens](#rendering-and-screens)
-  - [Storage lifecycle](#storage-lifecycle)
-  - [Rarely touched](#rarely-touched)
 - [Emitting events from a controller action](#emitting-events-from-a-controller-action)
   - [The ordinary case: create, update, destroy](#the-ordinary-case-create-update-destroy)
   - [An action that spans several writes](#an-action-that-spans-several-writes)
@@ -39,6 +34,7 @@ the authority on *why* any of this is shaped the way it is.
 - [Building an activity history in your own app](#building-an-activity-history-in-your-own-app)
   - [Generate it](#generate-it)
   - [A worked example](#a-worked-example)
+  - [Writing the view yourself](#writing-the-view-yourself)
   - [Use `AuditLog::Pagination`, do not hand-roll one](#use-auditlogpagination-do-not-hand-roll-one)
   - [Four things to know](#four-things-to-know)
   - [Bounding it](#bounding-it)
@@ -47,6 +43,14 @@ the authority on *why* any of this is shaped the way it is.
   - [The four things a cell can say](#the-four-things-a-cell-can-say)
   - [Configuring the label lookup](#configuring-the-label-lookup)
   - [Two things to know before turning it on](#two-things-to-know-before-turning-it-on)
+- [Configuration](#configuration)
+  - [The ones you should look at before deploying](#the-ones-you-should-look-at-before-deploying)
+  - [Rendering and screens](#rendering-and-screens)
+  - [Storage lifecycle](#storage-lifecycle)
+  - [Rarely touched](#rarely-touched)
+- [Generator options](#generator-options)
+  - [`audit_log:trigger` options](#audit_logtrigger-options)
+  - [`audit_log:views:activity` options](#audit_logviewsactivity-options)
 - [Rake tasks](#rake-tasks)
   - [Schedule this one](#schedule-this-one)
   - [Run when something needs it](#run-when-something-needs-it)
@@ -209,76 +213,7 @@ file already generated is left alone.
 | `audit_log:trigger TABLE --replace` | detach-then-attach, to change a table's model or exclusions | when those change |
 | `audit_log:views:activity Model [Model...]` | controller, concern, helper, views, route, locale, stylesheet — and wires each model's show page | once, then again per new model |
 
-#### `audit_log:trigger` options
-
-```bash
-bin/rails generate audit_log:trigger orders \
-  --model=Order \
-  --exclude=internal_notes search_vector
-```
-
-| | |
-|---|---|
-| `--model=Order` | the model name recorded on every `audit_changes` row. Defaults to the table name classified — pass it when they differ, because this string is what every screen filters and groups on. |
-| `--exclude=a b c` | columns kept **out of the diff**, on top of `config.default_excluded_columns` |
-| `--replace` | detach first. Required to change an existing trigger's model or exclusions — see [Re-attaching](#re-attaching-and-changing-a-tables-exclusions). |
-
-**What `--exclude` is for.** The trigger writes a diff of every column that
-changed. Some columns change constantly and mean nothing to an auditor, and a few
-should never be copied anywhere at all:
-
-- **Noise that would drown the signal.** A `search_vector`, a denormalised
-  counter, a `last_seen_at` touched on every request. Left in, an auditor reading
-  "what changed on this order" wades through a column nobody asked about, and the
-  jsonb `diff` grows for no benefit.
-- **Values you do not want a second copy of.** `config.default_excluded_columns`
-  already covers the usual suspects — `created_at`, `updated_at`,
-  `lock_version`, `password_digest`, `encrypted_password`, and Devise's reset
-  tokens. `--exclude` is for the ones only your schema knows about: an API secret,
-  a bearer token, a column holding something a customer can ask you to erase.
-
-**What it does not do.** Excluding a column does not stop the row being audited.
-The change is still recorded — who, when, under which `request_id`, and every
-*other* column that moved. Only that column's before/after values are left out.
-
-That distinction is the reason to reach for `--exclude` rather than
-`unaudited_tables`: the latter drops the whole table from the log and needs a
-written reason to pass `audit_log:coverage`.
-
-> **Excluding is not retroactive, in either direction.** A newly excluded column
-> stops appearing from the re-attach forward and **stays in the history written
-> before it** — `AuditLog::Redaction` is the tool for values already recorded.
-> And un-excluding one does not recover the values that were never captured.
-
-Changing exclusions later means `--replace`, because attaching is deliberately
-not idempotent: a second attach on the same table fails with `42710` rather than
-letting two triggers coexist and write two rows per change under different
-exclusion sets.
-
-#### `audit_log:views:activity` options
-
-`audit_log:views:activity` takes **any number of models in one call**, and calling it
-again later is how you add more. Both reach the same place:
-
-```bash
-bin/rails generate audit_log:views:activity Order Product LineItem
-# ...is equivalent to:
-bin/rails generate audit_log:views:activity Order
-bin/rails generate audit_log:views:activity Product LineItem
-```
-
-A model with no show page — `LineItem` usually — is still added to the allowlist
-and still readable at `/activity/LineItem/86`; the generator just reports that it
-could not find `line_items_controller.rb` and prints the two lines for when you
-do have one. **The allowlist and the show-page wiring are independent**, which is
-right: a child record often has a history worth reading and no page of its own.
-
-Options: `--css=plain|tailwind|bootstrap`, `--path=activity`,
-`--skip-show-pages`, `--skip-views`, `--skip-css`, `--skip-locale`,
-`--skip-routes`, and `--force` to re-baseline generated files against the current
-templates.
-
----
+Every flag each one takes is in [Generator options](#generator-options).
 
 ## Installing into a Rails 8 app
 
@@ -424,57 +359,6 @@ to be certain, so confirm.
 Nothing. No `has_audit_log`, no `include Auditable`, no callback, no base class.
 An audited model is an ordinary `ApplicationRecord`. The one line of per-model
 cost lives in the migration, next to the table it audits.
-
-## Configuration
-
-Everything this gem needs to know about your application, in one file. The
-install generator writes `config/initializers/audit_log.rb` with the ones that
-matter commented in place; this is the whole list.
-
-**Nothing here names one of your constants.** Every coupling point is a lambda or
-a string you supply, which is what lets one library serve every app without
-knowing anything about any of them.
-
-### The ones you should look at before deploying
-
-| | Default | Does |
-|---|---|---|
-| `authorize` | **no-op** | Gates the auditor UI at `/audit`. The default lets *everyone* in, which is right for a demo and wrong for you. Raise or redirect. |
-| `actor_resolver` | `controller.try(:current_user)` | How to find the acting user. Works with Devise, the Rails generator, or anything exposing `current_user`. |
-| `actor_label_resolver` | `actor.to_label` | The string snapshotted onto every audit row. Rendered once per entry point, so a later rename never rewrites history. |
-| `unaudited_tables` | a few internals | Tables that legitimately have no trigger, **each with a written reason**. `audit_log:coverage` fails for anything neither audited nor listed here. |
-| `default_excluded_columns` | timestamps, `lock_version`, password and reset-token columns | Columns kept out of every diff. Per-table extras go on the trigger via `--exclude`. |
-| `retention` | `7.years` | How long partitions are kept before `retention` will detach them. `nil` disables it. |
-
-### Rendering and screens
-
-| | Default | Does |
-|---|---|---|
-| `parent_controller` | `"ApplicationController"` | What the engine's controllers inherit, which is how they pick up your layout and authentication. |
-| `record_url` | `nil` | `->(type, id)` returning a path in **your** app, for a history you render yourself. nil means labels render unlinked, ids intact — it will not guess a route. |
-| `page_size` | `50` | Rows per page on the auditor screens. Keyset-paginated, so there is no cost curve behind it. |
-| `actor_picker` | `[]` | Populates the actor search on `/audit/actors`. Source it from your users table, not from the log. |
-| `actor_finder` | `type.constantize.find_by(id:)` | Looks up an actor for display when the log holds no snapshot. |
-| `record_label_resolver` | `RecordLabel.batch` | Turns ids in a diff into labels. `nil` disables labelling entirely. **Scope it in a multitenant app** — the default reads business tables unscoped. |
-| `association_targets` | `{}` | `{"LineItem" => {"product_id" => "Product"}}` for association columns `belongs_to` reflection cannot see. `false` suppresses one. |
-| `drill_down_slack` | `24.hours` | How wide the date window around a `request_id` drill-down is. Generous on purpose, and disclosed on screen. |
-
-### Storage lifecycle
-
-| | Default | Does |
-|---|---|---|
-| `partition_months_ahead` | `3` | How far ahead the daily task provisions. A missing future partition is a write-path outage. |
-| `rollup_after` | `2.years` | How cold a year must be before `rollup` consolidates its months. `nil` disables it. |
-| `archive_dir` | `nil` | Default `DIR` for the export tasks. |
-| `maintenance_lock_timeout` | `"5s"` | How long the three `ACCESS EXCLUSIVE` operations wait before failing rather than blocking every audited write. |
-
-### Rarely touched
-
-| | Default | Does |
-|---|---|---|
-| `correlated_databases` | `%w[primary]` | Which databases carry the correlation context. **Does not decide what is audited** — a database left out is still fully audited, its rows just arrive with no actor. |
-| `bypass_allowlist` | `[]` | Classes permitted to call `AuditLog.without_logging`. Empty means the bypass is unavailable, which is the right default. |
-| `raise_on_subscriber_error` | `true` | Whether a failed layer-2 write raises. Leaving it true is what stops an audit failure vanishing while the change it described commits. |
 
 ## Emitting events from a controller action
 
@@ -761,22 +645,9 @@ The auditor UI is for auditors. For an *"activity history"* on your own
 **units of work**, each one carrying its narrative, that record's field changes,
 and the other records the same action touched.
 
-```ruby
-class OrdersController < ApplicationController
-  include AuditLog::Pagination      # the gem's keyset pager — see below
-
-  def show
-    @order      = Order.find(params[:id])
-    timeline    = AuditLog::Timeline.for(@order)
-    @pagy       = paginate(timeline.activity_keys, limit: 20)
-    @activities = timeline.activities(@pagy.records)
-  end
-end
-```
-
-`AuditLog::Timeline.new(record_type:, record_id:)` is the same thing without a
-record in hand — which is what you want for a **deleted** record, since an audit
-trail outlives what it describes and that is exactly when somebody reads it.
+**The fast path is the generator**, below. Everything after it is what the
+generator produces and the contract underneath, for when you want to change it or
+write your own.
 
 ### Generate it
 
@@ -861,22 +732,22 @@ finds.
 
 ---
 
-### Use `AuditLog::Pagination`, do not hand-roll one
+### Writing the view yourself
 
-`include AuditLog::Pagination` gives you `paginate(scope, limit:)`, reading the
-cursor from `params[:page]`. It is not a convenience.
+```ruby
+class OrdersController < ApplicationController
+  include AuditLog::Pagination      # the gem's keyset pager — see below
 
-Pagy serialises the keyset cursor with `to_json`, and ActiveSupport renders a
-`Time` at **millisecond** precision — while `occurred_at` is `clock_timestamp()`,
-which is **microseconds**. A pager that does not override that mints a cursor
-naming an instant just before the row it came from, and the next page's
-`occurred_at < cursor` skips everything in the gap. **Rows vanish between pages,
-silently.** It presents as a rare flake, not as an error; it took roughly one
-full-suite run in eight to surface here before it was fixed.
+  def show
+    @order      = Order.find(params[:id])
+    timeline    = AuditLog::Timeline.for(@order)
+    @pagy       = paginate(timeline.activity_keys, limit: 20)
+    @activities = timeline.activities(@pagy.records)
+  end
+end
+```
 
-`AuditLog::Pagination::FULL_PRECISION` is the fix, and including the module is
-how you get it. It also falls back to the first page on a cursor minted for a
-different screen, rather than raising or — worse — applying it and dropping rows.
+And the view it feeds:
 
 ```erb
 <% @activities.each do |activity| %>
@@ -908,6 +779,28 @@ different screen, rather than raising or — worse — applying it and dropping 
   </li>
 <% end %>
 ```
+
+`AuditLog::Timeline.new(record_type:, record_id:)` is the same thing without a
+record in hand — which is what you want for a **deleted** record, since an audit
+trail outlives what it describes and that is exactly when somebody reads it.
+
+### Use `AuditLog::Pagination`, do not hand-roll one
+
+`include AuditLog::Pagination` gives you `paginate(scope, limit:)`, reading the
+cursor from `params[:page]`. It is not a convenience.
+
+Pagy serialises the keyset cursor with `to_json`, and ActiveSupport renders a
+`Time` at **millisecond** precision — while `occurred_at` is `clock_timestamp()`,
+which is **microseconds**. A pager that does not override that mints a cursor
+naming an instant just before the row it came from, and the next page's
+`occurred_at < cursor` skips everything in the gap. **Rows vanish between pages,
+silently.** It presents as a rare flake, not as an error; it took roughly one
+full-suite run in eight to surface here before it was fixed.
+
+`AuditLog::Pagination::FULL_PRECISION` is the fix, and including the module is
+how you get it. It also falls back to the first page on a cursor minted for a
+different screen, rather than raising or — worse — applying it and dropping rows.
+
 
 ### Four things to know
 
@@ -1092,6 +985,138 @@ not exist. The `belongs_to` carries `class_name: "User"` and gets it right.
 Cost is one primary-key lookup per record type per page, batched before the table
 renders. A type that cannot produce a label is skipped with no query at all, so an
 application that has opted nothing in pays nothing.
+
+---
+
+## Configuration
+
+> The next three sections — **Configuration**, **Generator options** and **Rake
+> tasks** — are lookup tables rather than reading. The guides above tell you
+> which of these you need; these tell you what they all are.
+
+Everything this gem needs to know about your application, in one file. The
+install generator writes `config/initializers/audit_log.rb` with the ones that
+matter commented in place; this is the whole list.
+
+**Nothing here names one of your constants.** Every coupling point is a lambda or
+a string you supply, which is what lets one library serve every app without
+knowing anything about any of them.
+
+### The ones you should look at before deploying
+
+| | Default | Does |
+|---|---|---|
+| `authorize` | **no-op** | Gates the auditor UI at `/audit`. The default lets *everyone* in, which is right for a demo and wrong for you. Raise or redirect. |
+| `actor_resolver` | `controller.try(:current_user)` | How to find the acting user. Works with Devise, the Rails generator, or anything exposing `current_user`. |
+| `actor_label_resolver` | `actor.to_label` | The string snapshotted onto every audit row. Rendered once per entry point, so a later rename never rewrites history. |
+| `unaudited_tables` | a few internals | Tables that legitimately have no trigger, **each with a written reason**. `audit_log:coverage` fails for anything neither audited nor listed here. |
+| `default_excluded_columns` | timestamps, `lock_version`, password and reset-token columns | Columns kept out of every diff. Per-table extras go on the trigger via `--exclude`. |
+| `retention` | `7.years` | How long partitions are kept before `retention` will detach them. `nil` disables it. |
+
+### Rendering and screens
+
+| | Default | Does |
+|---|---|---|
+| `parent_controller` | `"ApplicationController"` | What the engine's controllers inherit, which is how they pick up your layout and authentication. |
+| `record_url` | `nil` | `->(type, id)` returning a path in **your** app, for a history you render yourself. nil means labels render unlinked, ids intact — it will not guess a route. |
+| `page_size` | `50` | Rows per page on the auditor screens. Keyset-paginated, so there is no cost curve behind it. |
+| `actor_picker` | `[]` | Populates the actor search on `/audit/actors`. Source it from your users table, not from the log. |
+| `actor_finder` | `type.constantize.find_by(id:)` | Looks up an actor for display when the log holds no snapshot. |
+| `record_label_resolver` | `RecordLabel.batch` | Turns ids in a diff into labels. `nil` disables labelling entirely. **Scope it in a multitenant app** — the default reads business tables unscoped. |
+| `association_targets` | `{}` | `{"LineItem" => {"product_id" => "Product"}}` for association columns `belongs_to` reflection cannot see. `false` suppresses one. |
+| `drill_down_slack` | `24.hours` | How wide the date window around a `request_id` drill-down is. Generous on purpose, and disclosed on screen. |
+
+### Storage lifecycle
+
+| | Default | Does |
+|---|---|---|
+| `partition_months_ahead` | `3` | How far ahead the daily task provisions. A missing future partition is a write-path outage. |
+| `rollup_after` | `2.years` | How cold a year must be before `rollup` consolidates its months. `nil` disables it. |
+| `archive_dir` | `nil` | Default `DIR` for the export tasks. |
+| `maintenance_lock_timeout` | `"5s"` | How long the three `ACCESS EXCLUSIVE` operations wait before failing rather than blocking every audited write. |
+
+### Rarely touched
+
+| | Default | Does |
+|---|---|---|
+| `correlated_databases` | `%w[primary]` | Which databases carry the correlation context. **Does not decide what is audited** — a database left out is still fully audited, its rows just arrive with no actor. |
+| `bypass_allowlist` | `[]` | Classes permitted to call `AuditLog.without_logging`. Empty means the bypass is unavailable, which is the right default. |
+| `raise_on_subscriber_error` | `true` | Whether a failed layer-2 write raises. Leaving it true is what stops an audit failure vanishing while the change it described commits. |
+
+## Generator options
+
+Every flag the three generators take. `audit_log:install`'s are listed with the
+step-by-step in [Then run the generator](#then-run-the-generator); the two below
+are the ones with decisions in them.
+
+### `audit_log:trigger` options
+
+```bash
+bin/rails generate audit_log:trigger orders \
+  --model=Order \
+  --exclude=internal_notes search_vector
+```
+
+| | |
+|---|---|
+| `--model=Order` | the model name recorded on every `audit_changes` row. Defaults to the table name classified — pass it when they differ, because this string is what every screen filters and groups on. |
+| `--exclude=a b c` | columns kept **out of the diff**, on top of `config.default_excluded_columns` |
+| `--replace` | detach first. Required to change an existing trigger's model or exclusions — see [Re-attaching](#re-attaching-and-changing-a-tables-exclusions). |
+
+**What `--exclude` is for.** The trigger writes a diff of every column that
+changed. Some columns change constantly and mean nothing to an auditor, and a few
+should never be copied anywhere at all:
+
+- **Noise that would drown the signal.** A `search_vector`, a denormalised
+  counter, a `last_seen_at` touched on every request. Left in, an auditor reading
+  "what changed on this order" wades through a column nobody asked about, and the
+  jsonb `diff` grows for no benefit.
+- **Values you do not want a second copy of.** `config.default_excluded_columns`
+  already covers the usual suspects — `created_at`, `updated_at`,
+  `lock_version`, `password_digest`, `encrypted_password`, and Devise's reset
+  tokens. `--exclude` is for the ones only your schema knows about: an API secret,
+  a bearer token, a column holding something a customer can ask you to erase.
+
+**What it does not do.** Excluding a column does not stop the row being audited.
+The change is still recorded — who, when, under which `request_id`, and every
+*other* column that moved. Only that column's before/after values are left out.
+
+That distinction is the reason to reach for `--exclude` rather than
+`unaudited_tables`: the latter drops the whole table from the log and needs a
+written reason to pass `audit_log:coverage`.
+
+> **Excluding is not retroactive, in either direction.** A newly excluded column
+> stops appearing from the re-attach forward and **stays in the history written
+> before it** — `AuditLog::Redaction` is the tool for values already recorded.
+> And un-excluding one does not recover the values that were never captured.
+
+Changing exclusions later means `--replace`, because attaching is deliberately
+not idempotent: a second attach on the same table fails with `42710` rather than
+letting two triggers coexist and write two rows per change under different
+exclusion sets.
+
+### `audit_log:views:activity` options
+
+`audit_log:views:activity` takes **any number of models in one call**, and calling it
+again later is how you add more. Both reach the same place:
+
+```bash
+bin/rails generate audit_log:views:activity Order Product LineItem
+# ...is equivalent to:
+bin/rails generate audit_log:views:activity Order
+bin/rails generate audit_log:views:activity Product LineItem
+```
+
+A model with no show page — `LineItem` usually — is still added to the allowlist
+and still readable at `/activity/LineItem/86`; the generator just reports that it
+could not find `line_items_controller.rb` and prints the two lines for when you
+do have one. **The allowlist and the show-page wiring are independent**, which is
+right: a child record often has a history worth reading and no page of its own.
+
+Options: `--css=plain|tailwind|bootstrap`, `--path=activity`,
+`--skip-show-pages`, `--skip-views`, `--skip-css`, `--skip-locale`,
+`--skip-routes`, and `--force` to re-baseline generated files against the current
+templates.
 
 ---
 

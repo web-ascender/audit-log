@@ -16,6 +16,23 @@ touch it. `readme_spec` now fails if an attribute exists that the README does no
 name — the same forcing function already applied to rake tasks, and for the same
 reason: a coupling point nobody can discover is one nobody sets.
 
+**Reference material moved out of the guides.** The generator flag tables sat
+inside "Getting started", and the 21-attribute configuration table sat between
+"Installing" and "Emitting events" — both are lookup, not reading, and both
+interrupted a step-by-step somebody was following. Configuration, Generator
+options and Rake tasks now sit together after the guides, signposted from the
+places that send you to them.
+
+**One orphan fixed.** The reordering had stranded the ERB view example inside
+"Use `AuditLog::Pagination`, do not hand-roll one" — a heading it has nothing to
+do with. It now follows the controller example it pairs with, and the pagination
+section is 18 lines of the thing it is actually about.
+
+**"Building an activity history" leads with the generator.** The hand-written
+controller and view had been sitting in the section body, ahead of the "Generate
+it" subsection, so the fast path came second. The manual version is now its own
+subsection after the generator, where somebody lands only if they want it.
+
 **Requirements moved up, directly under the Summary** — Ruby, Rails and
 PostgreSQL floors are what somebody checks before reading anything else, and they
 were buried as a subsection of "Installing".
