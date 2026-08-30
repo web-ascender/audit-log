@@ -1458,6 +1458,49 @@ takes production down.
 >   an export — is a separate decision somebody makes on purpose.
 
 Because `audit_changes` will be the largest table in the database, keep an eye on:
+#### Why freezing matters at all  **[added 2026-08-29]**
+
+Worth writing down, because everything above assumes it and nothing here explains it.
+
+**The mechanism.** PostgreSQL stores, on every row version, the 32-bit transaction id that created
+it (`xmin`), and decides visibility by comparing that id against the reader's snapshot. The counter
+wraps, and "older than" is defined modulo 2³¹ — so an id more than about two billion transactions in
+the past starts to look like one from the *future*, and committed rows would silently become
+invisible. **Freezing** is the fix: vacuum marks a row as frozen, meaning *visible to everyone,
+forever, no comparison needed*. A frozen row cannot be affected by wraparound.
+
+**What happens if nothing freezes.** Postgres will not let it get that far. Once the oldest
+unfrozen id in a table exceeds `autovacuum_freeze_max_age` (200 million by default) it forces an
+**anti-wraparound autovacuum** — which runs even where autovacuum is disabled, and which must scan
+every page not already known to be all-frozen. Ignore it long enough and the cluster stops accepting
+new transactions entirely and demands a single-user-mode vacuum. That last part is an outage, but it
+is not the realistic failure here: the realistic one is the forced scan.
+
+**So freezing deliberately is not strictly necessary — choosing *when* is the whole point.** Left
+alone, `audit_changes` gets frozen eventually, by an unavoidable full scan of the largest table in
+the database, at a moment Postgres picks. It will pick it based on transaction volume, which means
+it correlates with the application being busy.
+
+**Why this table in particular.** Both audit tables are append-only, which used to mean they got no
+vacuum attention at all: with no updates or deletes there are no dead tuples, so the dead-tuple
+threshold never fired and nothing touched them until wraparound forced it. PG 13's
+`autovacuum_vacuum_insert_threshold` softened that, and PG 18's eager freezing softens it further
+(§20.2) — but neither makes the deliberate version pointless, because an insert-triggered vacuum
+still freezes only rows older than `vacuum_freeze_min_age`, and aggressive freezing still waits.
+
+**Why per-partition, as each month closes, is the right unit.** Each partition is a table in its own
+right, with its own `relfrozenxid` and its own vacuum. A closed partition is immutable — nothing can
+ever dirty it again except a redaction — so it is the ideal thing to freeze once and never revisit.
+Doing it as each month closes converts an unpredictable full-table storm into one bounded operation
+per table per month, on a partition whose size is known. And once a partition is frozen its
+`relfrozenxid` stops holding back the cluster's horizon, and future vacuums skip its pages
+altogether via the visibility map — which is also why re-freezing an already-frozen partition is
+nearly free, and why the marker is an optimisation on top rather than the thing preventing real work.
+
+The `ANALYZE` alongside it is a smaller win in the same spirit: a partition's statistics stop
+changing once its month closes, so sampling them once at that moment is exactly right, and sampling
+them repeatedly afterwards buys nothing.
+
 - Autovacuum settings — the table is insert-only, so freezing behaviour matters far more than
   dead-tuple thresholds. **Implemented 2026-08-29 inside the rotation task**: it freezes each
   partition once its month closes, after provisioning rather than before, so a slow `VACUUM` can

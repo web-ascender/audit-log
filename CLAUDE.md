@@ -389,6 +389,12 @@ Do not "fix" these without reading the linked reasoning first.
 - **`audit_log:redact` takes `FIELDS=`, never `COLUMNS=`.** `COLUMNS` is a
   reserved shell variable holding the terminal width, so it silently arrives as
   a number, matches nothing, and redacts nothing while reporting success.
+- **Freezing exists because transaction ids wrap.** Postgres compares 32-bit
+  xids for visibility, so old rows must eventually be marked frozen or an
+  anti-wraparound vacuum forces a full scan of the largest table in the database
+  at a moment it chooses. Append-only tables are the shape that gets ignored by
+  ordinary vacuuming until then. So freezing is not optional — only its TIMING
+  is, and that is the whole feature. DESIGN §8, "Why freezing matters at all".
 - **Freezing runs in the DAILY task, bounded by `FROZEN_MARKER`, and the marker
   is what makes that possible.** `freeze_closed!` used to re-freeze every closed
   partition on every call — unbounded work growing with the retention horizon,

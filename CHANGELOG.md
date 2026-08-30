@@ -4,6 +4,16 @@
 
 ### Freezing is automatic now  **[2026-08-29]**
 
+DESIGN §8 gains **"Why freezing matters at all"**, because every mention of
+freezing in this repo assumed the reader knew — 32-bit transaction ids wrap, so
+old rows must eventually be marked frozen or an anti-wraparound vacuum forces a
+full scan of the largest table in the database at a moment Postgres chooses.
+Append-only tables are precisely the shape ordinary vacuuming ignores until then.
+Freezing is therefore not optional; only its *timing* is, which is the entire
+feature. Stated with the hedges it deserves: PG 13's insert thresholds and PG
+18's eager freezing both soften the problem without removing it.
+
+
 `audit_log:partitions` — the daily task — now freezes each partition once its
 month closes, so nobody has to decide when to run `freeze`.
 

@@ -1278,12 +1278,26 @@ because that partition holds data through `2025-12-31`. A partition whose marker
 cannot be read is skipped by a date-bounded drop rather than guessed at, and the
 task says which.
 
-**Freezing is automatic and you should not have to think about it.** A closed
-partition never changes again, so freezing it deliberately beats an
-anti-wraparound vacuum storming the largest table in your database months later —
-but deciding *when* was a chore this gem had no business handing you. Each frozen
-partition is marked, so the daily task does exactly the newly closed ones:
-nothing on most days, one partition per table on the first run of a month.
+**Freezing is automatic and you should not have to think about it** — but it is
+worth knowing what it is for.
+
+PostgreSQL decides row visibility by comparing 32-bit transaction ids, and that
+counter wraps. To stay correct it must eventually mark old rows *frozen* —
+"visible to everyone, no comparison needed" — and if nothing does that in time it
+forces an **anti-wraparound vacuum** that scans the whole table, runs even where
+autovacuum is disabled, and picks its own moment. Your audit tables are the
+largest in the database and append-only, which is exactly the shape that gets
+ignored by ordinary vacuuming until wraparound forces the issue.
+
+So freezing is not optional in the end; *choosing when* is the only thing
+actually on offer. Doing it as each month closes turns one unpredictable
+full-table scan into a bounded operation on one partition, per table, per month —
+and a closed partition never changes again, so it is frozen once and then skipped
+by every future vacuum.
+
+Each frozen partition is marked, so the daily task does exactly the newly closed
+ones: nothing on most days, one partition per table on the first run of a month.
+[DESIGN §8](DESIGN.md) has the mechanism in full.
 
 The one thing that un-freezes a partition is a **redaction**, which updates the
 parent table and so dirties pages in whatever partitions held the redacted rows.
