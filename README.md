@@ -24,8 +24,8 @@ the authority on *why* any of this is shaped the way it is.
   - [4. Prove nothing was missed](#4-prove-nothing-was-missed)
   - [5. Schedule the daily task](#5-schedule-the-daily-task)
   - [6. Read the initializer before deploying](#6-read-the-initializer-before-deploying)
-  - [7. Recommended: name the actions worth a sentence](#7-recommended-name-the-actions-worth-a-sentence)
-  - [8. Optional: put a history on your own pages](#8-optional-put-a-history-on-your-own-pages)
+  - [7. Recommended: Register and emit events for significant business actions](#7-recommended-register-and-emit-events-for-significant-business-actions)
+  - [8. Optional: Put a history on your own pages](#8-optional-put-a-history-on-your-own-pages)
   - [What the generator wrote](#what-the-generator-wrote)
   - [What a model needs](#what-a-model-needs)
 - [Emitting events from a controller action](#emitting-events-from-a-controller-action)
@@ -262,13 +262,29 @@ At this point every change to an audited table is recorded, with an actor and a
 correlation id, and readable at `/audit`. Neither step below is required for
 that.
 
-### 7. Recommended: name the actions worth a sentence
+### 7. Recommended: Register and emit events for significant business actions
 
-What turns a complete log into a readable one: layer 2, the sentences an auditor
-reads instead of a field diff. See
+Two lines in two files — a declaration and a call — for each action worth a
+sentence:
+
+```ruby
+# config/initializers/audit_log.rb
+AuditLog::Registry.register "invoice.voided",
+  subject: ->(p) { ["Invoice", p[:invoice_id]] },
+  summary: ->(p) { "Voided invoice #{p[:number]} (#{p[:reason]})" }
+
+# the controller, model or job — after the write succeeds
+AuditLog.notify("invoice.voided", invoice_id: @invoice.id, number: number,
+                reason: params[:reason])
+```
+
+This is what turns a complete log into a readable one: layer 2, the sentences an
+auditor reads instead of a field diff. `bin/rails audit_log:reconcile` tells you
+which actions you have not named yet, so it fills in over time rather than
+up front. See
 [Emitting events](#emitting-events-from-a-controller-action).
 
-### 8. Optional: put a history on your own pages
+### 8. Optional: Put a history on your own pages
 
 ```bash
 bin/rails generate audit_log:views:activity Order Product LineItem
