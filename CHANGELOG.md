@@ -16,6 +16,15 @@ touch it. `readme_spec` now fails if an attribute exists that the README does no
 name — the same forcing function already applied to rake tasks, and for the same
 reason: a coupling point nobody can discover is one nobody sets.
 
+**The comparison moved to the end.** "Why this one" and "Why not one of the
+popular gems?" sat directly under the Summary, which already covers what the gem
+does — so a reader following the document top-down hit three screens of
+competitor comparison before reaching how to install anything. They now sit
+between Advanced and Working on this library, with a one-line pointer from the
+Summary for anyone still deciding. The first was retitled "Why this one, and not
+a callback-based gem", since "this one" no longer has the Summary immediately
+above it to supply the referent.
+
 **The backfill gap, in the install flow.** "There is no backfill" was only in the
 Advanced section, which is the wrong place for something an adopter with existing
 tables needs to know *before* running the generator. The practical version is now

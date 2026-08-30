@@ -15,8 +15,6 @@ the authority on *why* any of this is shaped the way it is.
 ## Contents
 
 - [Summary](#summary)
-  - [Why this one](#why-this-one)
-  - [Why not one of the popular gems?](#why-not-one-of-the-popular-gems)
 - [What you get, and what is optional](#what-you-get-and-what-is-optional)
 - [The two layers](#the-two-layers)
 - [Getting started, end to end](#getting-started-end-to-end)
@@ -59,6 +57,8 @@ the authority on *why* any of this is shaped the way it is.
   - [Attaching to a table that already exists](#attaching-to-a-table-that-already-exists)
   - [Re-attaching, and changing a table's exclusions](#re-attaching-and-changing-a-tables-exclusions)
   - [Why objects and not relations](#why-objects-and-not-relations)
+- [Why this one, and not a callback-based gem](#why-this-one-and-not-a-callback-based-gem)
+- [Why not one of the popular gems?](#why-not-one-of-the-popular-gems)
 - [Working on this library](#working-on-this-library)
   - [Files](#files)
   - [What reloads and what does not](#what-reloads-and-what-does-not)
@@ -109,46 +109,10 @@ attached — and no model has to opt in or even know.
 - **Zero application constants.** Every coupling point is a lambda on
   `AuditLog.config`, so one library serves every app.
 
-### Why this one
-
-Most audit gems hook Active Record callbacks, which works until the first
-`update_all`, the first `dependent: :delete_all`, the first data-fix script — and
-then the log is missing exactly the writes somebody will later ask about, with
-nothing anywhere reporting the gap. Being *mostly* complete is the one property
-an audit log cannot trade away, and you discover you traded it at the worst
-possible moment.
-
-Integration is genuinely small: a generator, one migration line per table, and
-two `include`s the generator writes for you. Nothing about your models changes.
-Bending it is small too — every hook into your app is a lambda you own, the
-auditor UI needs nothing from you, and the optional activity views are generated
-*into* your app rather than served from the gem, so you can rewrite them
-completely and nothing here will notice.
-
-### Why not one of the popular gems?
-
-They are good gems. This exists because of one architectural difference and a few
-consequences of it.
-
-| | Why not |
-|---|---|
-| **paper_trail** | Model callbacks, so bulk writes and raw SQL never reach it, and every model must opt in — nothing tells you which one you forgot. Excellent at *versioning*: if you want `reify` to restore a record to a previous state, use it. This gem records what changed, and does not rebuild past objects. |
-| **audited** | Same callback architecture, same blind spots, same per-model opt-in. Simpler to adopt than this if your writes all go through Active Record and you do not need partitioning, retention or an auditor UI. |
-| **logidze** | Also trigger-based, and the closest relative here. It stores history **in the audited row itself** (a `log_data` column), which is elegant and fast — but it means deleting the record deletes its history, the row carries its own past forever, and there is no separate table to partition, retire or export. If what you need is "what did this row look like last Tuesday", it is a very good answer. If you need the record of a deletion to outlive the record, it structurally cannot be. |
-| **Rolling your own triggers** | Entirely reasonable, and roughly the first two days of this. The rest is what took the time: correlation through jobs, partition lifecycle, retention, redaction that survives an audit, and the forcing function that stops a new table being quietly unaudited. |
-
-**Where this gem is the wrong choice**, stated plainly:
-
-- **PostgreSQL only.** Layer 1 *is* a plpgsql trigger writing jsonb into
-  range-partitioned tables. Any Postgres from 16 up, but there is no MySQL path
-  and there will not be one.
-- **It requires `schema_format = :sql`**, which must be set before your first
-  migration. An established app switching to it re-dumps its whole schema.
-- **No object restoration.** No `reify`, no "roll this record back". It answers
-  what changed and who did it, not "give me the January version of this order".
-- **Read-access logging is out of scope.** This records changes, not views.
-
----
+Already weighing this against `paper_trail`, `audited` or `logidze`?
+[Why this one](#why-this-one-and-not-a-callback-based-gem) and
+[Why not one of the popular gems?](#why-not-one-of-the-popular-gems) are at the
+end, along with the cases where this gem is the **wrong** choice.
 
 ## What you get, and what is optional
 
@@ -1406,6 +1370,51 @@ They are separate because Pagy needs a *relation* to build a cursor from, becaus
 hydration has to be batched, and because the limit belongs above the controller
 where you can see it (DESIGN §11.0 Rule 2) — so the library cannot paginate and
 load in one call.
+
+## Why this one, and not a callback-based gem
+
+The comparison, kept to the end because the [Summary](#summary) already covers
+what this gem does — this is the part you want when deciding *whether* rather
+than *how*.
+
+Most audit gems hook Active Record callbacks, which works until the first
+`update_all`, the first `dependent: :delete_all`, the first data-fix script — and
+then the log is missing exactly the writes somebody will later ask about, with
+nothing anywhere reporting the gap. Being *mostly* complete is the one property
+an audit log cannot trade away, and you discover you traded it at the worst
+possible moment.
+
+Integration is genuinely small: a generator, one migration line per table, and
+two `include`s the generator writes for you. Nothing about your models changes.
+Bending it is small too — every hook into your app is a lambda you own, the
+auditor UI needs nothing from you, and the optional activity views are generated
+*into* your app rather than served from the gem, so you can rewrite them
+completely and nothing here will notice.
+
+## Why not one of the popular gems?
+
+They are good gems. This exists because of one architectural difference and a few
+consequences of it.
+
+| | Why not |
+|---|---|
+| **paper_trail** | Model callbacks, so bulk writes and raw SQL never reach it, and every model must opt in — nothing tells you which one you forgot. Excellent at *versioning*: if you want `reify` to restore a record to a previous state, use it. This gem records what changed, and does not rebuild past objects. |
+| **audited** | Same callback architecture, same blind spots, same per-model opt-in. Simpler to adopt than this if your writes all go through Active Record and you do not need partitioning, retention or an auditor UI. |
+| **logidze** | Also trigger-based, and the closest relative here. It stores history **in the audited row itself** (a `log_data` column), which is elegant and fast — but it means deleting the record deletes its history, the row carries its own past forever, and there is no separate table to partition, retire or export. If what you need is "what did this row look like last Tuesday", it is a very good answer. If you need the record of a deletion to outlive the record, it structurally cannot be. |
+| **Rolling your own triggers** | Entirely reasonable, and roughly the first two days of this. The rest is what took the time: correlation through jobs, partition lifecycle, retention, redaction that survives an audit, and the forcing function that stops a new table being quietly unaudited. |
+
+**Where this gem is the wrong choice**, stated plainly:
+
+- **PostgreSQL only.** Layer 1 *is* a plpgsql trigger writing jsonb into
+  range-partitioned tables. Any Postgres from 16 up, but there is no MySQL path
+  and there will not be one.
+- **It requires `schema_format = :sql`**, which must be set before your first
+  migration. An established app switching to it re-dumps its whole schema.
+- **No object restoration.** No `reify`, no "roll this record back". It answers
+  what changed and who did it, not "give me the January version of this order".
+- **Read-access logging is out of scope.** This records changes, not views.
+
+---
 
 ## Working on this library
 
