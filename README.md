@@ -26,18 +26,21 @@ the authority on *why* any of this is shaped the way it is.
   - [Then run the generator](#then-run-the-generator)
   - [The two manual steps](#the-two-manual-steps)
   - [What a model needs](#what-a-model-needs)
-  - [Attaching to a table that already exists](#attaching-to-a-table-that-already-exists)
-  - [Re-attaching, and changing a table's exclusions](#re-attaching-and-changing-a-tables-exclusions)
-  - [Emitting events from a controller action](#emitting-events-from-a-controller-action)
+- [Emitting events from a controller action](#emitting-events-from-a-controller-action)
+  - [The ordinary case: create, update, destroy](#the-ordinary-case-create-update-destroy)
+  - [An action that spans several writes](#an-action-that-spans-several-writes)
+  - [An action whose writes skip Active Record](#an-action-whose-writes-skip-active-record)
+  - [An action that only enqueues work](#an-action-that-only-enqueues-work)
+  - [Payload rules](#payload-rules)
+  - [Finding the actions you have not registered yet](#finding-the-actions-you-have-not-registered-yet)
 - [Reading one record's history](#reading-one-records-history)
 - [Building an activity history in your own app](#building-an-activity-history-in-your-own-app)
+  - [Generate it](#generate-it)
+  - [A worked example](#a-worked-example)
   - [Use `AuditLog::Pagination`, do not hand-roll one](#use-auditlogpagination-do-not-hand-roll-one)
-  - [Why objects and not relations](#why-objects-and-not-relations)
   - [Four things to know](#four-things-to-know)
   - [Bounding it](#bounding-it)
   - [What the timeline covers](#what-the-timeline-covers)
-  - [Generate it](#generate-it)
-  - [A worked example](#a-worked-example)
 - [Making association ids readable (optional)](#making-association-ids-readable-optional)
   - [The four things a cell can say](#the-four-things-a-cell-can-say)
   - [Configuration](#configuration)
@@ -47,10 +50,15 @@ the authority on *why* any of this is shaped the way it is.
   - [Run when something needs it](#run-when-something-needs-it)
   - [Retention — schedulable, in this order](#retention-schedulable-in-this-order)
   - [Only on a scratch database](#only-on-a-scratch-database)
-- [Files](#files)
-- [Working on the library: what reloads and what does not](#working-on-the-library-what-reloads-and-what-does-not)
-- [Before you change anything](#before-you-change-anything)
-- [Not implemented (deliberately)](#not-implemented-deliberately)
+- [Advanced](#advanced)
+  - [Attaching to a table that already exists](#attaching-to-a-table-that-already-exists)
+  - [Re-attaching, and changing a table's exclusions](#re-attaching-and-changing-a-tables-exclusions)
+  - [Why objects and not relations](#why-objects-and-not-relations)
+- [Working on this library](#working-on-this-library)
+  - [Files](#files)
+  - [What reloads and what does not](#what-reloads-and-what-does-not)
+  - [Before you change anything](#before-you-change-anything)
+  - [Not implemented (deliberately)](#not-implemented-deliberately)
 
 ---
 
@@ -474,109 +482,14 @@ Nothing. No `has_audit_log`, no `include Auditable`, no callback, no base class.
 An audited model is an ordinary `ApplicationRecord`. The one line of per-model
 cost lives in the migration, next to the table it audits.
 
-### Attaching to a table that already exists
+## Emitting events from a controller action
 
-Supported, and no different mechanically. `attach_audit_trigger` is a bare
-`CREATE TRIGGER`: it reads nothing from the `create_table` beside it and carries
-no state between the two calls, so a standalone migration is equivalent.
+Once the trigger is attached and `ControllerContext` is included, every row your
+controllers touch is already being recorded — field by field, with no code in the
+controller at all. **This section is optional**: layer 2 is the *sentence* over
+the top of that, and skipping it costs you readability, never completeness.
 
-```ruby
-class AuditExistingOrders < ActiveRecord::Migration[8.1]
-  def up   = attach_audit_trigger(:orders, model: "Order")
-  def down = detach_audit_trigger(:orders)
-end
-```
-
-`coverage_spec.rb` is satisfied either way — it queries `pg_trigger`, not the
-migration history.
-
-Three things to check first. None is about *when* the trigger is attached; all
-three are about the shape of the table.
-
-- **Step 5 must already have run.** `CREATE TRIGGER` resolves
-  `public.audit_row_change` at creation time, so a missing install fails the
-  migration loudly. This is the harmless one.
-- **The table needs a `bigint`-compatible `id`.** The trigger function assigns
-  `rec_id bigint := NEW.id`, and `audit_changes.record_id` is `bigint NOT NULL`.
-  A `create_table id: false` join table, a `uuid` primary key, or a primary key
-  not named `id` therefore **fails on the first write after attaching**, not at
-  migration time. Every table in this app is uniform, so the constraint stays
-  invisible until you meet a legacy schema. Check the primary key before you
-  attach.
-- **`CREATE TRIGGER` takes `SHARE ROW EXCLUSIVE` on the table.** Catalog-only, no
-  rewrite, so it is fast — but it blocks writes while held, and a *pending*
-  request queues every write behind it. On a busy table set a `lock_timeout` and
-  retry, rather than letting the migration wait behind one long transaction. Same
-  reasoning as `config.maintenance_lock_timeout` for the maintenance tasks.
-
-**What the history then looks like.** Rows that existed before the attach have no
-back-history, and there is no backfill — the trigger records changes, and those
-changes did not pass through it. Two things narrow the gap:
-
-- The **first `UPDATE`** of a pre-existing row still yields a complete
-  `[old, new]` pair, because the diff reads `to_jsonb(OLD)` off the live row. What
-  is missing is the changes before the attach, not the values before the change.
-- A **`DELETE`** snapshots the whole final row, so even a row created long before
-  the trigger leaves a full record behind when it goes.
-
-What remains is epistemic: a record with no `audit_changes` rows is ambiguous
-between "never changed" and "predates the trigger". **Record the attach date** —
-the migration's own timestamp is the durable answer. An audit trail that cannot
-say which of the two it means is under-reporting without saying so, which is the
-one failure mode this whole design exists to prevent.
-
-### Re-attaching, and changing a table's exclusions
-
-**`attach_audit_trigger` is not idempotent, deliberately.** A second attach on an
-already-audited table fails:
-
-```
-ERROR:  trigger "orders_audit" for relation "orders" already exists   -- SQLSTATE 42710
-```
-
-`trigger_name` is `#{table}_audit` — derived from the table alone, ignoring both
-`model:` and `exclude:` — so two attaches on one table *always* collide on the
-name, whatever arguments they pass. That collision is load-bearing. Were the name
-to incorporate the model or the exclusion list, the second attach would **succeed**
-and the table would carry two triggers: two `audit_changes` rows for every write,
-under possibly different exclusion sets. Double-counted audit rows are far worse
-than a failed migration — invisible until somebody counts, and wrong in every
-rollup and reconciliation downstream. Postgres DDL is transactional and Rails
-wraps each migration, so the duplicate fails loudly with nothing half-applied.
-
-`detach_audit_trigger` **is** idempotent (`DROP TRIGGER IF EXISTS`). The asymmetry
-is the point, and it makes detach-then-attach the supported way to change a
-table's exclusions or its model name — idempotent end to end:
-
-```ruby
-def up
-  detach_audit_trigger :orders
-  attach_audit_trigger :orders, model: "Order", exclude: %w[internal_notes]
-end
-```
-
-Changing the exclusion list is not retroactive: rows already in `audit_changes`
-keep the diffs they were written with. A newly excluded column stops appearing
-from the re-attach forward and stays in the history before it.
-
-`CREATE OR REPLACE TRIGGER` exists as of PostgreSQL 14 (verified on 18.6) and
-would make attaching idempotent. It is deliberately not used: it would also
-silently absorb a second attach carrying a *different* model name or exclusion
-list, which is exactly the mistake worth hearing about. There is no
-`CREATE TRIGGER IF NOT EXISTS` in PostgreSQL at all.
-
-Re-running a migration is not how you meet this — `schema_migrations` prevents
-that. The reachable paths are two branches each attaching the same table, a later
-"fix" migration attaching a trigger the table already has, and a migration
-attaching to a table whose trigger already arrived via `db/structure.sql` (which
-carries every trigger, since `schema_format = :sql`).
-
-### Emitting events from a controller action
-
-Steps 5 and 6 turned layer 1 on; step 7 gave it an actor. Every row your
-controllers touch is already being recorded, field by field, with no code in the
-controller at all. Layer 2 is the *sentence* over the top of that — and it takes
-two pieces, in two files:
+It takes two pieces, in two files:
 
 | | Lives in | Does |
 |---|---|---|
@@ -592,7 +505,7 @@ You never pass the actor, IP, source, timestamp or `request_id`. All five come
 from `AuditLog::Current`, which `ControllerContext` populated in a
 `before_action` — the payload is only the domain detail.
 
-#### The ordinary case: create, update, destroy
+### The ordinary case: create, update, destroy
 
 ```ruby
 class InvoicesController < ApplicationController
@@ -676,7 +589,7 @@ The summary is rendered **once, at emit time**, and stored. Editing one of these
 lambdas changes what future rows say, never what past rows said — a copy edit
 must not alter the historical record.
 
-#### An action that spans several writes
+### An action that spans several writes
 
 Put the `notify` in the model or service, inside the same transaction as the
 work, and let the controller stay a controller:
@@ -713,7 +626,7 @@ event cannot commit without the writes it claims happened.
 person who clicked is already on the row. Do not re-send `current_user` as a
 payload key; it is duplication that can later disagree with `actor_label`.
 
-#### An action whose writes skip Active Record
+### An action whose writes skip Active Record
 
 Nothing changes. Emit the event exactly as above — layer 1 catches the rows from
 the database side:
@@ -734,7 +647,7 @@ The `audit_changes` rows and this `audit_events` row share the request's
 `request_id`, so the drill-down shows the sentence with all `count` diffs
 under it.
 
-#### An action that only enqueues work
+### An action that only enqueues work
 
 Do not emit anything for the enqueue. Once `ApplicationJob` includes
 `AuditLog::JobContext` (step 8), the job inherits this request's actor and
@@ -751,7 +664,7 @@ end
 An event emitted here would claim the invoice was delivered at the moment
 somebody clicked a button, which is not what happened.
 
-#### Payload rules
+### Payload rules
 
 - **Pass primitives — ids, strings, numbers, arrays.** The payload is stored
   verbatim in the `metadata` jsonb column. Passing an Active Record object
@@ -774,7 +687,7 @@ somebody clicked a button, which is not what happened.
   `Rails.event.raise_on_error = true` on purpose: a failed audit write must not
   vanish while the change it described commits anyway.
 
-#### Finding the actions you have not registered yet
+### Finding the actions you have not registered yet
 
 Skipping a `notify` is legal — the change is still fully audited at the record
 level, it just appears under the generic record view with no name on it. That is
@@ -871,6 +784,89 @@ end
 record in hand — which is what you want for a **deleted** record, since an audit
 trail outlives what it describes and that is exactly when somebody reads it.
 
+### Generate it
+
+You do not have to write any of the above by hand:
+
+```bash
+rails generate audit_log:views:activity Order Product Customer
+```
+
+**Any number of models, in one call or several.** That produces a controller, a
+concern, a helper, three views, a route, a locale file and a stylesheet — the
+reference app's implementation, extracted into templates. It is **yours**: plain
+Rails, no gem-side indirection, never re-generated or upgraded later.
+
+| | |
+|---|---|
+| `--css=plain` (default) | ships `audit_log_activity.css`, no framework needed |
+| `--css=tailwind` | Tailwind utility classes in the markup, no stylesheet |
+| `--css=bootstrap` | Bootstrap classes in the markup, no stylesheet |
+
+The markup **structure is identical** across all three — only `class=` changes,
+so switching later is rewriting strings rather than re-deriving the view. Neither
+framework option installs anything; both assume you already have it working.
+
+**It denies everyone until you edit one method.**
+`RecordActivity#audit_activity_visible?` is generated as `false`, and the
+generator says so in red. That default is deliberate: `Timeline` exposes previous
+values of every audited column and the other records each action touched — which
+on a shared action can be another customer's row. Defaulting to visible would
+publish all of it to every signed-in user of an app whose roles this gem cannot
+see, and nothing would report it.
+
+The models you name become `ActivityController::VIEWABLE`, an allowlist checked
+**before** `constantize` — `/activity/User/1` is a URL anyone can type. The
+generator refuses to run without them rather than emitting an empty one.
+
+**It wires up each model's show page too**, where it safely can: the
+`recent_activity` call into `#show`, and the render into the view. Where it
+can't — no `def show`, an ivar it cannot infer, a namespaced model — it declines
+and prints the two exact lines for that model rather than guessing. Guessing
+`@order` when the controller calls it `@sales_order` produces a page that renders
+an *empty feed* and reports nothing, which reads as the audit log having no data.
+`--skip-show-pages` opts out.
+
+**Adding a model later is the same command again:**
+
+```bash
+rails generate audit_log:views:activity Invoice Shipment
+```
+
+That second run adds both to the allowlist, wires up their show pages, and
+**leaves every generated file alone** — they are yours the moment they land, and
+a generator that quietly reverses an edited authorization rule is worse than no
+generator. `--force` re-baselines everything against the current templates when
+you actually want that.
+
+### A worked example
+
+The reference app renders this on its order, product and customer pages, and on
+a paginated history of its own at `/activity/:record_type/:record_id` — its own
+markup, its own i18n for the sentence this library refuses to invent, its own
+`record_url` lambda, its own role check. Nothing but the contract above:
+
+| | |
+|---|---|
+| `app/controllers/concerns/record_activity.rb` | the show-page widget: the cap, the extra key that discloses it, the role check |
+| `app/controllers/activity_controller.rb` | the paginated page: a record-type allowlist, `?days=`, and `include AuditLog::Pagination` |
+| `app/helpers/activity_helper.rb` | the sentence, the actor, the touched records, the three nil shapes |
+| `app/views/shared/_activity_feed.html.erb` | how one activity renders, deliberately not this engine's markup |
+| `config/locales/en.yml` | `activity.created` / `updated` / `deleted` |
+
+That app also shows the shape worth copying: a **manager** reads one record's
+history there without holding the auditor role, because the split from `/audit`
+is by *scope* — one record, an allowlist of types — and not by fidelity. Same
+value objects, same detail.
+
+Worth reading `activity_value` there before writing your own: it must return
+exactly one element, because the field list is a CSS grid whose `<li>` is
+`display: contents`. Returning a label and its id as two elements gives valid
+markup, correct values and a scrambled page — the kind of thing only rendering
+finds.
+
+---
+
 ### Use `AuditLog::Pagination`, do not hand-roll one
 
 `include AuditLog::Pagination` gives you `paginate(scope, limit:)`, reading the
@@ -918,37 +914,6 @@ different screen, rather than raising or — worse — applying it and dropping 
   </li>
 <% end %>
 ```
-
-### Why objects and not relations
-
-The auditor screens encode rules that are invisible from outside the gem: a diff
-value's three nil shapes mean different things, a nil actor renders "System" but
-is never *stored* that way, a redacted payload and an absent one are the same
-empty jsonb, an association label annotates a recorded id and must never replace
-it. Handed a relation, every app re-derives those and some get them wrong on a
-screen that looks fine. The value objects make each one a method call.
-
-| Object | Reads |
-|---|---|
-| `Activity` | `kind` (`:narrative` / `:change_only`), `headline`, `action`, `source`, `actor`, `occurred_at`, `operations`, `changed_columns`, `field_changes`, `also_touched`, `metadata`, `redacted?`, `out_of_band?` |
-| `FieldChange` | `column`, `from`, `to`, `cleared?`, `set?`, `from_label` / `to_label`, `association?` |
-| `TouchedRecord` | `type`, `id`, `identifier`, `label`, `label_failed?`, `operations`, `columns`, `url`, `to_s` |
-| `Actor` | `type`, `id`, `label`, `display`, `system?`, `linkable?`, `url` |
-
-`Activity`, `FieldChange`, `TouchedRecord` and `Actor` each have `as_json`, so a
-JSON API or a JS frontend gets the same contract.
-
-**Why two calls, and two types.** `activity_keys` is an ActiveRecord relation of
-`Timeline::ActivityKey` — the *identity* of each activity (which unit of work,
-and when), and nothing else. It is an opaque handle: paginate it, hand the page
-straight back, never render it. `activities` turns that page into
-`Timeline::Activity` objects, loading the events, change rows and labels for the
-whole page in three queries rather than three per row.
-
-They are separate because Pagy needs a *relation* to build a cursor from, because
-hydration has to be batched, and because the limit belongs above the controller
-where you can see it (DESIGN §11.0 Rule 2) — so the library cannot paginate and
-load in one call.
 
 ### Four things to know
 
@@ -1043,89 +1008,6 @@ fixes.
 
 The engine's own **Timeline** tab is rendered from these same objects, so the
 contract cannot drift from what the auditor UI does.
-
-### Generate it
-
-You do not have to write any of the above by hand:
-
-```bash
-rails generate audit_log:views:activity Order Product Customer
-```
-
-**Any number of models, in one call or several.** That produces a controller, a
-concern, a helper, three views, a route, a locale file and a stylesheet — the
-reference app's implementation, extracted into templates. It is **yours**: plain
-Rails, no gem-side indirection, never re-generated or upgraded later.
-
-| | |
-|---|---|
-| `--css=plain` (default) | ships `audit_log_activity.css`, no framework needed |
-| `--css=tailwind` | Tailwind utility classes in the markup, no stylesheet |
-| `--css=bootstrap` | Bootstrap classes in the markup, no stylesheet |
-
-The markup **structure is identical** across all three — only `class=` changes,
-so switching later is rewriting strings rather than re-deriving the view. Neither
-framework option installs anything; both assume you already have it working.
-
-**It denies everyone until you edit one method.**
-`RecordActivity#audit_activity_visible?` is generated as `false`, and the
-generator says so in red. That default is deliberate: `Timeline` exposes previous
-values of every audited column and the other records each action touched — which
-on a shared action can be another customer's row. Defaulting to visible would
-publish all of it to every signed-in user of an app whose roles this gem cannot
-see, and nothing would report it.
-
-The models you name become `ActivityController::VIEWABLE`, an allowlist checked
-**before** `constantize` — `/activity/User/1` is a URL anyone can type. The
-generator refuses to run without them rather than emitting an empty one.
-
-**It wires up each model's show page too**, where it safely can: the
-`recent_activity` call into `#show`, and the render into the view. Where it
-can't — no `def show`, an ivar it cannot infer, a namespaced model — it declines
-and prints the two exact lines for that model rather than guessing. Guessing
-`@order` when the controller calls it `@sales_order` produces a page that renders
-an *empty feed* and reports nothing, which reads as the audit log having no data.
-`--skip-show-pages` opts out.
-
-**Adding a model later is the same command again:**
-
-```bash
-rails generate audit_log:views:activity Invoice Shipment
-```
-
-That second run adds both to the allowlist, wires up their show pages, and
-**leaves every generated file alone** — they are yours the moment they land, and
-a generator that quietly reverses an edited authorization rule is worse than no
-generator. `--force` re-baselines everything against the current templates when
-you actually want that.
-
-### A worked example
-
-The reference app renders this on its order, product and customer pages, and on
-a paginated history of its own at `/activity/:record_type/:record_id` — its own
-markup, its own i18n for the sentence this library refuses to invent, its own
-`record_url` lambda, its own role check. Nothing but the contract above:
-
-| | |
-|---|---|
-| `app/controllers/concerns/record_activity.rb` | the show-page widget: the cap, the extra key that discloses it, the role check |
-| `app/controllers/activity_controller.rb` | the paginated page: a record-type allowlist, `?days=`, and `include AuditLog::Pagination` |
-| `app/helpers/activity_helper.rb` | the sentence, the actor, the touched records, the three nil shapes |
-| `app/views/shared/_activity_feed.html.erb` | how one activity renders, deliberately not this engine's markup |
-| `config/locales/en.yml` | `activity.created` / `updated` / `deleted` |
-
-That app also shows the shape worth copying: a **manager** reads one record's
-history there without holding the auditor role, because the split from `/audit`
-is by *scope* — one record, an allowlist of types — and not by fidelity. Same
-value objects, same detail.
-
-Worth reading `activity_value` there before writing your own: it must return
-exactly one element, because the field list is a CSS grid whose `<li>` is
-`display: contents`. Returning a label and its id as two elements gives valid
-markup, correct values and a scrambled page — the kind of thing only rendering
-finds.
-
----
 
 ## Making association ids readable (optional)
 
@@ -1322,7 +1204,152 @@ that keeps rollup from dropping somebody's `audit_events_2019`.
 
 ---
 
-## Files
+## Advanced
+
+Everything above is enough to install this gem, use it, and put a history on
+your own pages. What follows is the reasoning behind the parts most likely to
+surprise you — worth reading when one of them does, and skippable until then.
+
+The full design record lives in [`DESIGN.md`](DESIGN.md), which is the
+authority on *why* anything here is shaped the way it is.
+
+### Attaching to a table that already exists
+
+Supported, and no different mechanically. `attach_audit_trigger` is a bare
+`CREATE TRIGGER`: it reads nothing from the `create_table` beside it and carries
+no state between the two calls, so a standalone migration is equivalent.
+
+```ruby
+class AuditExistingOrders < ActiveRecord::Migration[8.1]
+  def up   = attach_audit_trigger(:orders, model: "Order")
+  def down = detach_audit_trigger(:orders)
+end
+```
+
+`coverage_spec.rb` is satisfied either way — it queries `pg_trigger`, not the
+migration history.
+
+Three things to check first. None is about *when* the trigger is attached; all
+three are about the shape of the table.
+
+- **Step 5 must already have run.** `CREATE TRIGGER` resolves
+  `public.audit_row_change` at creation time, so a missing install fails the
+  migration loudly. This is the harmless one.
+- **The table needs a `bigint`-compatible `id`.** The trigger function assigns
+  `rec_id bigint := NEW.id`, and `audit_changes.record_id` is `bigint NOT NULL`.
+  A `create_table id: false` join table, a `uuid` primary key, or a primary key
+  not named `id` therefore **fails on the first write after attaching**, not at
+  migration time. Every table in this app is uniform, so the constraint stays
+  invisible until you meet a legacy schema. Check the primary key before you
+  attach.
+- **`CREATE TRIGGER` takes `SHARE ROW EXCLUSIVE` on the table.** Catalog-only, no
+  rewrite, so it is fast — but it blocks writes while held, and a *pending*
+  request queues every write behind it. On a busy table set a `lock_timeout` and
+  retry, rather than letting the migration wait behind one long transaction. Same
+  reasoning as `config.maintenance_lock_timeout` for the maintenance tasks.
+
+**What the history then looks like.** Rows that existed before the attach have no
+back-history, and there is no backfill — the trigger records changes, and those
+changes did not pass through it. Two things narrow the gap:
+
+- The **first `UPDATE`** of a pre-existing row still yields a complete
+  `[old, new]` pair, because the diff reads `to_jsonb(OLD)` off the live row. What
+  is missing is the changes before the attach, not the values before the change.
+- A **`DELETE`** snapshots the whole final row, so even a row created long before
+  the trigger leaves a full record behind when it goes.
+
+What remains is epistemic: a record with no `audit_changes` rows is ambiguous
+between "never changed" and "predates the trigger". **Record the attach date** —
+the migration's own timestamp is the durable answer. An audit trail that cannot
+say which of the two it means is under-reporting without saying so, which is the
+one failure mode this whole design exists to prevent.
+
+### Re-attaching, and changing a table's exclusions
+
+**`attach_audit_trigger` is not idempotent, deliberately.** A second attach on an
+already-audited table fails:
+
+```
+ERROR:  trigger "orders_audit" for relation "orders" already exists   -- SQLSTATE 42710
+```
+
+`trigger_name` is `#{table}_audit` — derived from the table alone, ignoring both
+`model:` and `exclude:` — so two attaches on one table *always* collide on the
+name, whatever arguments they pass. That collision is load-bearing. Were the name
+to incorporate the model or the exclusion list, the second attach would **succeed**
+and the table would carry two triggers: two `audit_changes` rows for every write,
+under possibly different exclusion sets. Double-counted audit rows are far worse
+than a failed migration — invisible until somebody counts, and wrong in every
+rollup and reconciliation downstream. Postgres DDL is transactional and Rails
+wraps each migration, so the duplicate fails loudly with nothing half-applied.
+
+`detach_audit_trigger` **is** idempotent (`DROP TRIGGER IF EXISTS`). The asymmetry
+is the point, and it makes detach-then-attach the supported way to change a
+table's exclusions or its model name — idempotent end to end:
+
+```ruby
+def up
+  detach_audit_trigger :orders
+  attach_audit_trigger :orders, model: "Order", exclude: %w[internal_notes]
+end
+```
+
+Changing the exclusion list is not retroactive: rows already in `audit_changes`
+keep the diffs they were written with. A newly excluded column stops appearing
+from the re-attach forward and stays in the history before it.
+
+`CREATE OR REPLACE TRIGGER` exists as of PostgreSQL 14 (verified on 18.6) and
+would make attaching idempotent. It is deliberately not used: it would also
+silently absorb a second attach carrying a *different* model name or exclusion
+list, which is exactly the mistake worth hearing about. There is no
+`CREATE TRIGGER IF NOT EXISTS` in PostgreSQL at all.
+
+Re-running a migration is not how you meet this — `schema_migrations` prevents
+that. The reachable paths are two branches each attaching the same table, a later
+"fix" migration attaching a trigger the table already has, and a migration
+attaching to a table whose trigger already arrived via `db/structure.sql` (which
+carries every trigger, since `schema_format = :sql`).
+
+### Why objects and not relations
+
+The auditor screens encode rules that are invisible from outside the gem: a diff
+value's three nil shapes mean different things, a nil actor renders "System" but
+is never *stored* that way, a redacted payload and an absent one are the same
+empty jsonb, an association label annotates a recorded id and must never replace
+it. Handed a relation, every app re-derives those and some get them wrong on a
+screen that looks fine. The value objects make each one a method call.
+
+| Object | Reads |
+|---|---|
+| `Activity` | `kind` (`:narrative` / `:change_only`), `headline`, `action`, `source`, `actor`, `occurred_at`, `operations`, `changed_columns`, `field_changes`, `also_touched`, `metadata`, `redacted?`, `out_of_band?` |
+| `FieldChange` | `column`, `from`, `to`, `cleared?`, `set?`, `from_label` / `to_label`, `association?` |
+| `TouchedRecord` | `type`, `id`, `identifier`, `label`, `label_failed?`, `operations`, `columns`, `url`, `to_s` |
+| `Actor` | `type`, `id`, `label`, `display`, `system?`, `linkable?`, `url` |
+
+`Activity`, `FieldChange`, `TouchedRecord` and `Actor` each have `as_json`, so a
+JSON API or a JS frontend gets the same contract.
+
+**Why two calls, and two types.** `activity_keys` is an ActiveRecord relation of
+`Timeline::ActivityKey` — the *identity* of each activity (which unit of work,
+and when), and nothing else. It is an opaque handle: paginate it, hand the page
+straight back, never render it. `activities` turns that page into
+`Timeline::Activity` objects, loading the events, change rows and labels for the
+whole page in three queries rather than three per row.
+
+They are separate because Pagy needs a *relation* to build a cursor from, because
+hydration has to be batched, and because the limit belongs above the controller
+where you can see it (DESIGN §11.0 Rule 2) — so the library cannot paginate and
+load in one call.
+
+## Working on this library
+
+Only relevant if you are changing the gem itself rather than using it.
+
+[`CLAUDE.md`](CLAUDE.md) is the terse companion to this section: the same
+decisions as a list of things not to "fix", for anyone — human or otherwise —
+who will not read a 2,000-line design document first.
+
+### Files
 
 | Path | Role |
 |---|---|
@@ -1359,7 +1386,7 @@ that keeps rollup from dropping somebody's `audit_events_2019`.
 
 ---
 
-## Working on the library: what reloads and what does not
+### What reloads and what does not
 
 The gem loads its own files two ways, and only one of them reloads in a host
 app's development environment:
@@ -1394,7 +1421,7 @@ Two path constants, both deliberate:
   have resolved to the *host* app's root and pulled in its `app/` directories. A
   gem root is unambiguous. Do not reintroduce it.
 
-## Before you change anything
+### Before you change anything
 
 The reasoning behind every decision here lives in [`DESIGN.md`](DESIGN.md), which
 is the single source of truth for it — this file does not restate it. The
@@ -1424,7 +1451,7 @@ are stable. Sections 15, 18 and 19 were project rollout and are now in
 `CLAUDE.md` at the repository root carries the same decisions as a terse
 "do not "fix" this" list, for agents that will not read a 1,900-line document.
 
-## Not implemented (deliberately)
+### Not implemented (deliberately)
 
 Per [`DESIGN.md`](DESIGN.md) §12, §13, and the open questions in
 [`../../ROLLOUT.md`](../../ROLLOUT.md):

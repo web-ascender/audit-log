@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### The README reads top-down for two audiences  **[2026-08-29]**
+
+It had grown by accretion, so the order was the order things were built rather
+than the order anybody reads them. Deep reasoning sat between steps somebody
+needed to follow.
+
+Reordered so the first two thirds are for a developer installing and using the
+gem — summary, what is optional, getting started, installing, emitting events,
+reading a record's history, building one on your own pages, association labels,
+rake tasks — with nothing between those steps that is not needed to take them.
+
+Then two new sections:
+
+- **Advanced** — the reasoning behind the parts most likely to surprise you.
+  "Attaching to a table that already exists" and "Re-attaching, and changing a
+  table's exclusions" moved here from the middle of the install flow: the
+  *instruction* is one generator flag, while the explanation (why attaching is
+  deliberately not idempotent, why `CREATE OR REPLACE TRIGGER` is refused) is
+  three screens somebody only needs when it bites. "Why objects and not
+  relations" moved here for the same reason — rationale, not instruction.
+- **Working on this library** — Files, what reloads and what does not, before you
+  change anything, and deliberately-not-implemented, all of which only matter if
+  you are changing the gem rather than using it.
+
+"Emitting events from a controller action" was promoted out of "Installing" to a
+section of its own, and now says outright that it is **optional** — skipping it
+costs readability, never completeness, which was true all along and stated
+nowhere.
+
+
 ### Freezing is automatic now  **[2026-08-29]**
 
 DESIGN §8 gains **"Why freezing matters at all"**, because every mention of
