@@ -4,6 +4,27 @@
 
 ### The README reads top-down for two audiences  **[2026-08-29]**
 
+Reorganising it exposed two things the early sections never had, and repetition
+between sections is fine — the audience installing the gem should be able to
+succeed without scrolling into the reasoning.
+
+**A configuration reference.** There are 21 attributes on `AuditLog.config` and
+the README named a handful of them, scattered. There is now one table covering
+all of them, grouped by whether you should look at it before deploying, whether
+it affects rendering, whether it is storage lifecycle, or whether you will never
+touch it. `readme_spec` now fails if an attribute exists that the README does not
+name — the same forcing function already applied to rake tasks, and for the same
+reason: a coupling point nobody can discover is one nobody sets.
+
+**The backfill gap, in the install flow.** "There is no backfill" was only in the
+Advanced section, which is the wrong place for something an adopter with existing
+tables needs to know *before* running the generator. The practical version is now
+in step 8: pre-existing rows have no history, the first `UPDATE` still yields a
+complete pair and a `DELETE` still snapshots the whole row, and a record with no
+audit rows is ambiguous between "never changed" and "predates the trigger" — so
+write the attach date down.
+
+
 It had grown by accretion, so the order was the order things were built rather
 than the order anybody reads them. Deep reasoning sat between steps somebody
 needed to follow.

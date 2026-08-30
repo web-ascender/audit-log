@@ -64,6 +64,19 @@ RSpec.describe "README.md" do
       "  extra:   #{(listed - expected).join(", ")}"
   end
 
+  # Same forcing function as the rake tasks below. A config attribute the README
+  # never mentions is one an adopting app cannot discover without reading
+  # configuration.rb -- and every one of these is a coupling point somebody may
+  # need to set.
+  it "documents every configuration attribute" do
+    config = Pathname(AuditLog::GEM_ROOT).join("lib/audit_log/configuration.rb").read
+    attrs  = config.scan(/attr_accessor :(\w+)/).flatten.uniq
+
+    undocumented = attrs.reject { |a| body.include?("`#{a}`") }
+    expect(undocumented).to be_empty,
+      "these config attributes exist but the README never names them: #{undocumented.join(", ")}"
+  end
+
   # Every task the engine registers should be findable by somebody reading the
   # docs rather than by somebody reading the rake file.
   it "documents every rake task the gem registers" do

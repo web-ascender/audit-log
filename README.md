@@ -26,6 +26,11 @@ the authority on *why* any of this is shaped the way it is.
   - [Then run the generator](#then-run-the-generator)
   - [The two manual steps](#the-two-manual-steps)
   - [What a model needs](#what-a-model-needs)
+- [Configuration](#configuration)
+  - [The ones you should look at before deploying](#the-ones-you-should-look-at-before-deploying)
+  - [Rendering and screens](#rendering-and-screens)
+  - [Storage lifecycle](#storage-lifecycle)
+  - [Rarely touched](#rarely-touched)
 - [Emitting events from a controller action](#emitting-events-from-a-controller-action)
   - [The ordinary case: create, update, destroy](#the-ordinary-case-create-update-destroy)
   - [An action that spans several writes](#an-action-that-spans-several-writes)
@@ -43,7 +48,7 @@ the authority on *why* any of this is shaped the way it is.
   - [What the timeline covers](#what-the-timeline-covers)
 - [Making association ids readable (optional)](#making-association-ids-readable-optional)
   - [The four things a cell can say](#the-four-things-a-cell-can-say)
-  - [Configuration](#configuration)
+  - [Configuring the label lookup](#configuring-the-label-lookup)
   - [Two things to know before turning it on](#two-things-to-know-before-turning-it-on)
 - [Rake tasks](#rake-tasks)
   - [Schedule this one](#schedule-this-one)
@@ -467,6 +472,16 @@ to be certain, so confirm.
    requirement — see
    [Attaching to a table that already exists](#attaching-to-a-table-that-already-exists).
 
+   **There is no backfill, and the gap is worth recording.** Rows that existed
+   before the attach have no history — the trigger records *changes*, and those
+   changes did not pass through it. The first `UPDATE` of a pre-existing row still
+   yields a complete `[old, new]` pair, and a `DELETE` still snapshots the whole
+   final row, so the gap is narrower than it sounds. What it leaves is a record
+   with no `audit_changes` rows being ambiguous between "never changed" and
+   "predates the trigger" — so **write the attach date down**. The migration's own
+   timestamp is the durable answer. See
+   [Attaching to a table that already exists](#attaching-to-a-table-that-already-exists).
+
    Nobody can generate the *decision* for you: which tables are worth auditing is
    a judgement about your domain. Step 7 is what stops it being skipped instead of
    made.
@@ -481,6 +496,57 @@ to be certain, so confirm.
 Nothing. No `has_audit_log`, no `include Auditable`, no callback, no base class.
 An audited model is an ordinary `ApplicationRecord`. The one line of per-model
 cost lives in the migration, next to the table it audits.
+
+## Configuration
+
+Everything this gem needs to know about your application, in one file. The
+install generator writes `config/initializers/audit_log.rb` with the ones that
+matter commented in place; this is the whole list.
+
+**Nothing here names one of your constants.** Every coupling point is a lambda or
+a string you supply, which is what lets one library serve every app without
+knowing anything about any of them.
+
+### The ones you should look at before deploying
+
+| | Default | Does |
+|---|---|---|
+| `authorize` | **no-op** | Gates the auditor UI at `/audit`. The default lets *everyone* in, which is right for a demo and wrong for you. Raise or redirect. |
+| `actor_resolver` | `controller.try(:current_user)` | How to find the acting user. Works with Devise, the Rails generator, or anything exposing `current_user`. |
+| `actor_label_resolver` | `actor.to_label` | The string snapshotted onto every audit row. Rendered once per entry point, so a later rename never rewrites history. |
+| `unaudited_tables` | a few internals | Tables that legitimately have no trigger, **each with a written reason**. `audit_log:coverage` fails for anything neither audited nor listed here. |
+| `default_excluded_columns` | timestamps, `lock_version`, password and reset-token columns | Columns kept out of every diff. Per-table extras go on the trigger via `--exclude`. |
+| `retention` | `7.years` | How long partitions are kept before `retention` will detach them. `nil` disables it. |
+
+### Rendering and screens
+
+| | Default | Does |
+|---|---|---|
+| `parent_controller` | `"ApplicationController"` | What the engine's controllers inherit, which is how they pick up your layout and authentication. |
+| `record_url` | `nil` | `->(type, id)` returning a path in **your** app, for a history you render yourself. nil means labels render unlinked, ids intact — it will not guess a route. |
+| `page_size` | `50` | Rows per page on the auditor screens. Keyset-paginated, so there is no cost curve behind it. |
+| `actor_picker` | `[]` | Populates the actor search on `/audit/actors`. Source it from your users table, not from the log. |
+| `actor_finder` | `type.constantize.find_by(id:)` | Looks up an actor for display when the log holds no snapshot. |
+| `record_label_resolver` | `RecordLabel.batch` | Turns ids in a diff into labels. `nil` disables labelling entirely. **Scope it in a multitenant app** — the default reads business tables unscoped. |
+| `association_targets` | `{}` | `{"LineItem" => {"product_id" => "Product"}}` for association columns `belongs_to` reflection cannot see. `false` suppresses one. |
+| `drill_down_slack` | `24.hours` | How wide the date window around a `request_id` drill-down is. Generous on purpose, and disclosed on screen. |
+
+### Storage lifecycle
+
+| | Default | Does |
+|---|---|---|
+| `partition_months_ahead` | `3` | How far ahead the daily task provisions. A missing future partition is a write-path outage. |
+| `rollup_after` | `2.years` | How cold a year must be before `rollup` consolidates its months. `nil` disables it. |
+| `archive_dir` | `nil` | Default `DIR` for the export tasks. |
+| `maintenance_lock_timeout` | `"5s"` | How long the three `ACCESS EXCLUSIVE` operations wait before failing rather than blocking every audited write. |
+
+### Rarely touched
+
+| | Default | Does |
+|---|---|---|
+| `correlated_databases` | `%w[primary]` | Which databases carry the correlation context. **Does not decide what is audited** — a database left out is still fully audited, its rows just arrive with no actor. |
+| `bypass_allowlist` | `[]` | Classes permitted to call `AuditLog.without_logging`. Empty means the bypass is unavailable, which is the right default. |
+| `raise_on_subscriber_error` | `true` | Whether a failed layer-2 write raises. Leaving it true is what stops an audit failure vanishing while the change it described commits. |
 
 ## Emitting events from a controller action
 
@@ -1060,7 +1126,7 @@ onto every row at write time — see DESIGN §11.8 for why both are right.
 | `51 (label unavailable)` | the lookup itself failed. **Not** the same as "no label configured", and never a blank cell |
 | `51` | no label available. Every screen renders exactly as it did before this feature existed |
 
-### Configuration
+### Configuring the label lookup
 
 Both attributes are optional and both have working defaults.
 
