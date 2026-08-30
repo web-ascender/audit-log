@@ -317,9 +317,9 @@ rather than injecting twice. Flags: `--mount-at=/audit`, `--skip-migration`,
 
 ### What a model needs
 
-Nothing. No `has_audit_log`, no `include Auditable`, no callback, no base class.
-An audited model is an ordinary `ApplicationRecord`. The one line of per-model
-cost lives in the migration, next to the table it audits.
+Nothing! No include, no concern, no callback, no base class. An audited model is
+an ordinary `ApplicationRecord`. The one line of per-model cost lives in the
+migration, next to the table it audits.
 
 ## Emitting events from a controller action
 
