@@ -3,7 +3,32 @@
 Notable changes to `audit_log`. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.3.0 — 2026-08-30
+
+**Two configuration surfaces were quietly lying, and this release stops both.**
+Neither failure raised, logged, or degraded a screen — the ordinary shape of an
+under-report, which is the thing this library exists to prevent.
+
+`config.correlated_databases` invited a *database* name where a **connection**
+name was required. A real application was configured with one. Every trigger
+still fired and every row was still written, all with a NULL actor and NULL
+`request_id` — indistinguishable from a console session. It is now
+`config.correlated_connections`, with no deprecated alias and a boot check that
+refuses to start on a value matching nothing.
+
+And the library assumed the `public` schema, in both directions. A trigger
+function pinned to `public` filed every schema's rows in one table while the
+writes succeeded; a provisioning check asking about `public.audit_changes_2026_08`
+reported the work done to a caller provisioning somewhere else; and the catalog
+queries that filtered on `relname` alone let one schema's trigger vouch for
+another schema's table, so `rake audit_log:coverage` passed while a table went
+unaudited. Everything now operates on `current_schema()`. **Nothing changes for a
+single-schema application** — which is nearly all of them — because
+`current_schema()` is `public`. No configuration was added and no tenancy library
+is named: this is the removal of an assumption, not a new feature. DESIGN §14 is
+rewritten accordingly.
+
+Requires Ruby >= 3.3, Rails ~> 8.0, PostgreSQL >= 16.
 
 ### Changed — breaking
 
