@@ -18,7 +18,7 @@ it is, and the section numbers cited from source comments (`plan §6.1`,
 | `README.md` | someone installing the gem | install, use, the auditor UI, and the optional generated views |
 | **`CLAUDE.md`** (this file) | you | terse rules, and what not to "fix" |
 | `DESIGN.md` | someone changing the library | the reasoning, in full |
-| `CHANGELOG.md` | everyone | what changed between released versions. Unreleased and deliberately thin — `DESIGN.md` carries the reasoning, git carries the detail |
+| `CHANGELOG.md` | everyone | what changed between released versions. Deliberately thin — `DESIGN.md` carries the reasoning, git carries the detail |
 
 The list of deliberate decisions below is deliberately terse and deliberately
 duplicated from `DESIGN.md` — it exists so an agent that will not read a

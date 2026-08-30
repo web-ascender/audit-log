@@ -188,11 +188,12 @@ command, and the reasoning for any of it is linked rather than inline.
 
 ```ruby
 # Gemfile
-gem "audit_log", git: "https://github.com/web-ascender/audit-log"
+gem "audit_log", git: "https://github.com/web-ascender/audit-log", tag: "v0.1.0"
 ```
 
-A private repo, so `bundle` needs credentials for the company GitHub org. Use
-`path: "../audit-log"` for local co-development.
+A private repo, so `bundle` needs credentials for the company GitHub org. Pin to
+a tag — without one, `bundle update` tracks `main` and moves the library under a
+running app. Use `path: "../audit-log"` for local co-development.
 
 ### 2. Install
 

@@ -3,7 +3,7 @@
 Notable changes to `audit_log`. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## 0.1.0 — unreleased
+## 0.1.0 — 2026-08-30
 
 First release. There is deliberately no history before this entry: the library
 was developed as `lib/audit_log/` inside the reference application and extracted
@@ -46,7 +46,6 @@ Requires Ruby >= 3.3, Rails ~> 8.0, PostgreSQL >= 16. CI runs the suite on Ruby
 - **No Rails 8.0 CI leg.** The gemspec claims `~> 8.0` but CI tests 8.1 only, so
   `AuditLog.notify`'s documented fallback for the absence of `Rails.event` is
   untested at the floor.
-- **Untagged.** A host app depending on `git:` tracks `main` and cannot pin.
 
 ---
 
