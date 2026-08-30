@@ -18,6 +18,14 @@ the authority on *why* any of this is shaped the way it is.
 - [Requirements](#requirements)
 - [The two layers](#the-two-layers)
 - [Getting started](#getting-started)
+  - [1. Add the gem](#1-add-the-gem)
+  - [2. Install](#2-install)
+  - [3. Attach a trigger to each audited table](#3-attach-a-trigger-to-each-audited-table)
+  - [4. Prove nothing was missed](#4-prove-nothing-was-missed)
+  - [5. Schedule the daily task](#5-schedule-the-daily-task)
+  - [6. Read the initializer before deploying](#6-read-the-initializer-before-deploying)
+  - [7. Recommended: name the actions worth a sentence](#7-recommended-name-the-actions-worth-a-sentence)
+  - [8. Optional: put a history on your own pages](#8-optional-put-a-history-on-your-own-pages)
   - [What the generator wrote](#what-the-generator-wrote)
   - [What a model needs](#what-a-model-needs)
 - [Emitting events from a controller action](#emitting-events-from-a-controller-action)
@@ -52,7 +60,7 @@ the authority on *why* any of this is shaped the way it is.
 - [Rake tasks](#rake-tasks)
   - [Schedule this one](#schedule-this-one)
   - [Run when something needs it](#run-when-something-needs-it)
-  - [Retention — schedulable, in this order](#retention-schedulable-in-this-order)
+  - [Retention: schedulable, in this order](#retention-schedulable-in-this-order)
   - [Only on a scratch database](#only-on-a-scratch-database)
 - [Advanced](#advanced)
   - [Attaching to a table that already exists](#attaching-to-a-table-that-already-exists)
@@ -110,6 +118,12 @@ attached — and no model has to opt in or even know.
   the recorded id never dropped.
 - **Zero application constants.** Every coupling point is a lambda on
   `AuditLog.config`, so one library serves every app.
+
+**See it working first?**
+[`audit-log-demo`](https://github.com/web-ascender/audit-log-demo) is a small
+Rails app that installs this gem the way the next section describes — seeded
+data, emitted events, and the generated activity views on real pages. It is the
+worked example the rest of this file refers to as *the reference app*.
 
 Already weighing this against `paper_trail`, `audited` or `logidze`?
 [Why this one](#why-this-one-and-not-a-callback-based-gem) and
@@ -170,7 +184,7 @@ rows constituted "submitting an order".
 An existing Rails app with existing models. Work down the list; every step is a
 command, and the reasoning for any of it is linked rather than inline.
 
-**1. Add the gem.**
+### 1. Add the gem
 
 ```ruby
 # Gemfile
@@ -180,7 +194,7 @@ gem "audit_log", git: "https://github.com/web-ascender/audit-log"
 A private repo, so `bundle` needs credentials for the company GitHub org. Use
 `path: "../audit-log"` for local co-development.
 
-**2. Install.**
+### 2. Install
 
 ```bash
 bin/rails generate audit_log:install
@@ -198,7 +212,7 @@ reports rather than does.
 > reads a `current_user` that is not resolved yet and **every audit row gets a
 > NULL actor, silently.** Look at the file.
 
-**3. Attach a trigger to each audited table.**
+### 3. Attach a trigger to each audited table
 
 ```bash
 bin/rails generate audit_log:trigger orders   --model=Order
@@ -218,7 +232,7 @@ have no history, so write the attach date down.
 
 Flags: [`audit_log:trigger` options](#audit_logtrigger-options).
 
-**4. Prove nothing was missed.**
+### 4. Prove nothing was missed
 
 ```bash
 bin/rails audit_log:coverage
@@ -228,7 +242,7 @@ Fails until every table is either audited or listed in
 `config.unaudited_tables` **with a written reason**. The generator also wrote a
 spec asserting the same thing, so the decision cannot be skipped instead of made.
 
-**5. Schedule the daily task.**
+### 5. Schedule the daily task
 
 ```
 0 2 * * *   bin/rails audit_log:partitions
@@ -238,19 +252,23 @@ spec asserting the same thing, so the decision cannot be skipped instead of made
 This is the one task that belongs in a cron; the rest are in
 [Rake tasks](#rake-tasks).
 
-**6. Read `config/initializers/audit_log.rb` before deploying.**
+### 6. Read the initializer before deploying
 
-`config.authorize` defaults to a **no-op**, which is right for a demo and wrong
-for you. Everything else is in [Configuration](#configuration).
+`config/initializers/audit_log.rb`. `config.authorize` defaults to a **no-op**,
+which is right for a demo and wrong for you. Everything else is in
+[Configuration](#configuration).
 
 At this point every change to an audited table is recorded, with an actor and a
-correlation id, and readable at `/audit`. The two steps below are optional.
+correlation id, and readable at `/audit`. Neither step below is required for
+that.
 
-**7. Name the actions worth a sentence** — *optional*, and what turns a complete
-log into a readable one. See
+### 7. Recommended: name the actions worth a sentence
+
+What turns a complete log into a readable one: layer 2, the sentences an auditor
+reads instead of a field diff. See
 [Emitting events](#emitting-events-from-a-controller-action).
 
-**8. Put a history on your own pages** — *optional*.
+### 8. Optional: put a history on your own pages
 
 ```bash
 bin/rails generate audit_log:views:activity Order Product LineItem
@@ -455,9 +473,9 @@ under it.
 ### An action that only enqueues work
 
 Do not emit anything for the enqueue. Once `ApplicationJob` includes
-`AuditLog::JobContext` (step 8), the job inherits this request's actor and
-records this request as its `caused_by_request_id`; the job emits its own event
-when the work actually happens:
+`AuditLog::JobContext` ([step 2](#2-install)), the job inherits this request's
+actor and records this request as its `caused_by_request_id`; the job emits its
+own event when the work actually happens:
 
 ```ruby
 def ship
@@ -633,10 +651,11 @@ you actually want that.
 
 ### A worked example
 
-The reference app renders this on its order, product and customer pages, and on
-a paginated history of its own at `/activity/:record_type/:record_id` — its own
-markup, its own i18n for the sentence this library refuses to invent, its own
-`record_url` lambda, its own role check. Nothing but the contract above:
+[The reference app](https://github.com/web-ascender/audit-log-demo) renders this
+on its order, product and customer pages, and on a paginated history of its own
+at `/activity/:record_type/:record_id` — its own markup, its own i18n for the
+sentence this library refuses to invent, its own `record_url` lambda, its own
+role check. Nothing but the contract above:
 
 | | |
 |---|---|
@@ -985,8 +1004,6 @@ are the ones with decisions in them.
 | `audit_log:trigger TABLE --replace` | detach-then-attach, to change a table's model or exclusions | when those change |
 | `audit_log:views:activity Model [Model...]` | controller, concern, helper, views, route, locale, stylesheet — and wires each model's show page | once, then again per new model |
 
-Every flag each one takes is in [Generator options](#generator-options).
-
 ### `audit_log:trigger` options
 
 ```bash
@@ -1096,7 +1113,7 @@ stall the write path.
 | `audit_log:partitions:drain_default` | Moves rows out of the default partition into the ones that should hold them | When `partitions` reports default-partition overflow. **Do not schedule this one.** Needing it means a row landed in the default partition, which means the rotation task was not running — scheduling the repair hides the fault that caused it. Takes `ACCESS EXCLUSIVE`. Stages through a temp table in one transaction, so a failure leaves the rows where they started. |
 | `audit_log:redact` | Removes a record's **values** from the log, keeping the structure | An erasure request. `RECORD=Customer:42 REASON=DSR-1182 [FIELDS=email,phone] [DRY_RUN=1]`. The only thing permitted to modify audit rows; it narrates itself in the same transaction. `changed_columns` survives, so *"the email changed at 14:02, by Jane"* stays provable. |
 
-### Retention — schedulable, in this order
+### Retention: schedulable, in this order
 
 Every state named below is defined in
 [DESIGN §8, The partition lifecycle](DESIGN.md) — including which states the gem
@@ -1189,7 +1206,7 @@ migration history.
 Three things to check first. None is about *when* the trigger is attached; all
 three are about the shape of the table.
 
-- **Step 5 must already have run.** `CREATE TRIGGER` resolves
+- **[Step 2](#2-install) must already have run.** `CREATE TRIGGER` resolves
   `public.audit_row_change` at creation time, so a missing install fails the
   migration loudly. This is the harmless one.
 - **The table needs a `bigint`-compatible `id`.** The trigger function assigns
@@ -1349,7 +1366,7 @@ Only relevant if you are changing the gem itself rather than using it.
 
 [`CLAUDE.md`](CLAUDE.md) is the terse companion to this section: the same
 decisions as a list of things not to "fix", for anyone — human or otherwise —
-who will not read a 2,000-line design document first.
+who will not read a 2,600-line design document first.
 
 ### Files
 
@@ -1382,9 +1399,9 @@ who will not read a 2,000-line design document first.
 | `app/queries/audit_log/timeline/` | Its value objects — `Activity` (one thing that happened, loaded), `ActivityKey` (its identity before loading), `FieldChange`, `TouchedRecord`, `Actor`. |
 | `app/controllers/`, `app/views/` | The auditor UI. `shared/_event_payload` and `records/_timeline_activities` both render `audit_events.metadata` in three states — present, absent, redacted. |
 | `lib/audit_log/rspec.rb` | Shared examples a host app uses instead of copying a spec. Not loaded by `lib/audit_log.rb` — rspec is the host's test dependency. |
-| `lib/generators/audit_log/` | `audit_log:install` and `audit_log:trigger`, with templates. |
+| `lib/generators/audit_log/` | `audit_log:install`, `audit_log:trigger` and `audit_log:views:activity`, with templates. |
 | `DESIGN.md` | Why every decision here is what it is. Cited by section number from source comments. |
-| `lib/audit_log/tasks/audit_log.rake` | `partitions`, `drain_default`, `rollup`, `retention`, `export`, `drop_exported`, `freeze`, `redact`, `reconcile`, `coverage`, `benchmark`. |
+| `lib/audit_log/tasks/audit_log.rake` | `partitions` and the `partitions:` namespace, plus `redact`, `reconcile`, `coverage`, `benchmark`. Full list in [Rake tasks](#rake-tasks). |
 
 ---
 
@@ -1399,8 +1416,8 @@ app's development environment:
 | `lib/audit_log/*.rb` (`configuration`, `context`, `partitions`, `schema`, …) | `Kernel#autoload`, from `lib/audit_log.rb` | **no** — once per process |
 
 **Editing anything directly under `lib/audit_log/` requires a server restart.**
-This matters in practice when you consume the gem by path, as the reference app
-does: an `app/**` edit shows up on the next request, a `lib/**` edit does not.
+This matters in practice when you consume the gem by path, as
+[the reference app](https://github.com/web-ascender/audit-log-demo) does: an `app/**` edit shows up on the next request, a `lib/**` edit does not.
 
 It is deliberate rather than an oversight. `TransactionStamp` is `prepend`ed into
 the Postgres adapter at boot, which reloading would corrupt, and `AuditLog.config`
@@ -1447,16 +1464,13 @@ sections most likely to matter, and the shape of the mistake each one prevents:
 | anything storing a timestamp | §4 | `occurred_at` is filled by a column DEFAULT so `config.time_zone` cannot reach it — supplying it from Ruby breaks that silently |
 
 Section numbers are cited from source comments throughout the library, so they
-are stable. Sections 15, 18 and 19 were project rollout and are now in
-[`../../ROLLOUT.md`](../../ROLLOUT.md).
-
-`CLAUDE.md` at the repository root carries the same decisions as a terse
-"do not "fix" this" list, for agents that will not read a 1,900-line document.
+are stable. Sections 15, 18 and 19 were project rollout and now live in the
+reference app's [`ROLLOUT.md`](https://github.com/web-ascender/audit-log-demo/blob/main/ROLLOUT.md).
 
 ### Not implemented (deliberately)
 
-Per [`DESIGN.md`](DESIGN.md) §12, §13, and the open questions in
-[`../../ROLLOUT.md`](../../ROLLOUT.md):
+Per [`DESIGN.md`](DESIGN.md) §12, §13, and the open questions in the reference
+app's [`ROLLOUT.md`](https://github.com/web-ascender/audit-log-demo/blob/main/ROLLOUT.md):
 
 - **Database-level append-only enforcement.** `REVOKE UPDATE, DELETE` plus a
   rejecting trigger. Additive, needs no schema change — but it requires

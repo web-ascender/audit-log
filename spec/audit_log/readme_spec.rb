@@ -13,11 +13,15 @@ require "rails_helper"
 RSpec.describe "README.md" do
   README = Pathname(AuditLog::GEM_ROOT).join("README.md")
 
-  # GitHub's own slug rules, near enough: strip formatting, downcase, drop
-  # punctuation, hyphenate spaces.
+  # GitHub's own slug rules: strip formatting, downcase, drop punctuation, then
+  # hyphenate spaces ONE FOR ONE. Collapsing runs of whitespace here instead
+  # would be wrong in exactly the case that bites -- "Retention -- schedulable"
+  # loses the dash and keeps both spaces, so GitHub's anchor has a double hyphen
+  # and a contents link built on a collapsed slug is dead on arrival while this
+  # spec stays green.
   def self.slug(text)
     text = text.gsub(/`([^`]*)`/, '\1').gsub(/\*\*?([^*]*)\*\*?/, '\1')
-    text.downcase.gsub(/[^\w\s-]/, "").strip.gsub(/\s+/, "-")
+    text.downcase.gsub(/[^\w\s-]/, "").strip.tr(" ", "-")
   end
 
   # Fenced code blocks contain `#` comments that are not headings.

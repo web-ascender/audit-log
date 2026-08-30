@@ -818,7 +818,7 @@ Rails 8.0 leg to find something — `Rails.event` does not exist there, and
 
 ## Deliberately not implemented
 
-Per [`DESIGN.md`](DESIGN.md) §12, §13 and `ROLLOUT.md` — all
+Per [`DESIGN.md`](DESIGN.md) §12, §13 and the reference app's `ROLLOUT.md` — all
 decisions, not omissions:
 
 - Database-level append-only enforcement (`REVOKE UPDATE, DELETE` + a rejecting
