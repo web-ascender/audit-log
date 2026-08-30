@@ -82,12 +82,12 @@ re-migrate if a schema change appears not to apply.
 Do not "fix" these without reading the linked reasoning first.
 
 - **`audit_log:install` refuses to set `schema_format` when `db/schema.rb`
-  exists, and that refusal is a feature.** `:sql` is required *before* the first
+  exists, and that refusal is a feature.** (DESIGN §21.2.) `:sql` is required *before* the first
   migration; switching an established app means re-dumping its whole schema and
   every developer rebuilding their database. A generator must not start that
   quietly — it reports the three steps and stops.
 - **The `ControllerContext` include is injected after the LAST `before_action`,
-  not at the top of the class.** `inject_into_class` puts it at the top, which
+  not at the top of the class.** (DESIGN §21.2.) `inject_into_class` puts it at the top, which
   puts `set_audit_context` ahead of `authenticate_user!` — so it reads a
   `current_user` that is not resolved yet and **every audit row gets a NULL
   actor, silently.** This was a real bug in the first version of the generator.
@@ -539,6 +539,9 @@ browsable results. `config.page_size` is the only knob.
 
 ## The activity generator
 
+**`DESIGN.md` §21 is the authority on all three generators**; §21.3 is this one.
+Everything below is the terse copy.
+
 **It is `audit_log:views:activity`, under a `views:` namespace, and the namespace
 is the point.** `audit_log:activity` reads like `rails g model Activity` — as
 though it created an Activity model — when what it does is copy starter views
@@ -573,11 +576,18 @@ What is load-bearing about it:
 - **View templates emit ERB THROUGH ERB.** Every runtime tag is escaped `<%%`,
   and only the class slots (`<%= css(:card) %>`) are generate-time. Get it wrong
   and you ship a view that renders its own source, which reads as a styling bug.
-  `activity_generator_spec` compiles every generated `.erb` and asserts no `<%%`
-  survives.
+  `activity_generator_spec` compiles every generated `.erb`, and asserts
+  separately that the runtime tags arrived as ERB with no `<%%` left in them.
 - **`audit_activity_visible?` is generated as `false`.** Never change that to
   `true` "for convenience". It is the difference between a host that has decided
   who may read audit diffs and one that has published them by default.
+- **`VIEWABLE` is checked BEFORE `constantize`, and that order is the point.**
+  `/activity/User/1` is a URL anybody can type. Constantizing a path parameter is
+  untidy anywhere; on a page that renders audit diffs it reads the history of a
+  model the host never meant to expose. The generator also refuses to run with no
+  models rather than emitting an empty allowlist.
+- **The locale strings get their own file**, never an edit to the host's
+  `config/locales/en.yml`. Nothing generated should be able to clobber a host key.
 - **The show-page wiring guesses NOTHING it cannot verify.** It injects
   `recent_activity(@order)` into `#show` and the render into the view only when
   the controller has a bare `def show` AND already mentions `@order`; otherwise

@@ -2,7 +2,7 @@
 
 **Status:** validated against the working implementation in this gem, and against
 the reference application in `../audit-log-demo`
-**Last updated:** 2026-08-28
+**Last updated:** 2026-08-29
 
 > **Why this decision is what it is.** This is the reasoning behind every choice in this gem, and
 > it travelled with the code when the library was extracted from the reference app — which was the
@@ -19,7 +19,9 @@ the reference application in `../audit-log-demo`
 > those apps are not being migrated.
 >
 > Sections corrected by actually building the thing are marked **[corrected 2026-08-27]**. Those
-> are the most valuable paragraphs here: every one was a defect that failed *silently*.
+> are the most valuable paragraphs here: every one was a defect that failed *silently*. §21
+> (generators) was added on 2026-08-29 and sits at the end for the same reason nothing renumbered:
+> the numbers are stable, so new material appends rather than inserts.
 ---
 
 ## 1. Goal
@@ -82,16 +84,25 @@ throughput and index bloat but breaks nothing functionally.
 
 ### 2.2 Rails
 
-**8.1 is the supported floor**, for `Rails.event` / `ActiveSupport::EventReporter` — the structured
-event API that layer 2 is built on (§7). Everything else the plan uses is older:
+**8.0 is the floor, and the gemspec says so (`~> 8.0`).** 8.1 is what the design was written
+against, and exactly one API separates them: layer 2 is built on `Rails.event` /
+`ActiveSupport::EventReporter` (§7), which is 8.1. Everything else the plan uses is older:
 `ActiveSupport::CurrentAttributes#set`, `ActiveSupport.on_load(:active_record_postgresqladapter)`,
 `insert_all` / `upsert_all`, and `schema_format = :sql` are all long-established.
 
-*On 8.0:* the design works unchanged if `Rails.event.notify(name, **payload)` is replaced with a
-direct `Audit.record(name, **payload)` call that writes `audit_events`. What is lost is the
-fan-out — the ability to register a second subscriber shipping the same event to observability
-without touching domain code. That is a real convenience, not a load-bearing dependency, so **8.0
-is the hard floor**.
+*On 8.0:* **the fallback is built, not hypothetical.**  **[revised 2026-08-29]** This section used
+to describe it as a change an adopter would make — "replace `Rails.event.notify` with a direct
+call" — and it has since been implemented in the library, in a namespace that no longer exists as
+written. `AuditLog.notify` checks for `Rails.event` and, in its absence, invokes the durable
+subscriber directly (`EventSubscriber.new.emit`), so layer 2 works on 8.0 with nothing different in
+the host app. What is lost is the fan-out — the ability to register a second subscriber shipping
+the same event to observability without touching domain code. That is a real convenience and not a
+load-bearing dependency, which is the whole reason the floor is 8.0 rather than 8.1.
+
+**What is not settled is whether that branch runs.**  **[added 2026-08-29]** CI tests 8.1 only
+(§16), so the single path that distinguishes an 8.0 host from an 8.1 one is the single path nothing
+executes. Treat 8.0 as *claimed and unverified* — the standing the Ruby floor had right up until a
+leg ran there and failed.
 
 Also required, and available in the 8.x line: `config.active_job.enqueue_after_transaction_commit`,
 which keeps a rolled-back transaction from leaving an enqueued job behind (§6.4). Confirm the
@@ -144,6 +155,13 @@ the partition-creation job. Workable, one more moving part. Below 11, abandon pa
   latter because `csv` stopped being a Ruby default gem in 3.4, so `require "csv"` alone is a
   `LoadError`. Neither is referenced by the trigger, the correlation context, or the event
   subscriber; an adopter who takes only layers 1 and 2 needs neither. [revised 2026-08-28]
+- **No `pg` dependency, and that is deliberate rather than an oversight.**  **[added 2026-08-29]**
+  This library is PostgreSQL-only and could not be anything else, so declaring the adapter looks
+  like plain honesty. It is not. The host application picks its own `pg` build and version — which
+  on some platforms means picking against a system libpq — and a constraint here is this gem
+  dictating a version of somebody else's C extension for no benefit it can name. Rails brings the
+  adapter; this gem brings the DDL. The gemspec's runtime dependencies are `rails`, `pagy` and
+  `csv`, and nothing else.
 - **No queue backend commitment.** Solid Queue is the target, but §6.4's ActiveJob concern is
   adapter-independent; the Sidekiq middleware in §6.4 exists only for non-ActiveJob workers.
 
@@ -428,36 +446,69 @@ $$;
 
 ### 5.1 Attaching it
 
-A migration helper keeps this uniform:
+`AuditLog::MigrationHelpers` is included into `ActiveRecord::Migration` by the engine, so every
+migration can call it with no require:
 
 ```ruby
-# db/migrate/.../_helpers, or lib/audit/migration_helpers.rb
-module AuditLog::MigrationHelpers
-  DEFAULT_EXCLUDED = %w[
-    created_at updated_at lock_version
-    password_digest remember_created_at reset_password_token
-  ].freeze
+# lib/audit_log/migration_helpers.rb
+def attach_audit_trigger(table, model: nil, exclude: [])
+  model ||= table.to_s.classify
+  cols = (AuditLog.config.default_excluded_columns + exclude.map(&:to_s)).uniq
 
-  def attach_audit_trigger(table, model:, exclude: [])
-    cols = (DEFAULT_EXCLUDED + exclude.map(&:to_s)).uniq.join(",")
-    execute <<~SQL
-      CREATE TRIGGER #{table}_audit
-      AFTER INSERT OR UPDATE OR DELETE ON #{table}
-      FOR EACH ROW EXECUTE FUNCTION public.audit_row_change('#{cols}', '#{model}');
-    SQL
-  end
-
-  def detach_audit_trigger(table)
-    execute "DROP TRIGGER IF EXISTS #{table}_audit ON #{table};"
-  end
+  validate_identifiers!(cols)
+  execute <<~SQL
+    CREATE TRIGGER #{trigger_name(table)}
+    AFTER INSERT OR UPDATE OR DELETE ON #{quote_table_name(table)}
+    FOR EACH ROW EXECUTE FUNCTION public.audit_row_change(
+      #{quote(cols.join(","))}, #{quote(model)}
+    );
+  SQL
 end
+
+def detach_audit_trigger(table)
+  execute "DROP TRIGGER IF EXISTS #{trigger_name(table)} ON #{quote_table_name(table)};"
+end
+
+def trigger_name(table) = "#{table}_audit"
 ```
+
+**Two of those signatures changed after this section was first written, and both changes are
+decisions.**  **[revised 2026-08-29]** The default exclusion list is
+`AuditLog.config.default_excluded_columns` rather than a frozen constant in the helper, because the
+columns that are noise in every application (`created_at`, `updated_at`, `lock_version`) and the
+columns that are dangerous in *this* one (a credential digest, an API secret, a reset token) are
+not the same list, and an app carrying its own must be able to say so once in an initializer
+instead of on every `attach_audit_trigger` call — a per-call default is one a migration can forget.
+And `model:` is now optional, defaulting to `table.classify`: passing it is for the cases where the
+convention is wrong (an STI base class, a table whose model was renamed), which keeps the argument
+meaningful where it appears rather than ceremonial everywhere.
 
 **Exclusion policy.** Always exclude `updated_at` (noise on every row) and `lock_version`. Exclude
 `*_ciphertext` / `encrypted_*` columns — logging ciphertext deltas is useless and doubles storage.
 Exclude large `text`/`bytea` columns unless the requirement specifically covers them; if it does,
 store a digest rather than the body. Every exclusion is a deliberate, reviewable decision recorded
 in the migration.
+
+**The column list is validated because a bad name would corrupt it silently, not loudly.**
+**[added 2026-08-29]** The exclusions reach the trigger as a single comma-joined string literal,
+which `audit_row_change` splits on commas (§5). So a column name containing a comma does not fail:
+it becomes two exclusion entries, neither of which matches any real column, and the column it was
+meant to protect quietly starts appearing in every diff from that migration onward. A quote does
+worse, since the literal is being built by string interpolation. `validate_identifiers!` refuses
+anything that is not `/\A[a-z_][a-z0-9_]*\z/i` before any DDL is generated, converting the whole
+class of failure into an `ArgumentError` at migration time. The general rule this follows is the
+one running through the entire document — engineer against the failure that reports nothing — and
+the specific case it is defending against is a password column silently entering the audit log
+because somebody's exclusion list did not parse the way they assumed.
+
+**Do not smooth over a second attach with `CREATE OR REPLACE TRIGGER`.**  **[added 2026-08-29]**
+It exists (PG 14+), it works on the versions this library supports, and adopting it would make
+`attach_audit_trigger` idempotent, which reads like an improvement. It is the opposite. §5.2
+explains why the `42710` collision is the protection rather than a rough edge; the point here is
+that `CREATE OR REPLACE TRIGGER`'s entire purpose is to accept a re-attach without comment, and the
+re-attach worth hearing about is precisely the one carrying a *different* `model:` or a *different*
+exclusion list. Replacing silently is how a table ends up audited under rules nobody reviewed. The
+supported way to change either is the explicit detach-then-attach in §5.2.
 
 **`TRUNCATE` bypasses row-level triggers entirely.** Revoke `TRUNCATE` from the application role,
 and if any operational path needs it, add a statement-level trigger that writes a marker row.
@@ -491,7 +542,7 @@ That is the whole per-model cost: one line, in the migration, next to the table 
 The helper is a bare `CREATE TRIGGER`; it reads nothing from the `create_table` beside it, and the
 coverage check queries `pg_trigger` rather than the migration history. So an existing table is
 attached from a standalone migration just as well, and `rails generate audit_log:trigger orders`
-writes one. What such a table does *not* get is history for changes that already happened — the
+writes one (§21). What such a table does *not* get is history for changes that already happened — the
 first `UPDATE` after attaching yields a complete `[old, new]` pair, and nothing before it exists.
 Record the attach date; the migration's own timestamp is the durable answer.
 
@@ -505,7 +556,8 @@ sets. It is not retroactive — rows already written keep the diffs they were wr
 `rec_id bigint := NEW.id`, and `audit_changes.record_id` is `bigint NOT NULL`. An `id: false` join
 table, a `uuid` primary key, or a primary key not named `id` therefore fails on the **first write
 after attaching**, not at migration time. §5.3 covers the tables the trigger cannot handle as
-written. The generator warns about this and cannot check it: it has no connection to the table.
+written. The generator warns about this and cannot check it: it has no connection to the table —
+which is §21.1's rule in its smallest form, reporting the limit rather than implying there is none.
 
 Automatic-by-default was considered and rejected. Auditing *every* table would sweep in
 `solid_cache_entries`, `solid_queue_jobs`, `sessions`, and every join table — high-churn tables
@@ -553,6 +605,15 @@ end
 
 Adding a table without deciding about auditing now breaks the build, and every exemption carries a
 written reason in one reviewable file. This spec is the single most valuable test in §16.
+
+> **Do not copy that code.**  **[revised 2026-08-29]** It is kept above because it states the rule
+> in full, and the rule has not changed — but the library now ships the rule itself, as
+> `AuditLog::Coverage` plus shared examples in `audit_log/rspec`, and the exemption list moved from
+> a constant in the host's spec to `config.unaudited_tables`. A host app writes three lines
+> (§16), and `rake audit_log:coverage` runs the same object, so the task and the spec cannot
+> disagree about what counts as covered. A hand-copied version *can* disagree, and it fails in the
+> direction that matters: it goes on passing while enforcing a rule this library has since
+> tightened.
 
 **Layer 2 does require code**, because no database can infer that saving six rows constituted
 "submitting an order." A model or service emits the domain event, and the action gets a registry
@@ -1461,6 +1522,17 @@ takes production down.
 >   run can only ever take data out of service. Scheduling `drop_retired` — which does not check for
 >   an export — is a separate decision somebody makes on purpose.
 
+**The daily task kept the bare name; everything else moved under `audit_log:partitions:`.**
+**[added 2026-08-29]** Rake keys its tasks by full name string, so a task and a namespace can share
+one — and that was *verified in a real application* rather than reasoned about, because the other
+possible behaviour (Rake reads `partitions` as a namespace, and the daily task quietly becomes
+unreachable) would present as nothing at all until a month later, when the first row landed in the
+default partition. The property being bought is narrow and worth the check: grouping the tier-3
+operations left the one cron line whose failure is a write-path outage exactly as it was, in every
+runbook and crontab that already had it. The namespace pays for itself a second time on naming —
+`audit_log:partitions:drain_default` says which "default" it means, where a bare
+`audit_log:drain_default` alongside `audit_log:redact` and `audit_log:coverage` does not.
+
 Because `audit_changes` will be the largest table in the database, keep an eye on:
 #### Why freezing matters at all  **[added 2026-08-29]**
 
@@ -2030,6 +2102,11 @@ the export is the evidence artifact (§11.4a).
 what the auditor UI actually does — the same argument that makes one `Coverage` back both the rake
 task and the shared example, and a disclosure that never renders is a disclosure nobody has tested.
 
+**A host does not have to write this screen from scratch.** `rails generate audit_log:views:activity`
+installs the reference app's own timeline UI into the host application, where it belongs to the host
+outright. §21.3 covers what is load-bearing about that generator, including why what it writes is
+never upgraded and why its authorization method is generated denying everyone.
+
 ---
 
 ### 11.3 Q3 — "All `order.submitted` events, who triggered them, by date range"
@@ -2444,6 +2521,18 @@ behavior.
 > only fails against a server that asks; and `db:prepare` seeds a database it had to create, which
 > collided with a seeded user and would have quietly changed what row-counting specs measure.
 >
+> **CI also gates packaging, which nothing else in this project does.**  **[added 2026-08-29]**
+> This library is proprietary and is never pushed to a registry: `allowed_push_host` in the gemspec
+> is set to a string that is deliberately not a host, so `gem push` *fails* rather than depending on
+> everyone remembering not to run it. That leaves `gem build` as the only packaging step that ever
+> executes, and two assertions ride on it. It must be **warning-free** — a gate that has already
+> earned its keep by catching an open-ended `rails >= 8.0` dependency, and which caught it *only on
+> the 3.3 leg*, because that RubyGems is stricter than 4.0.6's; the warning gate and the version
+> matrix are load-bearing together rather than separately. And **`LICENSE.txt` must be inside the
+> built gem**, checked by listing the archive, because for a library distributed by path or git
+> reference that file is the only statement of what may be done with the code that travels with the
+> code.
+>
 > **A `Rails 8.0` leg is still missing**, and the gap is exactly the one the Ruby matrix closed:
 > `Rails.event` does not exist there, so `AuditLog.notify`'s documented fallback path (§7) is
 > untested at the floor the gemspec claims.
@@ -2651,3 +2740,132 @@ Build against PG 16 as specified.
 immediately — that is a correctness fix and a performance win at once. Treat PG 18 as a worthwhile
 but non-blocking upgrade whose main payoff here is eager freezing, which becomes more valuable the
 longer the retention window in Q2 turns out to be.
+---
+
+## 21. Generators  **[added 2026-08-29]**
+
+> Numbered last because these section numbers are stable (see the note at the top), not because
+> generators are an afterthought. Referenced from §5.1, §5.2 and §11.2b.
+
+Three generators ship: `audit_log:install`, `audit_log:trigger` (§5.1) and
+`audit_log:views:activity`. They are in this document rather than only in `README.md` because two
+of the decisions below were *defects first* — an installed app whose every audit row carried a NULL
+actor, and a re-run that silently reverted an authorization rule — and both are the same failure
+this library exists to prevent, arriving through the one code path that runs before anybody is
+watching.
+
+### 21.1 The rule both generators follow: never report success for work they did not do
+
+An installer that cannot find `app/controllers/application_controller.rb`, prints a cheerful green
+line, and exits has produced an application that audits everything faithfully and attributes none
+of it. Nothing raises, no screen is blank, and the gap shows up months later as a log full of
+"System". So every step reports exactly one of **created**, **injected**,
+**skipped-because-already-present**, or **MANUAL**, and the manual ones are collected and printed
+again at the end with the literal line to add.
+
+**`verify` and `manual` are deliberately two lists, not one.** "I did this, and you need to check
+it" and "I could not do this, and here is the line" are different messages with different actions
+attached, and merging them into a single pile of yellow trains an operator to skim past both. The
+install generator's `ControllerContext` injection is the case that forced the split: it *does* the
+work and still needs a human to confirm the result, because the anchor it chose is a good guess and
+not a certainty.
+
+### 21.2 `audit_log:install`, and the two places it deliberately does less than it could
+
+**It refuses to set `schema_format` when `db/schema.rb` exists.** §4 establishes that
+`schema_format = :sql` is required — `schema.rb` cannot represent partitioned tables, trigger
+functions or triggers, which is all three things layer 1 is built from — and that it has to be set
+*before* the first migration. On a fresh app the generator writes it. On an app that already has a
+Ruby schema dump it stops and prints three steps (set the option, `db:migrate` to regenerate
+`db/structure.sql`, delete `db/schema.rb` and commit both together), because flipping it means
+re-dumping the app's entire schema and every developer on the team rebuilding their database. A
+generator may not start that quietly. The refusal is a feature and the report is the deliverable.
+
+**The `ControllerContext` include lands after the LAST `before_action`, not at the top of the
+class.** This is the one that was a real bug in the first version. `ControllerContext` is
+`included do before_action :set_audit_context end`, so the include's position in the class body
+decides callback order — and `inject_into_class` puts it at the top, ahead of
+`before_action :authenticate_user!`. `set_audit_context` then runs before authentication, reads a
+`current_user` that has not been established, and **every audit row in the application gets a NULL
+actor, silently**: the app works, the screens render, the log is worthless. So the generator anchors
+on the last `before_action` in the file, falls back to the top of the class when there is none or
+when the anchor line is ambiguous, and in both cases emits a `verify` note naming what to confirm
+and what happens if it is wrong.
+
+### 21.3 `audit_log:views:activity`, and the boundary it draws
+
+Two different things ship from this repository, and the distinction governs everything here. The
+library and the auditor UI at `/audit` are **served by the engine** — not copied, not the host's to
+maintain, and they upgrade with the gem. What this generator writes goes **into the host
+application and is theirs outright**: never re-generated, never upgraded, no markup lock-in, and
+nothing in the gem depends on it existing. It is the reference app's own timeline UI extracted into
+templates, so an adopter starts from something that already gets the awkward parts right (the three
+nil shapes of a diff value, the nil-actor fallback, the redaction marker, the four `LabelResolver`
+outcomes, the never-drop-the-id rule — §11.2b, §11.8) instead of rediscovering them one screen at a
+time.
+
+The corollary is a rule about what may be added later: **do not give the gem a dependency on a
+generated file, and do not add a "your generated views are out of date" check.** Either one turns
+owned code back into managed code, which is the arrangement this generator exists to avoid.
+
+**It is namespaced `views:`, and the namespace carries meaning.** `audit_log:activity` reads like
+`rails g model Activity` — as though it created an `Activity` model — when what it does is copy
+presentational code into a host app. Any future generator that writes views into a host app belongs
+under `views:` for the same reason. Rails derives that namespace from the class's own constant
+path, so the class must live at `AuditLog::Generators::Views::ActivityGenerator`.
+
+**The generated authorization method is `false`.** `audit_activity_visible?` denies everyone until
+a human edits it, and it must never be changed to `true` for convenience. `AuditLog::Timeline`
+exposes the previous value of every audited column and the other records each action touched — which
+on a shared action is another customer's row. Defaulting to visible would publish all of it to every
+signed-in user of an application whose role model this gem cannot see, and nothing would report it.
+`false` is the difference between an app that has decided who may read audit diffs and one that
+published them by not deciding. This is the same discipline as `config.record_url` defaulting to
+nil (§11.2b) and `config.authorize` being a coupling point rather than a policy: the library does
+not guess a host's authorization.
+
+**`VIEWABLE` is an allowlist checked before `constantize`, and the order is the point.**
+`/activity/User/1` is a URL anybody can type. Constantizing a path parameter is untidy anywhere; on
+a page that renders audit diffs it is a way to read the history of a model the host never meant to
+expose. So the generator refuses to run with no model names at all, and the check on every request
+is membership in a literal list before any string becomes a constant.
+
+**The templates *are* the reference app's files.** `../audit-log-demo` is regenerated from them and
+differs by exactly one line — its `audit_activity_visible?` returns `current_user&.manager?` where
+the template returns `false`. Change a template, regenerate the demo, run its suite. Two
+hand-maintained copies of the same UI is the failure this arrangement exists to prevent, and it is
+the same argument that makes one `AuditLog::Coverage` back both the rake task and the shared
+example (§16), and that makes the engine's own Timeline tab render the value objects rather than
+the relations (§11.2b).
+
+**The view templates emit ERB through ERB.** Every runtime tag is escaped `<%%`, and only the class
+slots (`<%= css(:card) %>`) are evaluated at generate time. Get it wrong and the host receives a
+view that renders its own source, which presents as a styling bug rather than as an error.
+`activity_generator_spec` compiles every generated `.erb`, and asserts separately that the runtime
+tags arrived as ERB with no `<%%` left in them.
+
+**A second run is create-once, not overwrite.** Adding a model six months later runs against files
+the host has since edited, so the second invocation updates `ActivityController::VIEWABLE`, wires
+the new model's show page, and leaves every existing file alone. Before this, `--force` silently
+reverted an edited `audit_activity_visible?` — reopening a history to everyone and reporting
+nothing — and without `--force` Thor blocked on an interactive overwrite prompt. `--force` still
+overwrites, which is how the reference app is re-baselined against newer templates; it is a
+decision somebody types, not a default. For the same reason the locale strings go in their own
+`config/locales/audit_log_activity.en.yml` and never into the host's `en.yml`: nothing generated
+should be able to clobber a key of yours.
+
+**`--css` changes `class=` and nothing else.** `plain`, `tailwind` and `bootstrap` produce
+byte-identical markup once class attributes are masked, and the spec asserts it. The semantics —
+which element is the card, which is the before value — stay legible whichever framework a host uses,
+and a host switching frameworks later rewrites strings instead of re-deriving the view. If a
+framework ever appears to need different *structure*, the abstraction is wrong: fix the structure,
+do not fork the template. The classes resolve at generate time, so the generated view holds plain
+strings and nothing at runtime depends on this generator or on the gem.
+
+**The show-page wiring guesses nothing it cannot verify.** It injects `recent_activity(@order)`
+into `#show` and the render into the view only when the controller has a bare `def show` *and*
+already mentions `@order`; a namespaced model, a missing file, an absent `def show`, or an ivar it
+cannot find each produce a MANUAL note with the exact lines instead of an edit. The reason is the
+usual one: a wrong ivar does not raise. It renders an **empty feed**, which reads as "the audit log
+has no data for this record" — the quiet under-report this entire library is built against, reached
+through a generator that reported success.
