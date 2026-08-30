@@ -82,7 +82,7 @@ module AuditLog
     # -- DESIGN §11.0 Rule 2.
     #
     # Order through arel_table on BOTH columns; see ActivityKey for why
-    # `order(key: :desc)` breaks Pagy.
+    # `order(key: :desc)` cannot be paginated.
     def activity_keys
       ActivityKey
         .from(Arel.sql("(#{activity_keys_sql}) AS #{ActivityKey.table_name}"))

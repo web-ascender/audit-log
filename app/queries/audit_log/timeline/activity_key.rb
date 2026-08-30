@@ -7,8 +7,8 @@ module AuditLog
     # to Timeline#activities, which loads the events, the change rows and the
     # labels for the whole page at once:
     #
-    #   pagy       = pagy_keyset(timeline.activity_keys)
-    #   activities = timeline.activities(pagy.records)
+    #   page       = paginate(timeline.activity_keys)   # AuditLog::Pagination
+    #   activities = timeline.activities(page.records)
     #
     # It is not a value object and has no as_json on purpose: there is nothing
     # here to render. Activity is the content.
@@ -16,9 +16,9 @@ module AuditLog
     # WHY THIS IS A SEPARATE TYPE AT ALL, since one would be simpler. Three
     # constraints, and no link in the chain is optional:
     #
-    #   1. Pagy needs an ActiveRecord RELATION to apply the keyset predicate and
-    #      mint a cursor, and a relation yields ActiveRecord objects -- so what
-    #      comes out of pagination cannot be a plain value object.
+    #   1. Keyset paging needs an ActiveRecord RELATION to apply the predicate to
+    #      and to mint a cursor from, and a relation yields ActiveRecord objects
+    #      -- so what comes out of pagination cannot be a plain value object.
     #   2. Hydration must be BATCHED: three queries for a page. If each item
     #      loaded itself it would be three per activity.
     #   3. DESIGN §11.0 Rule 2 keeps the limit above the controller, so the
@@ -33,22 +33,24 @@ module AuditLog
     #
     # 1. `table_name` is a REAL table so ActiveRecord can introspect real column
     #    types, and Timeline aliases its subquery to that same name. The column
-    #    that must be typed is `occurred_at`: Pagy serialises the keyset cursor
+    #    that must be typed is `occurred_at`: the keyset cursor is serialised
     #    from it, and a timestamptz that arrives as a String cannot be rendered
     #    at microsecond precision -- which is the bug Pagination::FULL_PRECISION
     #    exists to prevent. Without a real table ActiveRecord raises
     #    PG::UndefinedTable while merely LOADING this class.
     #
     # 2. `attribute :key, :string` declares the synthetic column, which no table
-    #    has. Pagy needs it typed to put it in a cursor.
+    #    has. It must be typed to go in a cursor and to come back out of one.
     #
     # 3. Callers must order with `arel_table[:key]`, never `order(key: :desc)`.
     #    A name that is not a real column renders as an Arel::Nodes::SqlLiteral,
-    #    and Pagy::Keyset#extract_keyset calls `.name` on every order value:
-    #    `undefined method 'name' for an instance of Arel::Nodes::SqlLiteral`.
+    #    and the keyset has to be decomposed back into columns to build a
+    #    predicate from -- a literal cannot be. Pagination::Page raises
+    #    InvalidCursor on one, which is the whole screen falling back to page
+    #    one rather than the `undefined method 'name'` Pagy used to raise.
     #
-    # All three are pinned by timeline_spec's paging example, so a Rails or Pagy
-    # upgrade that breaks one fails a spec rather than a screen.
+    # All three are pinned by timeline_spec's paging example, so a Rails upgrade
+    # that breaks one fails a spec rather than a screen.
     class ActivityKey < ActiveRecord::Base
       # A unit of work is normally a request_id. An out-of-band write has none --
       # request_id IS NULL, DESIGN §9 -- and each one is its own unit of work, so

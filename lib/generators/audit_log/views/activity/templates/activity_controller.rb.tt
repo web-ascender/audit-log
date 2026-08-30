@@ -17,7 +17,7 @@
 class ActivityController < ApplicationController
   # The gem's keyset pager, included rather than reimplemented.
   #
-  # It is not a convenience. Pagy serialises the cursor with `to_json`, and
+  # It is not a convenience. A keyset cursor is serialised with `to_json`, and
   # ActiveSupport renders a Time at millisecond precision while `occurred_at` is
   # `clock_timestamp()` — microseconds. A hand-rolled pager drops the trailing
   # digits, the next page's cursor names an instant just before its own row, and

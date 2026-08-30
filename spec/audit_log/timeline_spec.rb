@@ -13,8 +13,8 @@ RSpec.describe AuditLog::Timeline do
   let(:staff) { create_user(name: "Raj Patel", role: "staff") }
 
   # Pages the way a real screen does -- through AuditLog::Pagination rather than
-  # a hand-rolled Pagy call -- so the index is exercised against FULL_PRECISION
-  # and the cursor-mismatch fallback, not just against Pagy's defaults.
+  # a bare Page.new -- so the index is exercised against FULL_PRECISION and the
+  # cursor-mismatch fallback, not just against the happy path.
   class TimelinePager
     include AuditLog::Pagination
     attr_reader :params
