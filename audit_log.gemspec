@@ -84,17 +84,26 @@ Gem::Specification.new do |spec|
   # a deliberate act that means re-verifying the prepend, not a formality.
   spec.add_dependency "rails", "~> 8.0"
 
-  # Both are for the auditor UI only -- layers 1 and 2 reference neither, and an
-  # app that mounts nothing pays for neither at runtime.
-  #
-  # Hard dependencies rather than optional ones because pagy is load-bearing for
-  # CORRECTNESS here, not convenience: AuditLog::Pagination is keyset paging, and
-  # offset paging on a newest-first view of an append-only table silently
-  # duplicates rows across page boundaries after a single concurrent write. See
-  # DESIGN.md §11.0 Rule 2. `csv` is a former default gem that Ruby 3.4
-  # unbundled, so declaring it is housekeeping rather than a new dependency.
-  spec.add_dependency "pagy", "~> 9.3"
+  # For the CSV export only -- a former default gem that Ruby 3.4 unbundled, so
+  # declaring it is housekeeping rather than a new dependency.
   spec.add_dependency "csv", "~> 3.3"
+
+  # `pagy` is DELIBERATELY NOT A DEPENDENCY, and this gem must not acquire one.
+  # AuditLog::Pagination is keyset paging and that is still non-negotiable
+  # (DESIGN.md §11.0 Rule 2) -- it is now ~90 lines of this library's own, for a
+  # reason that is about the host app rather than about Pagy.
+  #
+  # Bundler resolves exactly one pagy per app. Pagy grew keyset paging in 9.0 and
+  # the `jsonify_keyset_attributes:` hook that Pagination::FULL_PRECISION cannot
+  # work without in 9.3, then removed that hook again in the 43 rewrite. A
+  # dependency this library could honestly declare was therefore `~> 9.3` --
+  # two releases -- and it would have propagated straight into the host's own
+  # pagination: an app on Pagy 5, or on current Pagy, could not have installed
+  # this gem at all, and an app on 9.3 could never upgrade past it.
+  #
+  # An audit log has no business dictating how the rest of an app paginates. With
+  # no dependency here the host runs whatever Pagy (or Kaminari, or nothing) it
+  # likes, and these screens are unaffected by it.
 
   # PostgreSQL is not optional and not swappable. The whole of layer 1 is a
   # plpgsql trigger function writing jsonb into range-partitioned tables. Left

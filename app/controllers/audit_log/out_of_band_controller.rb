@@ -10,10 +10,10 @@ module AuditLog
                               .occurred_between(date_range.to_range).newest_first
       return stream_csv(AuditLog::CsvExport.for(scope), "audit-out-of-band") if request.format.csv?
 
-      @pagy    = paginate(AuditLog::Change.out_of_band
+      @page    = paginate(AuditLog::Change.out_of_band
                                           .occurred_between(date_range.to_range)
                                           .newest_first)
-      @changes = @pagy.records
+      @changes = @page.records
     end
   end
 end

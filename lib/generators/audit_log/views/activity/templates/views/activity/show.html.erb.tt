@@ -51,8 +51,8 @@
   <%% if params[:page].present? %>
     <%%= link_to "Back to newest", url_for(page: nil), class: "<%= css(:button) %>" %>
   <%% end %>
-  <%% if @pagy.next %>
-    <%%= link_to "Older →", url_for(page: @pagy.next), class: "<%= css(:button) %>" %>
+  <%% if @page.next %>
+    <%%= link_to "Older →", url_for(page: @page.next), class: "<%= css(:button) %>" %>
   <%% else %>
     <span class="<%= css(:small_muted) %>">End of results.</span>
   <%% end %>
@@ -61,7 +61,7 @@
 <%%# older_than_window? is opt-in and deliberately looks BELOW the bound, so it is
     called once, here, and never per page: running it on every page would hand
     back the partition pruning the bound just bought. %>
-<%% if @timeline.bounded? && @pagy.next.nil? && @timeline.older_than_window? %>
+<%% if @timeline.bounded? && @page.next.nil? && @timeline.older_than_window? %>
   <p class="<%= css(:note_small) %>">
     That is the end of this window, <strong>not the end of this record's history</strong>.
     <%%= link_to "Search all retained history",

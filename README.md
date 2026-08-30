@@ -138,10 +138,12 @@ end, along with the cases where this gem is the **wrong** choice.
 | Rails | **`~> 8.0`** | 8.0 floor for `Rails.event` (with a fallback); ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. DESIGN §2.2. |
 | PostgreSQL | **>= 16** | Layer 1 *is* a plpgsql trigger writing jsonb into range-partitioned tables, so this is not swappable for another database — but nothing here needs a recent Postgres. 16, 17 and 18 are all supported; CI runs the suite on 16 and 18. DESIGN §20. |
 
-`pg` is deliberately *not* a dependency, so your app picks its own build. `pagy`
-and `csv` are, and `pagy` is load-bearing for *correctness* rather than
-convenience — see
-[Use `AuditLog::Pagination`](#use-auditlogpagination-do-not-hand-roll-one).
+`pg` is deliberately *not* a dependency, so your app picks its own build. Nor is
+`pagy`, or any other pagination gem: the audit screens are keyset-paginated by
+`AuditLog::Pagination`, which is this library's own and depends on nothing, so
+your app paginates however it already does — see
+[Use `AuditLog::Pagination`](#use-auditlogpagination-do-not-hand-roll-one). The
+one runtime dependency is `csv`, for the export.
 
 Ruby **3.3.0 exactly** is unusable with Rails 8.1, for a reason unrelated to this
 gem: actionview 8.1.3.1 contains `yield(*, **)` inside a block, which 3.3.0's
@@ -188,7 +190,7 @@ command, and the reasoning for any of it is linked rather than inline.
 
 ```ruby
 # Gemfile
-gem "audit_log", git: "https://github.com/web-ascender/audit-log", tag: "v0.1.0"
+gem "audit_log", git: "https://github.com/web-ascender/audit-log", tag: "v0.2.0"
 ```
 
 A private repo, so `bundle` needs credentials for the company GitHub org. Pin to
@@ -704,8 +706,8 @@ class OrdersController < ApplicationController
   def show
     @order      = Order.find(params[:id])
     timeline    = AuditLog::Timeline.for(@order)
-    @pagy       = paginate(timeline.activity_keys, limit: 20)
-    @activities = timeline.activities(@pagy.records)
+    @page       = paginate(timeline.activity_keys, limit: 20)
+    @activities = timeline.activities(@page.records)
   end
 end
 ```
@@ -752,7 +754,7 @@ trail outlives what it describes and that is exactly when somebody reads it.
 `include AuditLog::Pagination` gives you `paginate(scope, limit:)`, reading the
 cursor from `params[:page]`. It is not a convenience.
 
-Pagy serialises the keyset cursor with `to_json`, and ActiveSupport renders a
+A keyset cursor is serialised with `to_json`, and ActiveSupport renders a
 `Time` at **millisecond** precision — while `occurred_at` is `clock_timestamp()`,
 which is **microseconds**. A pager that does not override that mints a cursor
 naming an instant just before the row it came from, and the next page's
@@ -763,6 +765,12 @@ full-suite run in eight to surface here before it was fixed.
 `AuditLog::Pagination::FULL_PRECISION` is the fix, and including the module is
 how you get it. It also falls back to the first page on a cursor minted for a
 different screen, rather than raising or — worse — applying it and dropping rows.
+
+It brings no dependency with it, and that is deliberate. Bundler resolves one
+`pagy` per app; this module needs `Pagy::Keyset` (9.0+) *and* the
+`jsonify_keyset_attributes:` hook (9.3+, removed again in Pagy 43), so depending
+on Pagy would have pinned your app to two of its releases. Paginate the rest of
+your app with whatever you like — these screens are unaffected by it.
 
 
 ### Four things to know
@@ -1327,7 +1335,7 @@ straight back, never render it. `activities` turns that page into
 `Timeline::Activity` objects, loading the events, change rows and labels for the
 whole page in three queries rather than three per row.
 
-They are separate because Pagy needs a *relation* to build a cursor from, because
+They are separate because keyset paging needs a *relation* to build a cursor from, because
 hydration has to be batched, and because the limit belongs above the controller
 where you can see it (DESIGN §11.0 Rule 2) — so the library cannot paginate and
 load in one call.

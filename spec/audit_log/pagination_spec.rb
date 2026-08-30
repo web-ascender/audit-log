@@ -32,9 +32,9 @@ RSpec.describe AuditLog::Pagination do
     seen   = []
     cursor = nil
     20.times do
-      pagy = paginator(cursor)
-      seen.concat(pagy.records.map(&:id))
-      cursor = pagy.next
+      page = paginator(cursor)
+      seen.concat(page.records.map(&:id))
+      cursor = page.next
       break if cursor.nil?
     end
 
@@ -71,7 +71,7 @@ RSpec.describe AuditLog::Pagination do
 
   # The bug this caught, made deterministic.
   #
-  # Pagy builds the cursor with to_json, and ActiveSupport renders a Time at
+  # The cursor is built with to_json, and ActiveSupport renders a Time at
   # time_precision 3 -- milliseconds. occurred_at is clock_timestamp(), i.e.
   # microseconds. A truncated cursor names an instant slightly EARLIER than the
   # row it came from, so the next page's `occurred_at < cursor` skips everything
@@ -99,9 +99,9 @@ RSpec.describe AuditLog::Pagination do
       seen   = []
       cursor = nil
       10.times do
-        pagy = paginator(cursor, limit: 2)
-        seen.concat(pagy.records.map(&:record_id))
-        cursor = pagy.next
+        page = paginator(cursor, limit: 2)
+        seen.concat(page.records.map(&:record_id))
+        cursor = page.next
         break if cursor.nil?
       end
 
@@ -109,17 +109,30 @@ RSpec.describe AuditLog::Pagination do
     end
 
     it "mints a cursor carrying microseconds, not milliseconds" do
-      token = JSON.parse(Pagy::B64.urlsafe_decode(paginator(nil, limit: 2).next))
+      token = JSON.parse(described_class::Cursor.decode(paginator(nil, limit: 2).next))
       expect(token["occurred_at"]).to match(/\.\d{6}/)
     end
   end
 
+  # The reason this module is hand-rolled rather than Pagy::Keyset. Bundler
+  # resolves one pagy per app, and the version window this module could honestly
+  # have declared was two releases wide -- so the constraint would have landed in
+  # every adopter's own pagination. A dependency added back here would not fail
+  # anything else in this suite; it would fail an app six months from now.
+  it "brings no pagination dependency into the host app" do
+    spec = Gem::Specification.load(File.expand_path("../../audit_log.gemspec", __dir__))
+
+    expect(spec.dependencies.map(&:name)).not_to include("pagy", "kaminari")
+    expect(defined?(Pagy)).to be_nil
+  end
+
   describe "a cursor that does not belong to this screen" do
-    # Pagy raises rather than guessing when a cursor's keys do not match the
-    # ordering. Silently applying it would drop rows off an audit screen, so the
-    # only safe recovery is to start over -- visibly, at the newest row.
+    # A cursor is meaningless outside the ordering it was minted from, so
+    # Pagination raises rather than guessing. Silently applying it would drop
+    # rows off an audit screen; the only safe recovery is to start over --
+    # visibly, at the newest row.
     it "falls back to the first page rather than raising" do
-      foreign = Pagy::Keyset.new(AuditLog::Change.order(:record_type, :id), limit: 3).next
+      foreign = described_class::Page.new(AuditLog::Change.order(:record_type, :id), limit: 3).next
 
       expect { paginator(foreign) }.not_to raise_error
       expect(paginator(foreign).records.map(&:id)).to eq(paginator.records.map(&:id))

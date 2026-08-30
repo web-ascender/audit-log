@@ -17,7 +17,7 @@
     alongside it and is the compliance-grade answer.
   </p>
   <%= render "audit_log/shared/event_rows", events: @events, changes_by_request: @changes %>
-  <%= render "audit_log/shared/pagination", pagy: @pagy, rows: @events %>
+  <%= render "audit_log/shared/pagination", page: @page, rows: @events %>
 <% else %>
   <p class="note">
     The record layer, straight from the database triggers. Complete by construction and
@@ -25,7 +25,7 @@
     land here.
   </p>
   <%= render "audit_log/shared/change_rows", changes: @records %>
-  <%= render "audit_log/shared/pagination", pagy: @pagy, rows: @records %>
+  <%= render "audit_log/shared/pagination", page: @page, rows: @records %>
 <% end %>
 
 <p class="export"><%= audit_csv_link %> <span class="hint">the rows above, unpaginated, for the same filters and date range</span></p>

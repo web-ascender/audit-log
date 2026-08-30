@@ -63,7 +63,7 @@ Update it when you change behaviour.
 | Rails | **`~> 8.0`** — floor 8.0 (DESIGN §2.2), and a real ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. Developed on 8.1.3.1. |
 | PostgreSQL | **>= 16.** Developed on 18.6, port 5438 — not the workspace default 5437. CI runs 16 and 18; DESIGN §20 is the authority and says the design "targets PG 16 and requires nothing newer". Verified: the whole suite passes on 16.13. |
 | Tests | RSpec against `spec/dummy` (346 examples), on every push via GitHub Actions |
-| Runtime deps | `rails`, `pagy` (keyset paging), `csv` (export). **`pg` deliberately is not one** — the host app picks its build. |
+| Runtime deps | `rails`, `csv` (export). **`pg` and `pagy` deliberately are not** — the host app picks its own `pg` build, and its own pagination gem. `AuditLog::Pagination` is this library's own keyset pager precisely so a `pagy` constraint does not propagate into the host. |
 
 ```bash
 bundle install
@@ -223,6 +223,13 @@ Do not "fix" these without reading the linked reasoning first.
   `audit_log:reconcile`, not something to chase through a child's foreign key: it
   would need a live join to a business table, which is what keeps these screens
   truthful about deleted records. DESIGN §11.2b.
+- **`AuditLog::Pagination` depends on NOTHING, and that is the point of it being
+  hand-rolled.** It was `Pagy::Keyset` until 0.2.0. Bundler resolves one `pagy`
+  per app; keyset paging exists in Pagy from 9.0 and the
+  `jsonify_keyset_attributes:` hook `FULL_PRECISION` needs only from 9.3, and
+  Pagy 43 removed that hook again — so an honest dependency was `~> 9.3`, two
+  releases, propagated into every adopter's own pagination. Nothing here ever
+  used Pagy's frontend. Do not reintroduce the dependency to save ~90 lines.
 - **`AuditLog::Pagination` is part of the PUBLISHED contract, not an engine
   internal.** A host app rendering a timeline includes it, and that is the
   documented path: a hand-rolled keyset pager over `activity_keys` serialises the
@@ -234,7 +241,7 @@ Do not "fix" these without reading the linked reasoning first.
 - **`ActivityKey` and `Activity` are the same thing at two stages of loading, and
   the split is forced rather than chosen.** `ActivityKey` is the identity (which
   unit of work, and when); `Activity` is that with the events, change rows and
-  labels loaded. Pagy needs a RELATION to mint a cursor, so what comes out of
+  labels loaded. Keyset paging needs a RELATION to mint a cursor, so what comes out of
   pagination must be an ActiveRecord object; hydration must be batched (three
   queries a page, not three an activity); and Rule 2 keeps the limit above the
   controller, so the library cannot paginate and hydrate in one call. Do not
@@ -245,12 +252,12 @@ Do not "fix" these without reading the linked reasoning first.
   content to render.
 - **`Timeline::ActivityKey` has three requirements that all look like clutter and
   are not.** (1) `table_name` must be a REAL table and the subquery must alias to
-  that same name, or ActiveRecord raises `PG::UndefinedTable` just loading the class — and `occurred_at` must be a typed timestamptz or Pagy
-  cannot render the cursor at microsecond precision, which is the
+  that same name, or ActiveRecord raises `PG::UndefinedTable` just loading the class — and `occurred_at` must be a typed timestamptz or the
+  cursor cannot render at microsecond precision, which is the
   `FULL_PRECISION` bug all over again. (2) `attribute :key, :string` declares the
   synthetic column. (3) Callers must order with `arel_table[:key]`, never
   `order(key: :desc)` — a non-column name renders as an `Arel::Nodes::SqlLiteral`
-  and `Pagy::Keyset#extract_keyset` calls `.name` on it. `timeline_spec` pins all
+  and `Pagination::Page#extract_keyset` calls `.name` on it. `timeline_spec` pins all
   three, so an upgrade that breaks one fails a spec rather than a screen.
 - **One unit of work is one activity, so there is deliberately NO page-boundary
   rule.** An earlier changes-only index paged over change *rows* and grouped them,
@@ -528,8 +535,8 @@ baked below the controller is invisible to the page rendering it, which is
 exactly how an audit view comes to under-report without saying so. The dashboard
 is the deliberate exception: its lists are "10 most recent" widgets, not
 browsable results. `config.page_size` is the only knob.
-- **`AuditLog::Pagination::FULL_PRECISION` is load-bearing.** Pagy serializes the
-  keyset cursor with `to_json`, and ActiveSupport renders a `Time` at
+- **`AuditLog::Pagination::FULL_PRECISION` is load-bearing.** The keyset cursor is
+  serialized with `to_json`, and ActiveSupport renders a `Time` at
   `time_precision` **3** — milliseconds — while `occurred_at` is
   `clock_timestamp()`, microseconds. Without the lambda the cursor names an
   instant just before the row it came from and the next page silently skips
