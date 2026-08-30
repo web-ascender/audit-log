@@ -15,12 +15,11 @@ the authority on *why* any of this is shaped the way it is.
 ## Contents
 
 - [Summary](#summary)
-- [What you get, and what is optional](#what-you-get-and-what-is-optional)
+- [Requirements](#requirements)
 - [The two layers](#the-two-layers)
 - [Getting started, end to end](#getting-started-end-to-end)
   - [The generators](#the-generators)
 - [Installing into a Rails 8 app](#installing-into-a-rails-8-app)
-  - [Requirements](#requirements)
   - [Then run the generator](#then-run-the-generator)
   - [The two manual steps](#the-two-manual-steps)
   - [What a model needs](#what-a-model-needs)
@@ -88,7 +87,8 @@ attached — and no model has to opt in or even know.
 - **Two layers.** Field-level diffs (complete by construction) *plus* named
   business events with human sentences, joined by the same correlation id.
 - **A finished auditor UI at `/audit`**, served by the gem — actor activity,
-  record history, action reports, out-of-band review, drill-down, CSV export.
+  record history, action reports, out-of-band review, drill-down, CSV export. It
+  is not copied into your app and you do not maintain it; it upgrades with the gem.
 - **Optional starter views** for your own pages, generated into your app and
   yours to rewrite. Plain CSS, Tailwind or Bootstrap.
 - **Built for volume from day one.** Monthly range partitions, automatic
@@ -114,41 +114,19 @@ Already weighing this against `paper_trail`, `audited` or `logidze`?
 [Why not one of the popular gems?](#why-not-one-of-the-popular-gems) are at the
 end, along with the cases where this gem is the **wrong** choice.
 
-## What you get, and what is optional
+## Requirements
 
-Two different things ship here, and the difference matters when you are deciding
-how much of your app this touches.
+| | | Why it is a floor and not a preference |
+|---|---|---|
+| Ruby | **>= 3.3** | `SecureRandom.uuid_v7`, which is `Context.new_request_id`. On 3.2 every correlated write raises. UUIDv7 gives the `audit_changes(request_id)` index insert locality, and its embedded timestamp is what bounds the drill-down. DESIGN §2.1. |
+| Rails | **`~> 8.0`** | 8.0 floor for `Rails.event` (with a fallback); ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. DESIGN §2.2. |
+| PostgreSQL | **>= 16** | Layer 1 *is* a plpgsql trigger writing jsonb into range-partitioned tables, so this is not swappable for another database — but nothing here needs a recent Postgres. 16, 17 and 18 are all supported; CI runs the suite on 16 and 18. DESIGN §20. |
 
-**The library, and a finished auditor UI.** The audit tables, the PostgreSQL
-triggers that fill them, the correlation between a request and everything it
-wrote, the partition lifecycle, retention, export, redaction — and a complete
-auditor interface mounted at `/audit`. That UI is **served by the gem**: it is
-not copied into your app, you do not maintain it, and it upgrades with the gem.
-Install the gem and it is there.
+`pg` is deliberately *not* a dependency, so your app picks its own build.
 
-**Optional starter views for your own pages.** Separately, a generator
-(`audit_log:views:activity`) writes an activity history *into your app* — a controller,
-a concern, a helper and three views — so a record's history can appear on your
-own `orders/show` for people who should not hold the auditor role.
-
-Those views are **yours the moment they land**:
-
-- **Nothing depends on them.** Skip the generator entirely and the gem is
-  complete. `/audit` does not need them and neither does anything else.
-- **No markup lock-in.** They are plain ERB with semantic class names.
-  `--css=plain|tailwind|bootstrap` changes the class attributes and nothing else;
-  after that, rewrite the markup however you like.
-- **They are not managed.** The gem never re-generates or upgrades them, and a
-  second run leaves them alone. Restyle them, rename them, replace them with your
-  own — nothing here will argue.
-- **Or use neither.** If you would rather write your own view from scratch,
-  `AuditLog::Timeline`'s value objects are the actual contract; the generated
-  files are one worked answer, not the interface.
-
-The one thing worth keeping whatever you do to them is called out in comments in
-the files themselves.
-
----
+Ruby **3.3.0 exactly** is unusable with Rails 8.1, for a reason unrelated to this
+gem: actionview 8.1.3.1 contains `yield(*, **)` inside a block, which 3.3.0's
+parser rejects, while Rails still declares `>= 3.2.0`. Any later 3.3 patch is fine.
 
 ## The two layers
 
@@ -319,20 +297,6 @@ because `pagy` is load-bearing for *correctness*: `AuditLog::Pagination` is keys
 paging, and offset paging on a newest-first view of an append-only table
 duplicates rows across a page boundary after a single concurrent write. See
 [DESIGN §11.0 Rule 2](DESIGN.md).
-
-### Requirements
-
-| | | Why it is a floor and not a preference |
-|---|---|---|
-| Ruby | **>= 3.3** | `SecureRandom.uuid_v7`, which is `Context.new_request_id`. On 3.2 every correlated write raises. UUIDv7 gives the `audit_changes(request_id)` index insert locality, and its embedded timestamp is what bounds the drill-down. DESIGN §2.1. |
-| Rails | **`~> 8.0`** | 8.0 floor for `Rails.event` (with a fallback); ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. DESIGN §2.2. |
-| PostgreSQL | **>= 16** | Layer 1 *is* a plpgsql trigger writing jsonb into range-partitioned tables, so this is not swappable for another database — but nothing here needs a recent Postgres. 16, 17 and 18 are all supported; CI runs the suite on 16 and 18. DESIGN §20. |
-
-`pg` is deliberately *not* a dependency, so your app picks its own build.
-
-Ruby **3.3.0 exactly** is unusable with Rails 8.1, for a reason unrelated to this
-gem: actionview 8.1.3.1 contains `yield(*, **)` inside a block, which 3.3.0's
-parser rejects, while Rails still declares `>= 3.2.0`. Any later 3.3 patch is fine.
 
 ### Then run the generator
 

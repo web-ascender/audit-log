@@ -16,6 +16,19 @@ touch it. `readme_spec` now fails if an attribute exists that the README does no
 name — the same forcing function already applied to rake tasks, and for the same
 reason: a coupling point nobody can discover is one nobody sets.
 
+**Requirements moved up, directly under the Summary** — Ruby, Rails and
+PostgreSQL floors are what somebody checks before reading anything else, and they
+were buried as a subsection of "Installing".
+
+**"What you get, and what is optional" was removed**, not relocated. Every point
+it made — that the generated views are optional, unmanaged, free of markup
+lock-in, and not the actual contract — is already made by "Building an activity
+history in your own app", at the point where somebody is about to use them. The
+one nuance it carried alone, that the auditor UI is served by the gem rather than
+copied into your app, moved into the Summary bullet that was already describing
+it. Repetition between sections is fine; a whole section repeating a later one
+before the reader knows what it is about is not.
+
 **The comparison moved to the end.** "Why this one" and "Why not one of the
 popular gems?" sat directly under the Summary, which already covers what the gem
 does — so a reader following the document top-down hit three screens of
