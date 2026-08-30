@@ -11,8 +11,12 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
   formality. `rails: ["8.0", "latest"]` joins the Ruby and PostgreSQL floor legs
   on the same argument: a floor nothing runs against is a guess. It found one
   breakage on the first run — `spec/dummy` pinned `config.load_defaults 8.1`,
-  which raises `Unknown version "8.1"` on Rails 8.0 before an example loads. The
-  library itself needed no change.
+  which raises `Unknown version "8.1"` on Rails 8.0 before an example loads — and
+  a second that only CI could see: the dummy app's migrations were declared
+  `ActiveRecord::Migration[8.1]`, which Rails 8.0 rejects, invisible locally
+  because an already-migrated database never loads the file. The library itself
+  needed no change; the install and trigger generators already emit the adopter's
+  own `ActiveRecord::Migration.current_version`.
 - **`AuditLog.notify`'s fallback for the absent `Rails.event` is now exercised.**
   Rails 8.0 has no event reporter, so the floor takes a different branch than the
   development version — and it was the branch nothing ran. `event_transport_spec`
