@@ -389,6 +389,12 @@ Do not "fix" these without reading the linked reasoning first.
 - **`audit_log:redact` takes `FIELDS=`, never `COLUMNS=`.** `COLUMNS` is a
   reserved shell variable holding the terminal width, so it silently arrives as
   a number, matches nothing, and redacts nothing while reporting success.
+- **The partition tasks live under `audit_log:partitions:`, and the daily task
+  keeps the bare name.** Rake stores tasks by full name string, so a task and a
+  namespace can share one — verified in a real app, not assumed. That is the
+  point: the daily cron line is the one whose failure is a write-path outage, and
+  it never had to change. The namespace also disambiguates the tier-3 names for
+  free — `partitions:drain_default` says which "default" it means.
 - **`audit_log:partitions` is the only task that belongs in the DAILY cron — but
   that is not the same as "the only task you may schedule", which is what this
   said until 2026-08-29.** `retention`, `rollup` and `freeze` are exactly what an
@@ -438,11 +444,37 @@ Do not "fix" these without reading the linked reasoning first.
   exclusive lock covers catalog work only. Its id-watermark check is read
   **before** the copy, not after: a watermark read after would not catch a row
   that landed during the copy, which is exactly the row that would be lost.
-- **`retention_action` defaults to `:detach`, and retired partitions keep their
-  data under a `_retired_` name.** Detaching is reversible with one `ATTACH`;
-  dropping seven-year-old audit data is not. `rake audit_log:partitions` reports
-  detached leftovers with their size so they cannot accumulate unseen. The rename
-  also stops `create_month!` mistaking a retired table for a live partition.
+- **Retention CANNOT drop, and `retention_action` is gone.** It took `:detach` or
+  `:drop`, defaulting to the reversible one — which meant one line in an
+  initializer could turn a SCHEDULED task into one that destroys audit data. A
+  safe default is weaker than an absent option, because a default can be flipped
+  and nothing reports it. Retention decides what is past the horizon; disposal is
+  a separate decision somebody types. Do not reintroduce the option.
+- **Retiring stamps `RETIRED_MARKER` in the same transaction as the detach and
+  rename, and every export/drop works only from marked partitions.** Two jobs a
+  name cannot do. PROVENANCE: `audit_changes_retired_2019_01` is a name anybody
+  can create — a manual copy before a risky migration is the obvious way — and
+  dropping on a name match would destroy it while the operator believed they had
+  a backup. Same rule `ROLLUP_MARKER` already established, applied where it was
+  missing. THE DATE RANGE: `DETACH` clears `relpartbound`, so retiring destroys
+  the authoritative record of the period, and the name is the very artifact
+  `misaligned_bounds` exists because it lies. `BEFORE=` keys on the UPPER bound,
+  and a partition whose marker will not parse is skipped rather than guessed at.
+  Unmarked lookalikes are REPORTED, never silently skipped.
+- **`export_retired` exports everything, every run, and that is not waste.** The
+  old version skipped a partition when two files existed in `DIR`, which is
+  evidence of nothing: the file may be truncated, corrupt, a stale export of an
+  earlier state, or on a container filesystem that no longer exists. Skipping on
+  that basis means the one case where a re-export matters — the archive went bad
+  — is the case it skips, while reporting success. It writes through a temp file
+  and renames, which is what makes re-exporting safe rather than a trade: opening
+  the destination directly truncates a good archive at byte zero. `gz.finish`,
+  never `gz.close`, or the fsync below it hits a closed stream.
+- **`drop_retired` does not check for an export, on purpose.** A file in a
+  directory is not proof of preservation, so requiring one buys less safety than
+  it looks like — and forcing every adopter to produce CSV archives is not this
+  library's decision. `export_and_drop_retired` is the verified path and the one
+  to recommend; both are marker-gated.
 - **`expired_partitions` keys on the UPPER bound**, never the lower — the lower
   bound would retire a month that still holds in-horizon days. Same reasoning
   makes `freeze_closed!` read real bounds rather than parse the name, which is

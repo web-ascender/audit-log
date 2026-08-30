@@ -1,5 +1,29 @@
 # frozen_string_literal: true
 
+# Reported rather than silently skipped, for the reason orphaned_rollups is: an
+# invisible cost is one nobody reclaims. A table that LOOKS retired and carries no
+# marker of ours is either somebody's manual copy that we correctly refused to
+# touch, or a partition this library can no longer manage -- and in both cases the
+# disk it holds will never be freed by anything here.
+def report_unmarked_retired
+  AuditLog::Partitions.unmarked_retired.each do |r|
+    warn "NOTE: #{r[:name]} looks retired but carries no #{AuditLog::Partitions::RETIRED_MARKER} " \
+         "marker, so nothing here will export or drop it. " \
+         "#{ActiveSupport::NumberHelper.number_to_human_size(r[:bytes])}. " \
+         "Either this library did not retire it, or its comment was lost. Drop it by hand if it is yours."
+  end
+end
+
+# A date-bounded drop skips what it cannot date rather than guessing, so say
+# which ones -- otherwise BEFORE= appears to have simply missed them.
+def report_undateable(before)
+  undateable = AuditLog::Partitions.retired_partitions.reject { |r| r[:upper] }
+  undateable.each do |r|
+    warn "NOTE: #{r[:name]} has an unreadable retirement marker, so BEFORE=#{before.to_date} " \
+         "skipped it. Drop it without BEFORE, or by hand."
+  end
+end
+
 namespace :audit_log do
   desc "Create missing monthly partitions and report any default-partition overflow"
   task partitions: :environment do
@@ -29,6 +53,8 @@ namespace :audit_log do
            "#{ActiveSupport::NumberHelper.number_to_human_size(r[:bytes])}. Export it and drop it."
     end
 
+    report_unmarked_retired
+
     # Not partitions and not in `list`, so nothing else would ever mention them --
     # while each holds a full year of audit data.
     AuditLog::Partitions.orphaned_rollups.each do |r|
@@ -37,135 +63,176 @@ namespace :audit_log do
            "Re-run `rake audit_log:rollup` to reclaim it."
     end
   end
+  # ---------------------------------------------------------------------------
+  # The partition lifecycle, nested so `rails -T audit_log:partitions` shows the
+  # whole of it, and so the names read unambiguously in a crontab --
+  # `partitions:drain_default` says which "default" it means, where a bare
+  # `drain_default` does not.
+  #
+  # `audit_log:partitions` above KEEPS its name. Rake stores tasks by full name
+  # string, so a task and a namespace may share one; the daily cron line, whose
+  # failure is a write-path outage rather than a degraded report, never has to
+  # change.
+  namespace :partitions do
+    desc "Move rows out of the default partition into the partitions that should hold them"
+    task drain_default: :environment do
+      # Takes ACCESS EXCLUSIVE on both audit tables -- see AuditLog::Partitions.
+      result = AuditLog::Partitions.drain_default!
+      result.each do |table, r|
+        if r[:moved].zero?
+          puts "#{table}_default: empty."
+          next
+        end
 
-  desc "Move rows out of the default partition into the partitions that should hold them"
-  task drain_default: :environment do
-    # Takes ACCESS EXCLUSIVE on both audit tables -- see AuditLog::Partitions.
-    result = AuditLog::Partitions.drain_default!
-    result.each do |table, r|
-      if r[:moved].zero?
-        puts "#{table}_default: empty."
+        created = r[:created].any? ? " into new partition(s) #{r[:created].join(", ")}" : ""
+        puts "#{table}_default: moved #{r[:moved]} row(s)#{created}."
+      end
+    end
+
+    desc "DETACH partitions past the retention horizon. Never drops. DRY_RUN=1 to preview"
+    task retention: :environment do
+      retention = AuditLog.config.retention
+      if retention.nil?
+        puts "Retention is disabled (AuditLog.config.retention is nil)."
         next
       end
 
-      created = r[:created].any? ? " into new partition(s) #{r[:created].join(", ")}" : ""
-      puts "#{table}_default: moved #{r[:moved]} row(s)#{created}."
-    end
-  end
+      expired = AuditLog::Partitions.expired_partitions
+      puts "Horizon: #{retention.inspect} -- anything ending before " \
+           "#{(Time.now.utc - retention).iso8601} is expired."
 
-  desc "DETACH (or DROP) partitions past the retention horizon. DRY_RUN=1 to preview"
-  task retention: :environment do
-    retention = AuditLog.config.retention
-    if retention.nil?
-      puts "Retention is disabled (AuditLog.config.retention is nil)."
-      next
-    end
+      if expired.empty?
+        puts "Nothing expired."
+        next
+      end
 
-    action  = AuditLog.config.retention_action
-    expired = AuditLog::Partitions.expired_partitions
+      if ENV["DRY_RUN"].present?
+        expired.each { |b| puts "  would detach: #{b[:name]} (#{b[:lower].to_date} .. #{b[:upper].to_date})" }
+        next
+      end
 
-    puts "Horizon: #{retention.inspect} -- anything ending before " \
-         "#{(Time.now.utc - retention).iso8601} is expired. Action: #{action}."
-
-    if expired.empty?
-      puts "Nothing expired."
-      next
+      # Printed from the block, as each partition commits: every one is its own
+      # transaction, so a failure partway through leaves the earlier ones already
+      # retired, and the operator has to be told which.
+      AuditLog::Partitions.retire! { |r| puts "  detached: #{r[:name]} -> #{r[:retired_as]}" }
+      warn "Retired partitions still hold their data. Export and/or drop them; " \
+           "`rake audit_log:partitions` lists them."
     end
 
-    if ENV["DRY_RUN"].present?
-      expired.each { |b| puts "  would #{action}: #{b[:name]} (#{b[:lower].to_date} .. #{b[:upper].to_date})" }
-      next
-    end
+    desc "Consolidate closed years of monthly partitions into yearly ones. DRY_RUN=1 to preview"
+    task rollup: :environment do
+      if AuditLog.config.rollup_after.nil?
+        puts "Rollup is disabled (AuditLog.config.rollup_after is nil)."
+        next
+      end
 
-    # Printed from the block, as each partition commits: every one is its own
-    # transaction, so a failure partway through leaves the earlier ones already
-    # retired, and the operator has to be told which.
-    AuditLog::Partitions.retire! do |r|
-      puts r[:retired_as] ? "  detached: #{r[:name]} -> #{r[:retired_as]}" : "  dropped:  #{r[:name]}"
-    end
-    warn "Detached partitions still hold their data. Export and drop them; " \
-         "`rake audit_log:partitions` lists them." if action == :detach
-  end
+      candidates = AuditLog::Partitions.rollup_candidates
+      if candidates.empty?
+        puts "No closed year is stored as monthly partitions."
+        next
+      end
 
-  desc "Consolidate closed years of monthly partitions into yearly ones. DRY_RUN=1 to preview"
-  task rollup: :environment do
-    if AuditLog.config.rollup_after.nil?
-      puts "Rollup is disabled (AuditLog.config.rollup_after is nil)."
-      next
-    end
+      candidates.each do |c|
+        puts "#{c[:table]} #{c[:year]}: #{c[:partitions].size} monthly partition(s) -> " \
+             "#{AuditLog::Partitions.year_partition_name(c[:table], c[:year])}"
+      end
 
-    candidates = AuditLog::Partitions.rollup_candidates
-    if candidates.empty?
-      puts "No closed year is stored as monthly partitions."
-      next
-    end
+      if ENV["DRY_RUN"].present?
+        puts "DRY_RUN -- nothing changed."
+        next
+      end
 
-    candidates.each do |c|
-      puts "#{c[:table]} #{c[:year]}: #{c[:partitions].size} monthly partition(s) -> " \
-           "#{AuditLog::Partitions.year_partition_name(c[:table], c[:year])}"
-    end
-
-    if ENV["DRY_RUN"].present?
-      puts "DRY_RUN -- nothing changed."
-      next
-    end
-
-    # Rewrites a full year of data and then takes ACCESS EXCLUSIVE for the swap.
-    # Maintenance window, not a cron.
-    AuditLog::Partitions.rollup! do |r|
-      puts "  #{r[:name]}: #{r[:rows]} row(s), replaced #{r[:replaced].size} monthly partition(s)"
-    end
-  end
-
-  desc "Export retired partitions to DIR as gzipped CSV plus a manifest"
-  task export: :environment do
-    dir = ENV["DIR"] || AuditLog.config.archive_dir
-    abort "Set DIR=/path/to/archive (or AuditLog.config.archive_dir)." if dir.blank?
-
-    exported = AuditLog::Archive.export_retired!(dir: dir)
-    if exported.empty?
-      puts "Nothing to export -- every retired partition already has one in #{dir}."
-    else
-      exported.each do |m|
-        puts "  #{m[:partition]}: #{m[:rows]} row(s), " \
-             "#{ActiveSupport::NumberHelper.number_to_human_size(m[:bytes])} " \
-             "-> #{AuditLog::Archive.data_path(dir, m[:partition])}"
+      # Rewrites a full year of data and then takes ACCESS EXCLUSIVE for the swap.
+      # Maintenance window, not a cron.
+      AuditLog::Partitions.rollup! do |r|
+        puts "  #{r[:name]}: #{r[:rows]} row(s), replaced #{r[:replaced].size} monthly partition(s)"
       end
     end
 
-    # The library writes a local file and stops. Getting it somewhere durable is
-    # a deployment decision, and baking one in is what would make this
-    # un-copyable -- see AuditLog::Archive.
-    puts "\nThese are LOCAL files. Copy them somewhere durable before running " \
-         "audit_log:drop_exported."
-  end
+    desc "Export EVERY retired partition to DIR as gzipped CSV plus a manifest, verified"
+    task export_retired: :environment do
+      dir = ENV["DIR"] || AuditLog.config.archive_dir
+      abort "DIR=/path/to/exports is required" if dir.blank?
 
-  desc "Drop retired partitions whose export in DIR verifies"
-  task drop_exported: :environment do
-    dir = ENV["DIR"] || AuditLog.config.archive_dir
-    abort "Set DIR=/path/to/archive (or AuditLog.config.archive_dir)." if dir.blank?
+      results = AuditLog::Archive.export_retired!(dir: dir)
+      if results.empty?
+        puts "Nothing retired to export."
+        next
+      end
 
-    results = AuditLog::Archive.drop_exported!(dir: dir)
-    if results.empty?
-      puts "No retired partitions."
-      next
+      ok, failed = results.partition { |r| r[:ok] }
+      ok.each do |r|
+        puts "  exported: #{r[:partition]} -- #{r[:rows]} row(s), " \
+             "#{ActiveSupport::NumberHelper.number_to_human_size(r[:bytes])}"
+      end
+      # Re-exported unconditionally, so the total is what THIS run cost -- the
+      # number that tells an operator whether to be dropping more aggressively.
+      puts "Total: #{ActiveSupport::NumberHelper.number_to_human_size(ok.sum { |r| r[:bytes] })} " \
+           "across #{ok.size} partition(s) in #{dir}."
+
+      failed.each { |r| warn "FAILED: #{r[:partition]} -- #{r[:error]}" }
+      abort "#{failed.size} export(s) failed." if failed.any?
     end
 
-    results.each do |r|
-      if r[:dropped]
-        puts "  dropped:  #{r[:name]} (#{ActiveSupport::NumberHelper.number_to_human_size(r[:bytes])} reclaimed)"
+    desc "DROP retired partitions WITHOUT checking for an export. [BEFORE=YYYY-MM-DD] [DRY_RUN=1]"
+    task drop_retired: :environment do
+      before = ENV["BEFORE"].presence&.then { |v| Time.parse(v).utc }
+      scope  = AuditLog::Archive.droppable(before: before)
+
+      if scope.empty?
+        puts "Nothing to drop."
+      elsif ENV["DRY_RUN"].present?
+        scope.each do |r|
+          puts "  would DROP: #{r[:name]} -- " \
+               "#{ActiveSupport::NumberHelper.number_to_human_size(r[:bytes])} (unrecoverable)"
+        end
       else
-        # Left in place on purpose: the manifest exists so that this step cannot
-        # destroy a partition whose export is missing, short or corrupt.
-        warn "  KEPT:     #{r[:name]} -- #{r[:error]}"
+        # No export check on purpose. See AuditLog::Archive#drop_retired!.
+        dropped = AuditLog::Archive.drop_retired!(before: before)
+        dropped.each do |r|
+          puts "  DROPPED: #{r[:name]} -- " \
+               "#{ActiveSupport::NumberHelper.number_to_human_size(r[:bytes])}"
+        end
+        puts "Reclaimed #{ActiveSupport::NumberHelper.number_to_human_size(dropped.sum { |r| r[:bytes] })}."
       end
-    end
-  end
 
-  desc "VACUUM FREEZE every closed partition"
-  task freeze: :environment do
-    frozen = AuditLog::Partitions.freeze_closed!
-    puts frozen.any? ? "Froze: #{frozen.join(', ')}" : "Nothing to freeze."
+      report_unmarked_retired
+      report_undateable(before) if before
+    end
+
+    desc "Export retired partitions, verify, then DROP only what verified. [BEFORE=YYYY-MM-DD]"
+    task export_and_drop_retired: :environment do
+      dir = ENV["DIR"] || AuditLog.config.archive_dir
+      abort "DIR=/path/to/exports is required" if dir.blank?
+
+      before = ENV["BEFORE"].presence&.then { |v| Time.parse(v).utc }
+
+      exported = AuditLog::Archive.export_retired!(dir: dir)
+      exported.reject { |r| r[:ok] }.each { |r| warn "FAILED to export: #{r[:partition]} -- #{r[:error]}" }
+
+      results = AuditLog::Archive.drop_exported!(dir: dir, before: before)
+      if results.empty?
+        puts "Nothing to drop."
+      else
+        results.each do |r|
+          if r[:dropped]
+            puts "  DROPPED: #{r[:name]} -- " \
+                 "#{ActiveSupport::NumberHelper.number_to_human_size(r[:bytes])} (export verified)"
+          else
+            warn "  KEPT: #{r[:name]} -- #{r[:error]}"
+          end
+        end
+      end
+
+      report_unmarked_retired
+      report_undateable(before) if before
+    end
+
+    desc "VACUUM FREEZE every closed partition"
+    task freeze: :environment do
+      frozen = AuditLog::Partitions.freeze_closed!
+      puts frozen.any? ? "Froze: #{frozen.join(', ')}" : "Nothing to freeze."
+    end
   end
 
   desc "Redact a record's values from the audit log. RECORD=Type:id REASON=DSR-1182 [FIELDS=a,b] [DRY_RUN=1]"

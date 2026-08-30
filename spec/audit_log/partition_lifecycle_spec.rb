@@ -152,18 +152,48 @@ RSpec.describe AuditLog::Partitions, "lifecycle" do
       SQL
     end
 
-    it "drops outright when asked to" do
-      described_class.retire!(retention: 7.years, action: :drop)
+    # There is no longer an option to drop here, and that is the point: a config
+    # attribute meant one line in an initializer could turn a SCHEDULED task into
+    # one that destroys audit data. A safe default is weaker than an absent
+    # option, because a default can be flipped.
+    it "cannot destroy data, whatever it is asked" do
+      insert_change(at: "2015-01-10")
+      described_class.drain_default!
+      described_class.retire!(retention: 7.years)
 
-      expect(described_class.list).not_to include("audit_changes_2015_01")
-      expect(described_class.retired_partitions.map { |r| r[:name] })
-        .not_to include("audit_changes_retired_2015_01")
-      expect(conn.select_value("SELECT to_regclass('public.audit_changes_2015_01')::text")).to be_nil
+      expect(described_class.retire!(retention: 7.years)).to eq([])
+      expect(conn.select_value("SELECT to_regclass('public.audit_changes_retired_2015_01')::text"))
+        .to eq("audit_changes_retired_2015_01")
+      expect(conn.select_value("SELECT count(*) FROM audit_changes_retired_2015_01").to_i).to eq(1)
     end
 
-    it "refuses an action it does not recognise" do
-      expect { described_class.retire!(retention: 7.years, action: :incinerate) }
-        .to raise_error(AuditLog::Error, /incinerate/)
+    # DETACH clears relpartbound, so retiring destroys the authoritative record
+    # of what period a partition covers. The marker captures it first -- and is
+    # also the only proof the partition is ours to drop.
+    it "stamps the partition with its provenance and its upper bound" do
+      described_class.retire!(retention: 7.years)
+
+      comment = conn.select_value(<<~SQL)
+        SELECT obj_description('public.audit_changes_retired_2015_01'::regclass, 'pg_class')
+      SQL
+      expect(comment).to start_with(described_class::RETIRED_MARKER)
+
+      retired = described_class.retired_partitions.find { |r| r[:name] == "audit_changes_retired_2015_01" }
+      expect(retired[:upper]).to eq(Time.utc(2015, 2, 1))
+    end
+
+    # A name is not proof. `audit_changes_retired_2019_01` is a name anybody can
+    # create, and a manual copy taken before a risky migration is the obvious way
+    # it happens -- dropping on a name match would destroy it.
+    it "ignores a lookalike table it did not retire, and reports it" do
+      conn.execute("CREATE TABLE audit_changes_retired_1999_01 (id bigint)")
+
+      expect(described_class.retired_partitions.map { |r| r[:name] })
+        .not_to include("audit_changes_retired_1999_01")
+      expect(described_class.unmarked_retired.map { |r| r[:name] })
+        .to include("audit_changes_retired_1999_01")
+    ensure
+      conn.execute("DROP TABLE IF EXISTS audit_changes_retired_1999_01")
     end
   end
 
@@ -365,8 +395,10 @@ RSpec.describe AuditLog::Partitions, "lifecycle" do
       end
 
       it "releases the lock when the operation raises" do
-        expect { described_class.retire!(retention: 7.years, action: :incinerate) }
-          .to raise_error(AuditLog::Error, /incinerate/)
+        allow(described_class).to receive(:expired_partitions).and_raise(AuditLog::Error, "boom")
+
+        expect { described_class.retire!(retention: 7.years) }
+          .to raise_error(AuditLog::Error, /boom/)
 
         expect(conn.select_value("SELECT pg_try_advisory_lock(#{described_class::MAINTENANCE_LOCK_KEY})"))
           .to be(true)

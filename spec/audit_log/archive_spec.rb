@@ -138,11 +138,51 @@ RSpec.describe AuditLog::Archive do
   end
 
   describe ".export_retired!" do
-    it "exports what has not been exported and skips what has" do
+    # It used to skip a partition when two files existed in `dir`. That is not
+    # evidence of anything -- the file can be truncated, corrupt, zero-length, a
+    # stale export of an earlier state, or on a container filesystem that ceased
+    # to exist. Skipping on that basis means the ONE case where a re-export
+    # matters is the case it skips, while reporting success.
+    it "exports every retired partition on every run, not just new ones" do
       name = retire_a_partition(rows: 2)
 
       expect(described_class.export_retired!(dir: dir).map { |m| m[:partition] }).to eq([name])
-      expect(described_class.export_retired!(dir: dir)).to eq([])
+      expect(described_class.export_retired!(dir: dir).map { |m| m[:partition] }).to eq([name])
+    end
+
+    # The reason re-exporting is safe rather than merely wasteful: the previous
+    # archive survives until the new one is complete AND verified. Opening the
+    # destination directly would truncate a good export at byte zero and then
+    # stream a replacement.
+    it "writes through a temp file, so an interrupted run cannot destroy a good export" do
+      name = retire_a_partition(rows: 2)
+      described_class.export_retired!(dir: dir)
+      good = File.binread(described_class.data_path(dir, name))
+
+      allow(described_class).to receive(:verify!).and_raise(AuditLog::Archive::VerificationError, "boom")
+      expect { described_class.export!(name, dir: dir) }.to raise_error(AuditLog::Archive::VerificationError)
+
+      expect(File.binread(described_class.data_path(dir, name))).to eq(good)
+      expect(Dir.glob("#{dir}/*.tmp")).to be_empty
+    end
+
+    # Verification used to happen only as a side effect of dropping, so an
+    # operator who exported monthly and never dropped had never once checked
+    # that their archives were readable.
+    it "verifies each export as it writes it" do
+      name = retire_a_partition(rows: 2)
+      expect(described_class).to receive(:verify!).with(name, hash_including(dir: dir)).and_call_original
+
+      described_class.export_retired!(dir: dir)
+    end
+
+    it "reports a failure and carries on rather than aborting the run" do
+      retire_a_partition(rows: 2)
+      allow(described_class).to receive(:export!).and_raise(AuditLog::Archive::VerificationError, "boom")
+
+      results = described_class.export_retired!(dir: dir)
+      expect(results.first).to include(ok: false)
+      expect(results.first[:error]).to match(/boom/)
     end
   end
 end

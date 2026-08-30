@@ -44,13 +44,21 @@ module AuditLog
       # Gzipped because audit rows are highly repetitive text -- the same actor
       # labels, record types and column names on every row -- and because the
       # thing is write-once, read-almost-never.
+      # WRITTEN TO A TEMP FILE AND RENAMED INTO PLACE, which is load-bearing now
+      # that `export_retired!` re-exports unconditionally. Opening the
+      # destination with "wb" truncates it at byte zero, so a run interrupted
+      # mid-stream -- a full disk, a dropped connection, a killed container --
+      # would have destroyed a good archive to produce a partial one. Rename is
+      # atomic within a filesystem, so the previous export survives until the new
+      # one is complete AND verified.
       def export!(name, dir:, connection: ActiveRecord::Base.connection)
         FileUtils.mkdir_p(dir)
         raw    = connection.raw_connection
         digest = Digest::SHA256.new
         rows   = 0
+        tmp    = "#{data_path(dir, name)}.tmp"
 
-        File.open(data_path(dir, name), "wb") do |file|
+        File.open(tmp, "wb") do |file|
           gz = Zlib::GzipWriter.new(file)
           begin
             raw.copy_data(<<~SQL) do
@@ -64,8 +72,12 @@ module AuditLog
               end
             end
           ensure
-            gz.close
+            # finish, not close: it writes the gzip trailer and hands back the
+            # underlying IO still open, so the fsync below has something to sync.
+            # close would take `file` down with it.
+            gz.finish
           end
+          file.fsync
         end
 
         manifest = {
@@ -73,12 +85,23 @@ module AuditLog
           partition:      name,
           rows:           rows - 1, # the HEADER line
           sha256:         digest.hexdigest,
-          bytes:          File.size(data_path(dir, name)),
+          bytes:          File.size(tmp),
           exported_at:    Time.now.utc.iso8601,
           columns:        connection.columns(name).map(&:name)
         }
+
+        File.rename(tmp, data_path(dir, name))
         File.write(manifest_path(dir, name), JSON.pretty_generate(manifest))
+
+        # VERIFIED HERE, not only at drop time. Until this existed, verification
+        # happened solely as a side effect of dropping -- so an operator who
+        # exported monthly and never dropped had never once checked that their
+        # archives were readable, and would find out the first time they needed
+        # one. Re-reads from the page cache, so it costs close to nothing.
+        verify!(name, dir: dir, connection: connection)
         manifest
+      ensure
+        FileUtils.rm_f(tmp) if tmp && File.exist?(tmp)
       end
 
       # Re-read the file and check it against its manifest AND against the live
@@ -112,24 +135,37 @@ module AuditLog
         manifest
       end
 
-      def exported?(name, dir:)
-        File.exist?(data_path(dir, name)) && File.exist?(manifest_path(dir, name))
-      end
-
-      # Export every retired partition that has not been exported yet.
+      # EVERY retired partition, EVERY run. It does not skip what it exported
+      # before, and that is deliberate rather than wasteful.
+      #
+      # The old version skipped a partition when two files existed in `dir`. That
+      # is not evidence of anything: the file may be truncated, corrupt,
+      # zero-length, a stale export of an earlier state, or sitting on a
+      # container filesystem that ceased to exist minutes later. Skipping on that
+      # basis means THE ONE CASE WHERE A RE-EXPORT MATTERS -- the archive went
+      # bad -- is precisely the case it skips, while reporting success.
+      #
+      # Nor can this library know whether a file reached durable storage. A path
+      # in `dir` says nothing about S3. So it stops pretending to track that, and
+      # does the thing its name says instead: export the retired partitions.
+      #
+      # A failure on one is reported and the rest continue -- the same rule the
+      # drop path follows, so one bad partition cannot leave later ones silently
+      # unprocessed.
       def export_retired!(dir:, connection: ActiveRecord::Base.connection)
-        AuditLog::Partitions.retired_partitions(connection: connection).filter_map do |r|
-          next if exported?(r[:name], dir: dir)
-
+        AuditLog::Partitions.retired_partitions(connection: connection).map do |r|
           export!(r[:name], dir: dir, connection: connection)
+                 .merge(ok: true)
+        rescue VerificationError, SystemCallError, Zlib::Error => e
+          { partition: r[:name], ok: false, error: "#{e.class}: #{e.message}" }
         end
       end
 
       # Drop retired partitions whose export verifies. Anything that fails
       # verification is reported and LEFT ALONE -- the whole point of the
       # manifest is that this step cannot destroy an unbacked partition.
-      def drop_exported!(dir:, connection: ActiveRecord::Base.connection)
-        AuditLog::Partitions.retired_partitions(connection: connection).map do |r|
+      def drop_exported!(dir:, before: nil, connection: ActiveRecord::Base.connection)
+        droppable(before: before, connection: connection).map do |r|
           begin
             verify!(r[:name], dir: dir, connection: connection)
           rescue VerificationError => e
@@ -139,6 +175,44 @@ module AuditLog
           connection.execute("DROP TABLE #{connection.quote_table_name(r[:name])}")
           { name: r[:name], dropped: true, bytes: r[:bytes] }
         end
+      end
+
+      # Drop retired partitions WITHOUT checking that an export exists.
+      #
+      # Deliberately offered. A file in an export directory is not proof the data
+      # was preserved, so requiring one buys less safety than it appears to --
+      # and forcing every adopter to produce CSV archives they may not want is
+      # not this library's decision to make. The judgement that matters, "is this
+      # data past its horizon", was already made upstream by `retire!`; this only
+      # reclaims the disk it left behind.
+      #
+      # Still marker-gated, and still keyed on the upper bound: it drops what
+      # THIS library retired, and under `before:` only what it can positively
+      # date. See Partitions::RETIRED_MARKER.
+      def drop_retired!(before: nil, connection: ActiveRecord::Base.connection)
+        droppable(before: before, connection: connection).map do |r|
+          connection.execute("DROP TABLE #{connection.quote_table_name(r[:name])}")
+          { name: r[:name], dropped: true, bytes: r[:bytes] }
+        end
+      end
+
+      # What a drop would consider, given an optional cutoff.
+      #
+      # `before` compares the marker's EXCLUSIVE UPPER bound, matching the rule
+      # `expired_partitions` follows: keying on the lower bound would drop a
+      # partition still holding data on the safe side of the cutoff. A 2025
+      # yearly partition ends 2026-01-01, so BEFORE=2025-06-01 correctly leaves
+      # it alone.
+      #
+      # A partition whose marker will not parse has no date, so a date-bounded
+      # drop SKIPS it rather than guessing. Without `before` there is nothing to
+      # compare and everything marked is in scope.
+      def droppable(before:, connection: ActiveRecord::Base.connection)
+        retired = AuditLog::Partitions.retired_partitions(connection: connection)
+        return retired if before.nil?
+
+        cutoff = before.utc
+        retired.select { |r| r[:upper] && r[:upper] <= cutoff }
       end
 
       def data_path(dir, name)     = File.join(dir, "#{name}.csv.gz")

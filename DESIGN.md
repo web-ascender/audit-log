@@ -1251,14 +1251,110 @@ DST. Set `PGTZ=UTC` for dumps.
 `nil` disables it. A partition expires when its **upper** bound is older than the horizon, never its
 lower — the lower bound would retire a month that still holds in-horizon days.
 
-`config.retention_action` defaults to `:detach`, not `:drop`. Detaching is reversible with a single
-`ATTACH`, so a wrong horizon costs an afternoon; dropping is not, and an audit log is the worst
-table in the database to discover a wrong setting in. A detached partition keeps its rows and its
-disk under a `_retired_` name, and the rotation task reports it with its size so it cannot pile up
-unseen. The rename is load-bearing twice over: it makes "expired, awaiting export" a visible state,
-and it stops `create_month!` mistaking a retired table for a live partition. Detach-then-export-
-then-drop, never drop-then-hope — so the export step is what `:drop` is still waiting on, not the
-horizon.
+### The partition lifecycle  **[added 2026-08-29]**
+
+Every state a partition passes through, and — the part that is not obvious from the code — **who can
+still see the data in it.** The dividing line is *attached vs detached*: everything attached is "the
+audit log" as far as the application, the auditor UI, redaction and the reconciler are concerned;
+everything detached is a DBA-only artifact that happens to still be in the database.
+
+| State | What it is | Gem reads | Gem writes | Direct SQL | Purpose |
+|---|---|---|---|---|---|
+| **Provisioned** | a future month, created ahead of time | yes (empty) | not yet | yes | so a write never arrives to find no partition — the outage `partitions` exists to prevent |
+| **Live** | the current month | yes | **yes** — every audited change lands here | yes | the write target |
+| **Closed** | its month has passed | yes | redaction only | yes | the readable history; immutable in normal operation |
+| **Frozen** | closed, and `VACUUM FREEZE`d | yes | redaction only | yes | pays the freeze cost deliberately instead of as an anti-wraparound storm later |
+| **Rolled up** | a closed year's months merged into one yearly partition | yes | redaction only | yes | fewer partitions for the planner once a year is cold |
+| **Default** | the catch-all for rows matching no month | yes | yes, when a month is missing | yes | **should always be empty.** Rows here mean rotation was not running |
+| **Retired** | detached, renamed `_retired_`, marked | **no** | **no — redaction cannot reach it** | yes, by table name | past the horizon, out of service. Reversible with one `ATTACH` |
+| **Exported** | retired, plus a verified `.csv.gz` + manifest | no | no | yes, by name — and the file | the copy that outlives the database |
+| **Dropped** | table gone | no | no | **no** — only the file | space reclaimed |
+| **Unmarked lookalike** | named like a retired partition, carrying no marker | no | no | yes, by name | not ours. Reported, never touched |
+| **Orphaned rollup** | staging table from an interrupted rollup, tagged by comment | no | no | yes, by name | debris. `partitions` reports it |
+
+Two consequences worth stating outright, because neither is discoverable from the code:
+
+**Redaction stops at the retirement boundary.** `Redaction` issues `UPDATE audit_changes …` against
+the *parent*, which on a partitioned table reaches only attached partitions. An erasure request
+therefore cannot touch retired, exported or dropped data. If a compliance regime requires erasure
+across the full horizon, either redact before retiring, or `ATTACH` the partition, redact, and
+`DETACH` it again. Once exported, the CSV is a plain file and beyond all of this.
+
+**Retired is reversible; dropped is not.** That asymmetry is why retention cannot drop at all, and
+why `export_and_drop_retired` verifies by checksum *and* row count before deleting anything.
+
+```
+        every audited write
+                │
+                ▼
+   ┌────────────────────────────────────────────────────────────────┐
+   │  ATTACHED to audit_changes / audit_events                      │
+   │  Visible to the gem: every screen, query object, redaction,     │
+   │  the reconciler, and any SELECT on the parent table.            │
+   │                                                                │
+   │   PROVISIONED ──► LIVE ──► CLOSED ──► FROZEN ──┐               │
+   │   (months ahead)  (writes) (month     (vacuum  │               │
+   │                            is over)   freeze)  │ rollup        │
+   │                                                ▼  (after 2y)   │
+   │                                         ROLLED UP (yearly)     │
+   │                                                │               │
+   │   DEFAULT ────── drain_default ────────────────┤               │
+   │   (should be empty)                            │               │
+   └────────────────────────────────────────────────┼───────────────┘
+                                                    │ retention
+   ═════════════════════════════════════════════════▼════════════════
+     DETACHED.  Invisible to the gem — including to redaction.
+     Still an ordinary table: SELECT works if you name it directly.
+   ══════════════════════════════════════════════════════════════════
+                                                    │
+                                               RETIRED  ◄── one ATTACH puts it back
+                                                    │
+                              export_retired ───────┤
+                                                    ▼
+                                               EXPORTED ──► name.csv.gz
+                                                    │        name.manifest.json
+                                                    │
+              drop_retired  ─────────────────┐      │ export_and_drop_retired
+              (no export check)              │      │ (verifies checksum + rows)
+                                             ▼      ▼
+                                              DROPPED
+                                        (only the files remain)
+```
+
+**Retention only ever detaches, and there is deliberately no option.** **[amended 2026-08-29]**
+`config.retention_action` used to accept `:detach` or `:drop`, defaulting to the reversible one. It
+was removed, because retention decides *what is past the horizon* and disposal decides *what happens
+to it* — two decisions, made by different people at different times, and folding them into one
+config attribute meant a single line in an initializer could turn a **scheduled** task into one that
+destroys audit data. A safe default is weaker than an absent option: a default can be flipped, and
+nothing reports it. Now the worst retention can do is detach too much, which one `ATTACH` undoes.
+Dropping lives in `audit_log:partitions:drop_retired`, where somebody has to type it.
+
+A detached partition keeps its rows and its disk under a `_retired_` name, and the rotation task
+reports it with its size so it cannot pile up unseen. The rename is load-bearing twice over: it
+makes "expired, awaiting export" a visible state, and it stops `create_month!` mistaking a retired
+table for a live partition.
+
+**Retiring also stamps a `RETIRED_MARKER` table comment, inside the same transaction as the detach
+and the rename.** It carries the partition's exclusive upper bound, and it does two jobs a name
+cannot:
+
+*Provenance.* `audit_changes_retired_2019_01` is a name anybody can create, and a DBA taking a
+manual copy before a risky migration is the obvious way it happens. Dropping on a name match would
+destroy that copy while the operator believed they had made a backup — the same reasoning that gave
+rollup staging tables their `ROLLUP_MARKER`, applied where it was missing. Every task that exports
+or drops works from the marked set, so the marker is the boundary of what this library considers
+its own. Unmarked lookalikes are *reported*, never silently skipped, because an invisible cost is
+one nobody reclaims.
+
+*The date range.* `DETACH` clears `relpartbound`, so retiring destroys the authoritative record of
+what period a partition covers — and the name is a known unreliable substitute, which is exactly
+what `misaligned_bounds` exists to catch. The bound is in hand at retire time, so it is recorded
+rather than re-derived later from the one artifact with a documented history of lying. `BEFORE=`
+on a drop compares that bound, keyed on the **upper** for the same reason expiry is: a `2025`
+yearly partition ends `2026-01-01`, so `BEFORE=2025-06-01` correctly leaves it alone. A partition
+whose marker will not parse is **skipped** by a date-bounded drop rather than guessed at, and said
+so in the output.
 
 **Export, then drop.** [implemented 2026-08-28, ROLLOUT Q8] `AuditLog::Archive` streams a retired
 partition to a local gzipped CSV plus a manifest, and `drop_exported!` drops only what verifies.
@@ -1357,9 +1453,9 @@ takes production down.
 > - **`drain_default` should NOT be scheduled**, and this is the one real prohibition. Needing it
 >   means a row landed in the default partition, which means the rotation task was not running.
 >   Scheduling the repair hides the fault that made it necessary.
-> - **`retention_action = :drop` is automating destruction.** The `:detach` default is reversible
->   with one `ATTACH`; scheduling a `:drop` deserves to be a decision somebody made on purpose,
->   ideally behind `audit_log:export` and `drop_exported`, which verifies before it deletes.
+> - **Disposal is never automatic.** Retention cannot drop (see above), so a scheduled retention
+>   run can only ever take data out of service. Scheduling `drop_retired` — which does not check for
+>   an export — is a separate decision somebody makes on purpose.
 
 Because `audit_changes` will be the largest table in the database, keep an eye on:
 - Autovacuum settings — the table is insert-only, so freezing behaviour matters far more than

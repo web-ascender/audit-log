@@ -1254,18 +1254,34 @@ stall the write path.
 |---|---|---|
 | `audit_log:coverage` | Lists tables in the primary database with no audit trigger | **In CI, not cron.** The forcing function. Fails for any table that is neither audited nor in `config.unaudited_tables` **with a written reason**. Run it in CI — it is what stops a table added next month being quietly unaudited. |
 | `audit_log:reconcile` | Reports correlated changes with no registered action | Tells you which narratives are still missing, so layer 2 fills in over time instead of being an up-front project. Run after adding controllers. |
-| `audit_log:drain_default` | Moves rows out of the default partition into the ones that should hold them | When `partitions` reports default-partition overflow. **Do not schedule this one.** Needing it means a row landed in the default partition, which means the rotation task was not running — scheduling the repair hides the fault that caused it. Takes `ACCESS EXCLUSIVE`. Stages through a temp table in one transaction, so a failure leaves the rows where they started. |
+| `audit_log:partitions:drain_default` | Moves rows out of the default partition into the ones that should hold them | When `partitions` reports default-partition overflow. **Do not schedule this one.** Needing it means a row landed in the default partition, which means the rotation task was not running — scheduling the repair hides the fault that caused it. Takes `ACCESS EXCLUSIVE`. Stages through a temp table in one transaction, so a failure leaves the rows where they started. |
 | `audit_log:redact` | Removes a record's **values** from the log, keeping the structure | An erasure request. `RECORD=Customer:42 REASON=DSR-1182 [FIELDS=email,phone] [DRY_RUN=1]`. The only thing permitted to modify audit rows; it narrates itself in the same transaction. `changed_columns` survives, so *"the email changed at 14:02, by Jane"* stays provable. |
 
 ### Retention — schedulable, in this order
 
+Every state named below is defined in
+[DESIGN §8, The partition lifecycle](DESIGN.md) — including which states the gem
+can still see, and which are DBA-only.
+
 | Task | What it does | Why, and when |
 |---|---|---|
-| `audit_log:rollup` | Consolidates closed years of monthly partitions into yearly ones | **Monthly or quarterly** is reasonable. Fewer partitions to plan against once a year is cold. `DRY_RUN=1` to preview. Only rolls up years past `config.rollup_after` (2y) — **it coarsens retention**, since a yearly partition can only be retired whole. Takes `ACCESS EXCLUSIVE`. |
-| `audit_log:retention` | Detaches (or drops) partitions past the horizon | **Monthly** is the obvious cadence, and scheduling it is the point of having a horizon. `config.retention` (7y). Defaults to **detach**, not drop: detaching is reversible with one `ATTACH`, and dropping seven-year-old audit data is not. `DRY_RUN=1` to preview. Takes `ACCESS EXCLUSIVE`. |
-| `audit_log:export` | Streams retired partitions to gzipped CSV plus a manifest | `DIR=/backups/audit`. Run **after** `retention` and **before** `drop_exported`. Needs no server filesystem, no superuser and no extension, so it works on managed Postgres. Moving the files somewhere durable is yours. |
-| `audit_log:drop_exported` | Drops only the retired partitions whose export in `DIR` verifies | `DIR=/backups/audit`. Verifies by checksum **and** row count first, and refuses anything that does not. **This is the one that actually deletes data** — schedule it only once you trust the export destination, and note that `config.retention_action = :drop` skips this path entirely by dropping at retention time. |
-| `audit_log:freeze` | `VACUUM FREEZE` on every closed partition | Safe to schedule monthly. A closed partition never changes again, so freezing it deliberately beats waiting for an anti-wraparound vacuum to storm the largest table in your database months later. |
+| `audit_log:partitions:rollup` | Consolidates closed years of monthly partitions into yearly ones | **Monthly or quarterly** is reasonable. Fewer partitions to plan against once a year is cold. `DRY_RUN=1` to preview. Only rolls up years past `config.rollup_after` (2y) — **it coarsens retention**, since a yearly partition can only be retired whole. Takes `ACCESS EXCLUSIVE`. |
+| `audit_log:partitions:retention` | Detaches partitions past the horizon and marks them **retired** | **Monthly** is the obvious cadence, and scheduling it is the point of having a horizon. `config.retention` (7y). **It cannot drop anything** — there is no option to make it — so a scheduled run can only take data out of service, never destroy it. `DRY_RUN=1` to preview. Takes `ACCESS EXCLUSIVE`. |
+| `audit_log:partitions:export_retired` | Streams **every** retired partition to `DIR` as gzipped CSV + manifest, verifying each | `DIR=/backups/audit`. Exports everything, every run — it does not skip what it exported before, because a file existing in `DIR` is not evidence it is intact or that it ever reached durable storage. Writes through a temp file, so a re-export cannot destroy a good archive. Reports total bytes, which is what tells you whether to be dropping more aggressively. |
+| `audit_log:partitions:export_and_drop_retired` | Exports, verifies, then drops only what verified | **The recommended disposal path.** `DIR=/backups/audit`, optional `BEFORE=YYYY-MM-DD`. Verifies by checksum **and** row count, and anything that fails is reported and left alone. Safe to re-run: export skips nothing, and the drop only takes what passed. |
+| `audit_log:partitions:drop_retired` | Drops retired partitions **without** checking for an export | ⚠️ **Irreversible, and does not look for a backup.** `DRY_RUN=1` first; optional `BEFORE=YYYY-MM-DD`. Offered because a CSV in a directory is not proof of preservation, so requiring one buys less safety than it appears to — and forcing everyone to produce archives they do not want is not this library's call. The judgement that mattered was made upstream by `retention`; this reclaims the disk. |
+| `audit_log:partitions:freeze` | `VACUUM FREEZE` on every closed partition | Safe to schedule monthly, **after** rollup and retention — freezing a partition that is about to be rolled up or detached is wasted work. A closed partition never changes again, so freezing it deliberately beats an anti-wraparound vacuum storming the largest table in your database months later. |
+
+**`BEFORE=` compares the upper bound**, which is what the retirement marker
+records — so `BEFORE=2025-06-01` does *not* drop a `2025` yearly partition,
+because that partition holds data through `2025-12-31`. A partition whose marker
+cannot be read is skipped by a date-bounded drop rather than guessed at, and the
+task says which.
+
+**Only partitions this gem retired are ever exported or dropped.** A table merely
+*named* like a retired partition — a manual copy taken before a risky migration,
+say — carries no marker and is reported, never touched. That is the same rule
+that keeps rollup from dropping somebody's `audit_events_2019`.
 
 ### Only on a scratch database
 
@@ -1405,6 +1421,6 @@ grants would now have to carve out an exception for the one operation that is
 *supposed* to modify audit rows.
 
 Two things that used to be on this list are now built — **export of retired
-partitions** (`archive.rb`, `rake audit_log:export`) and **PII redaction**
+partitions** (`archive.rb`, `rake audit_log:partitions:export_retired`) and **PII redaction**
 (`redaction.rb`, `rake audit_log:redact`). What remains open about redaction is
 policy, not mechanism: who may authorize one, and what makes a `REASON` valid.

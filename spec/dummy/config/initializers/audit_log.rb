@@ -32,7 +32,6 @@ AuditLog.configure do |config|
   config.bypass_allowlist = %w[CatalogImportJob]
 
   config.retention        = 7.years
-  config.retention_action = :detach
   config.rollup_after     = 2.years
 
   # Association labels are left entirely at their defaults, which is the point:

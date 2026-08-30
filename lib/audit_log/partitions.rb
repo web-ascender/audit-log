@@ -58,6 +58,34 @@ module AuditLog
     # dropping a table this library did not create.
     ROLLUP_MARKER = "audit_log:rollup-in-progress"
 
+    # Stamped on every partition this library retires, and the ONLY proof that a
+    # table named like a retired partition actually is one.
+    #
+    # It does two jobs that a name cannot:
+    #
+    #   PROVENANCE. `audit_changes_retired_2019_01` is a name anybody can create,
+    #   and a DBA taking a manual copy before a risky migration is the obvious
+    #   way it happens. Dropping on a name match would destroy that copy while
+    #   the operator believed they had made a backup. Same reasoning as
+    #   ROLLUP_MARKER above: only the marker separates our debris from somebody's
+    #   data.
+    #
+    #   THE DATE RANGE. DETACH clears `relpartbound`, so retiring a partition
+    #   destroys the authoritative record of what period it covers -- and the
+    #   name is a known unreliable substitute, which is precisely what
+    #   `misaligned_bounds` exists to catch. The bound is in hand at retire time,
+    #   so it is recorded rather than re-derived later from the one artifact with
+    #   a history of lying.
+    #
+    # The payload is the EXCLUSIVE upper bound, which is what the partition
+    # actually held, and what `drop_retired`'s BEFORE filter compares against --
+    # keying on the upper bound for the same reason `expired_partitions` does.
+    RETIRED_MARKER = "audit_log:retired"
+
+    def self.retired_comment(upper)
+      "#{RETIRED_MARKER} #{{upper: upper.utc.iso8601, retired_at: Time.now.utc.iso8601}.to_json}"
+    end
+
     # Session-level advisory lock serialising drain / rollup / retire against
     # each other. See `with_maintenance_lock`.
     MAINTENANCE_LOCK_KEY = 0x4155_4449_5401 # "AUDIT" + 01
@@ -147,33 +175,46 @@ module AuditLog
         partition_bounds(connection: connection).select { |b| b[:upper] <= cutoff }
       end
 
-      # DETACH (and optionally DROP) everything past the retention horizon.
+      # DETACH everything past the retention horizon. It never drops.
       #
-      # The default action is :detach, not :drop, and that asymmetry is
-      # deliberate: detaching is reversible with a single ATTACH, so a wrong
-      # retention setting costs an afternoon. Dropping is not, and an audit log is
-      # the worst table in the database to discover a wrong setting in. Detached
-      # partitions keep their data and stay in the schema under a `_retired_`
-      # name; `retired_partitions` reports them so they cannot pile up unseen.
-      # Set config.retention_action = :drop once an export step exists.
+      # There is deliberately no option here. Retention decides WHAT IS PAST THE
+      # HORIZON; disposal decides what happens to it, and they are separate
+      # decisions made by different people at different times. Folding them into
+      # one config attribute meant a single line in an initializer could turn a
+      # scheduled task into one that destroys audit data -- and a safe default is
+      # weaker than an absent option, because a default can be flipped.
+      #
+      # So the worst this can do is detach too much, which one ATTACH undoes.
+      # Dropping lives in `audit_log:partitions:drop_retired`, where somebody has
+      # to type it.
       def retire!(connection: ActiveRecord::Base.connection,
                   retention: AuditLog.config.retention,
-                  action: AuditLog.config.retention_action,
                   &block)
-        raise Error, "unknown retention_action #{action.inspect}" unless %i[detach drop].include?(action)
-
         with_maintenance_lock(connection) do
           expired_partitions(connection: connection, retention: retention).map do |bound|
-            retire_partition!(bound, action: action, connection: connection, &block)
+            retire_partition!(bound, connection: connection, &block)
           end
         end
       end
 
       # Detached-but-kept partitions still occupying disk. Anything here is
       # waiting on an export-and-drop decision.
+      #
+      # MARKED ONES ONLY. The name is not proof: `audit_changes_retired_2019_01`
+      # is a name anybody can create, and a manual copy taken before a risky
+      # migration is the obvious way it happens. Every task that EXPORTS or DROPS
+      # works from this list, so the marker is the boundary of what this library
+      # considers its own -- see RETIRED_MARKER.
+      #
+      # `upper` comes from the marker rather than from the name, and is what
+      # `drop_retired`'s BEFORE filter compares. A row whose marker will not parse
+      # gets `upper: nil` and is excluded from every date-bounded operation
+      # rather than guessed at.
       def retired_partitions(connection: ActiveRecord::Base.connection)
-        connection.select_all(<<~SQL).to_a.map { |r| { name: r["name"], bytes: r["bytes"].to_i } }
-          SELECT c.relname AS name, pg_total_relation_size(c.oid) AS bytes
+        connection.select_all(<<~SQL).to_a.map do |r|
+          SELECT c.relname AS name,
+                 pg_total_relation_size(c.oid) AS bytes,
+                 obj_description(c.oid, 'pg_class') AS comment
           FROM   pg_class c
           JOIN   pg_namespace n ON n.oid = c.relnamespace
           WHERE  n.nspname = 'public'
@@ -181,6 +222,31 @@ module AuditLog
             -- Regex, not LIKE: `_` is a LIKE wildcard, so
             -- 'audit_events_retired_%' also matches audit_eventsXretiredY2019.
             AND  c.relname ~ '^(audit_events|audit_changes)_#{RETIRED_INFIX}_'
+            AND  obj_description(c.oid, 'pg_class') LIKE #{connection.quote("#{RETIRED_MARKER} %")}
+          ORDER  BY c.relname
+        SQL
+          { name: r["name"], bytes: r["bytes"].to_i, upper: parse_retired_upper(r["comment"]) }
+        end
+      end
+
+      # Tables that LOOK retired and carry no marker of ours.
+      #
+      # Reported rather than silently skipped, for the reason orphaned_rollups is
+      # reported: an invisible cost is one nobody reclaims. Three things it can
+      # be, and the operator wants to know about all of them -- somebody's manual
+      # copy that we correctly refused to touch, a partition retired by a version
+      # of this library that predates the marker, or one whose comment was lost.
+      # Left alone by every task here; reclaiming the disk is a manual DROP.
+      def unmarked_retired(connection: ActiveRecord::Base.connection)
+        connection.select_all(<<~SQL).to_a.map { |r| { name: r["name"], bytes: r["bytes"].to_i } }
+          SELECT c.relname AS name, pg_total_relation_size(c.oid) AS bytes
+          FROM   pg_class c
+          JOIN   pg_namespace n ON n.oid = c.relnamespace
+          WHERE  n.nspname = 'public'
+            AND  c.relkind = 'r'
+            AND  c.relname ~ '^(audit_events|audit_changes)_#{RETIRED_INFIX}_'
+            AND  (obj_description(c.oid, 'pg_class') IS NULL
+                  OR obj_description(c.oid, 'pg_class') NOT LIKE #{connection.quote("#{RETIRED_MARKER} %")})
           ORDER  BY c.relname
         SQL
       end
@@ -516,12 +582,12 @@ module AuditLog
         end
       end
 
-      def retire_partition!(bound, action:, connection:)
+      def retire_partition!(bound, connection:)
         name    = bound[:name]
         table   = parent_table_for(name)
         retired = retired_name(table, name)
 
-        if action == :detach && exists?(retired, connection: connection)
+        if exists?(retired, connection: connection)
           raise Error, "#{retired} already exists; #{name} was retired once before and " \
                        "recreated. Export and drop the old one first."
         end
@@ -531,22 +597,24 @@ module AuditLog
             "ALTER TABLE #{connection.quote_table_name(table)} " \
             "DETACH PARTITION #{connection.quote_table_name(name)}"
           )
-          if action == :drop
-            connection.execute("DROP TABLE #{connection.quote_table_name(name)}")
-          else
-            connection.execute(
-              "ALTER TABLE #{connection.quote_table_name(name)} " \
-              "RENAME TO #{connection.quote_table_name(retired)}"
-            )
-          end
+          connection.execute(
+            "ALTER TABLE #{connection.quote_table_name(name)} " \
+            "RENAME TO #{connection.quote_table_name(retired)}"
+          )
+          # Inside the same transaction as the detach and rename: a partition
+          # that is detached but unmarked is one this library can no longer
+          # manage, so the three facts commit together or not at all.
+          connection.execute(
+            "COMMENT ON TABLE #{connection.quote_table_name(retired)} IS " \
+            "#{connection.quote(retired_comment(bound[:upper]))}"
+          )
         end
 
         # Yielded as each one commits, not collected and handed back at the end:
         # every partition is its own transaction, so a failure on the fifth leaves
         # four already retired, and a caller that only sees the return value sees
         # nothing at all about those four.
-        bound.merge(action: action, retired_as: (retired unless action == :drop))
-             .tap { |r| yield r if block_given? }
+        bound.merge(retired_as: retired).tap { |r| yield r if block_given? }
       end
 
       def drain_table_default!(table, connection:)
@@ -649,6 +717,15 @@ module AuditLog
       def parent_table_for(name)
         TABLES.find { |t| name.start_with?("#{t}_") } or
           raise Error, "#{name} does not belong to a known audit table"
+      end
+
+      # nil rather than a guess when the marker is malformed: a date-bounded DROP
+      # that cannot date a partition must skip it, not assume.
+      def parse_retired_upper(comment)
+        payload = comment.to_s.sub(/\A#{Regexp.escape(RETIRED_MARKER)} /, "")
+        Time.iso8601(JSON.parse(payload).fetch("upper")).utc
+      rescue JSON::ParserError, KeyError, ArgumentError, TypeError
+        nil
       end
 
       def retired_name(table, name)

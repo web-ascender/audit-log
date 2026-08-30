@@ -2,6 +2,78 @@
 
 ## Unreleased
 
+### The partition lifecycle: a namespace, a marker, and no way to drop by accident  **[2026-08-29]**
+
+Four changes, one theme — retention should be incapable of destroying anything,
+and everything about the lifecycle should be nameable.
+
+**`audit_log:partitions:` namespace.** The seven lifecycle tasks nest under it,
+and `audit_log:partitions` **keeps its bare name** — Rake stores tasks by full
+name string, so a task and a namespace may share one (verified in a real app).
+The daily cron line, whose failure is a write-path outage, never had to change.
+The namespace also disambiguates the rest for free: `partitions:drain_default`
+says which "default" it means, where a bare `drain_default` does not.
+
+**`config.retention_action` is removed. Retention only detaches.** It accepted
+`:detach` or `:drop`, defaulting to the reversible one — which meant a single
+line in an initializer could turn a *scheduled* task into one that destroys audit
+data. A safe default is weaker than an absent option: a default can be flipped
+and nothing reports it. Retention decides what is past the horizon; disposal is a
+separate decision somebody types.
+
+**Retiring now stamps a `RETIRED_MARKER` table comment**, in the same transaction
+as the detach and the rename, carrying the partition's exclusive upper bound. It
+does two jobs a name cannot:
+
+- *Provenance.* `audit_changes_retired_2019_01` is a name anybody can create, and
+  a manual copy taken before a risky migration is the obvious way it happens —
+  dropping on a name match would destroy it while the operator believed they had
+  made a backup. The same rule `ROLLUP_MARKER` already established for rollup
+  staging tables, applied where it was missing. Unmarked lookalikes are now
+  **reported**, never silently skipped.
+- *The date range.* `DETACH` clears `relpartbound`, so retiring destroys the
+  authoritative record of what period a partition covers — and the name is the
+  very artifact `misaligned_bounds` exists because it lies. `BEFORE=` compares
+  the recorded upper bound, so `BEFORE=2025-06-01` correctly leaves a `2025`
+  yearly partition alone. An unreadable marker is skipped rather than guessed at.
+
+**Three disposal tasks instead of one**, so the choice belongs to the adopter:
+
+| | |
+|---|---|
+| `export_retired` | export every retired partition, verified |
+| `drop_retired` | drop without checking for an export ⚠ |
+| `export_and_drop_retired` | export → verify → drop only what verified ← recommended |
+
+`export_retired` now exports **everything, every run**. It used to skip a
+partition when two files existed in `DIR`, which is evidence of nothing: the file
+may be truncated, corrupt, a stale export of an earlier state, or on a container
+filesystem that ceased to exist. Skipping on that basis means the one case where
+a re-export matters — the archive went bad — is precisely the case it skips,
+while reporting success. Nor can this library know whether a file reached durable
+storage, so it stops pretending to track that.
+
+Which made **atomic writes** necessary rather than nice: `export!` opened the
+destination with `"wb"`, truncating at byte zero, so a re-export interrupted
+mid-stream would have destroyed a good archive to produce a partial one. It now
+writes to a temp file, fsyncs, verifies, and renames into place — the previous
+export survives until the new one is complete *and* verified. (`gz.finish`, not
+`gz.close`: close takes the underlying file with it and the fsync then fails.)
+
+**Export also verifies now**, rather than only at drop time. Until this,
+verification happened solely as a side effect of dropping, so an operator who
+exported monthly and never dropped had never once checked that their archives
+were readable — and would find out the first time they needed one.
+
+DESIGN §8 gains **The partition lifecycle**: every state, what it means, and —
+the part not derivable from the code — *who can still read the data in it*. Two
+consequences it states outright: redaction stops at the retirement boundary,
+because `Redaction` updates the parent and a detached partition is no longer part
+of it; and retired is reversible while dropped is not.
+
+340 examples, 0 failures.
+
+
 ### "Only partitions belongs in a cron" was too strong  **[2026-08-29]**
 
 DESIGN §8, CLAUDE.md and the new task reference all said only

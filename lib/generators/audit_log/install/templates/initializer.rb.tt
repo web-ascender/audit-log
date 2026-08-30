@@ -94,7 +94,6 @@ AuditLog.configure do |config|
   # Only `rake audit_log:partitions` is safe to schedule. The others take ACCESS
   # EXCLUSIVE on an audit table and belong in a maintenance window.
   # config.retention        = 7.years   # nil disables retirement entirely
-  # config.retention_action = :detach   # :drop only once an export step exists
   # config.rollup_after     = 2.years   # consolidate closed years; nil disables
 
   # ------------------------------------------------------------------- the rest

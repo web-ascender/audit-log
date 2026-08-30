@@ -158,13 +158,6 @@ module AuditLog
     # not a legal opinion.
     attr_accessor :retention
 
-    # :detach or :drop. Detaching is reversible with a single ATTACH and leaves
-    # the data in the schema under a `_retired_` name; dropping is not. The
-    # default is the reversible one because an audit log is the worst place in
-    # the database to find out the horizon was set wrong. Switch to :drop once
-    # something exports the detached partitions first.
-    attr_accessor :retention_action
-
     # Consolidate a calendar year's twelve monthly partitions into one yearly
     # partition once the whole year is older than this. nil disables rollup.
     #
@@ -221,7 +214,6 @@ module AuditLog
       @partition_months_ahead   = 3
       @drill_down_slack         = 24.hours
       @retention                = 7.years
-      @retention_action         = :detach
       @rollup_after             = 2.years
       @maintenance_lock_timeout = "5s"
       @archive_dir              = nil
