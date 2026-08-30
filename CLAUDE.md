@@ -336,6 +336,20 @@ Do not "fix" these without reading the linked reasoning first.
   timeline both need it and an earlier hand-rolled copy on `ActorActivity`
   carried no bound at all — the one drill-down in the library that scanned every
   partition on every page render.
+- **`config.correlated_connections` takes CONNECTION names, never database
+  names, and the engine refuses to boot on a value that matches nothing.** It is
+  compared against `connection.pool.db_config.name`, so `%w[primary]` (the
+  default) is right for nearly every app — **including one whose `database.yml`
+  has no `primary:` key at all**, because Rails names a flat single-database
+  config `primary`. A database name here matches no connection and the failure is
+  SILENT: every trigger still fires and every row is still written, all with a
+  NULL actor and NULL request_id. It was called `correlated_databases` until
+  2026-08-30, which invited exactly that, and a real app was configured with its
+  database name. `Configuration#verify_correlated_connections!` raises when
+  nothing matches and only warns on a partial miss — `%w[primary replica]` is
+  legitimate where test has no replica. Do not soften the raise into a warning,
+  and do not "helpfully" fall back to the first available connection: a guess
+  here reintroduces the silence.
 - **`caused_by_request_id` is a real indexed column on `audit_events`, not a
   `metadata` key.** It points at a *different* unit of work than `request_id` (the
   request that enqueued this job) and the two are never equal on a row. It was

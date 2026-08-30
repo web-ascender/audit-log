@@ -36,7 +36,18 @@ module AuditLog
     # onto the adapter CLASS, so it is live on every connection in the process
     # regardless of database; without this list it would fire on every poll, claim
     # and heartbeat -- the busiest transaction path in the system. Plan §6.4.
-    attr_accessor :correlated_databases
+    # CONNECTION names, as Rails names them -- `primary`, `queue` -- and NOT
+    # database names. `AuditLog::Context.stamped_database?` compares against
+    # `connection.pool.db_config.name`, so `ngen_ipc_production` here matches
+    # nothing and silently switches correlation off. The old name for this,
+    # `correlated_databases`, invited exactly that and cost a real app a
+    # debugging session; `Engine`'s boot check now refuses it outright.
+    #
+    # The default is right for nearly every app, INCLUDING one whose
+    # database.yml has no `primary:` key at all: Rails normalizes a flat,
+    # single-database config to the name "primary". Change this only for a
+    # multi-database app that audits tables outside the primary connection.
+    attr_accessor :correlated_connections
 
     # String, resolved lazily: the engine's controllers inherit from this, which
     # is how they pick up the host app's layout, authentication, and helpers.
@@ -197,8 +208,59 @@ module AuditLog
     # rather than being swallowed by ActiveSupport::EventReporter.
     attr_accessor :raise_on_subscriber_error
 
+    # Refuse a correlated_connections that names nothing real. Called from the
+    # engine at after_initialize; a method rather than a block in the initializer
+    # so a spec can exercise the decision instead of re-deriving it.
+    #
+    # THE FAILURE THIS EXISTS FOR IS SILENT. The value is compared against
+    # `connection.pool.db_config.name`, so a plausible database NAME
+    # ("ngen_ipc_production") matches no connection and nothing raises: every
+    # trigger still fires and every row is still written, all of them with a NULL
+    # actor and NULL request_id, indistinguishable from a console session. An app
+    # can run that way for months and find out when an auditor asks who did
+    # something. That is the exact under-report this library exists to prevent,
+    # so it must not be reachable through its own configuration.
+    #
+    # RAISES only when NOTHING matches -- correlation is then entirely off and no
+    # reading of that is intentional. An individual name that matches nothing
+    # only warns, because `%w[primary replica]` is legitimate in an app whose
+    # test environment has no replica; raising there would refuse to boot a
+    # correct configuration.
+    def verify_correlated_connections!(known)
+      configured = Array(correlated_connections).map(&:to_s)
+      known      = Array(known).map(&:to_s)
+
+      if (configured & known).empty?
+        raise AuditLog::Error, <<~MESSAGE
+          config.correlated_connections names no connection in this application.
+
+            configured: #{configured.inspect}
+            available:  #{known.inspect}
+
+          These are CONNECTION names as they appear in database.yml -- `primary`,
+          `queue` -- not database names. Left as it is, every audited write would
+          still be recorded but would arrive with a NULL actor and NULL request_id.
+
+          Nearly every app wants the default, %w[primary], including one whose
+          database.yml has no `primary:` key: Rails names a flat single-database
+          config "primary". Set this only for a multi-database app that audits
+          tables outside the primary connection.
+        MESSAGE
+      end
+
+      unknown = configured - known
+      return [] if unknown.empty?
+
+      Rails.logger&.warn(
+        "[AuditLog] config.correlated_connections names #{unknown.inspect}, which match no " \
+        "connection in this environment (available: #{known.inspect}). Writes on those " \
+        "connections will carry no actor or request_id."
+      )
+      unknown
+    end
+
     def initialize
-      @correlated_databases     = %w[primary]
+      @correlated_connections   = %w[primary]
       @parent_controller        = "ApplicationController"
       @authorize                = ->(_controller) {}
       @actor_resolver           = ->(controller) { controller.try(:current_user) }

@@ -5,6 +5,40 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Changed — breaking
+
+- **`config.correlated_databases` is now `config.correlated_connections`, with no
+  deprecated alias.** An initializer that sets the old name raises
+  `NoMethodError` at boot, which is deliberate: the value was being misread, and
+  a silent alias would preserve the misreading.
+
+  It takes **connection** names as they appear in `database.yml` (`primary`,
+  `queue`) and is compared against `connection.pool.db_config.name`. The old name
+  invited a *database* name, and a real app was configured with one. Nothing
+  raised — every trigger still fired and every row was still written, all with a
+  NULL actor and NULL `request_id`, indistinguishable from a console session. An
+  app can run that way for months and find out when an auditor asks who did
+  something. That is the under-report this library exists to prevent, reached
+  through its own configuration.
+
+  **Most apps should delete the line rather than rename it.** The default
+  `%w[primary]` is correct for any single-database app, *including one whose
+  `database.yml` has no `primary:` key* — Rails names a flat config `primary`.
+  Set it only for a multi-database app that audits tables outside the primary
+  connection.
+
+### Added
+
+- **A boot check.** `Configuration#verify_correlated_connections!` raises when
+  the configured names match no connection at all, and warns on a partial miss —
+  `%w[primary replica]` is legitimate in an app whose test environment has no
+  replica, so raising there would refuse to boot a correct configuration. The
+  error names both what was configured and what is available.
+- **`correlation_spec` pins the assumption the default rests on**: that Rails
+  normalizes a flat, single-database `database.yml` to the name `primary`. If
+  that ever changed, every adopter on a flat config would silently stop
+  correlating, and nothing else would say so.
+
 ### Fixed
 
 - **The Rails 8.0 CI gap is closed**, and it was a real gap rather than a

@@ -1018,9 +1018,28 @@ default posture and it matters here for a reason beyond convention: `AuditLog::T
 prepends `begin_db_transaction` on the *PostgreSQL adapter class*, so without a guard it fires on
 every Solid Queue connection too — adding a round trip to each poll and claim on the busiest
 transaction path in the system. The guard sketched in §6.1 as `STAMPED_DATABASES` — shipped as
-`config.correlated_databases`, renamed because the constant read as though it decided what was
+`config.correlated_connections`, renamed because the constant read as though it decided what was
 audited, which it does not — reduces that to a string comparison. Verify it with a benchmark in Phase 2: Solid Queue's polling frequency makes this the
 one place where a stray round trip is actually measurable.
+
+> **Amendment [2026-08-30]: renamed again, to `config.correlated_connections`, and now checked at
+> boot.** `STAMPED_DATABASES` became `correlated_databases` because it read as though it decided
+> what was audited. That fixed one misreading and introduced another: the value is compared against
+> `connection.pool.db_config.name`, so "databases" invited a database NAME, and a real app was
+> configured with one. Nothing raised — the trigger still fired and every row was still written,
+> all of them with a NULL actor and NULL request_id, indistinguishable from a console session. An
+> app can run that way for months and find out when an auditor asks who did something, which is the
+> precise under-report this library exists to prevent, reached through its own configuration.
+>
+> The rename is the smaller half. `Engine`'s `audit_log.verify_correlated_connections` initializer
+> RAISES when the configured names match no connection at all — there is no reading of that which
+> is intentional — and only WARNS on an individual name that matches nothing, because
+> `%w[primary replica]` is legitimate in an app whose test environment has no replica.
+>
+> A third point the old documentation never made, and the one that prompted this: **the default is
+> correct for an app whose `database.yml` has no `primary:` key at all.** Rails normalizes a flat,
+> single-database config to the name `primary`, so `%w[primary]` matches it. An app with one
+> database should never touch this setting, and the docs now say so first.
 
 If the queue shares the primary database instead, the exclusion list in (1) still keeps the audit
 log clean, but the stamping overhead is unavoidable — another reason to separate.

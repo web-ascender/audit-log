@@ -1010,7 +1010,7 @@ knowing anything about any of them.
 
 | | Default | Does |
 |---|---|---|
-| `correlated_databases` | `%w[primary]` | Which databases carry the correlation context. **Does not decide what is audited** — a database left out is still fully audited, its rows just arrive with no actor. |
+| `correlated_connections` | `%w[primary]` | Which **connections** carry the correlation context — connection names as they appear in `database.yml` (`primary`, `queue`), *not* database names. The default is right for nearly every app, **including one whose `database.yml` has no `primary:` key**: Rails names a flat single-database config `primary`. **Does not decide what is audited** — a connection left out is still fully audited, its rows just arrive with no actor. The engine refuses to boot if this matches no connection, because that failure is otherwise silent. |
 | `bypass_allowlist` | `[]` | Classes permitted to call `AuditLog.without_logging`. Empty means the bypass is unavailable, which is the right default. |
 | `raise_on_subscriber_error` | `true` | Whether a failed layer-2 write raises. Leaving it true is what stops an audit failure vanishing while the change it described commits. |
 

@@ -55,6 +55,23 @@ module AuditLog
       end
     end
 
+    # ------------------------------------------------- correlated connections
+    # Refuse to boot on a correlated_connections that names nothing real. The
+    # decision itself lives in Configuration#verify_correlated_connections!,
+    # which carries the reasoning and is what the specs exercise.
+    #
+    # after_initialize, because database.yml is fully loaded by then and the
+    # host's own initializer has already had its say.
+    initializer "audit_log.verify_correlated_connections" do
+      config.after_initialize do
+        known = ActiveRecord::Base.configurations
+                                  .configs_for(env_name: Rails.env)
+                                  .map { |c| c.name.to_s }
+
+        AuditLog.config.verify_correlated_connections!(known)
+      end
+    end
+
     # ------------------------------------------------------------------- misc
     # Partition bounds are stored as timestamptz, and pg_dump renders timestamptz
     # in the CLIENT's zone. Without this, db/structure.sql records correct

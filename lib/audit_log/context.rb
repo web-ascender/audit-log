@@ -90,7 +90,7 @@ module AuditLog
       end
 
       # Only databases that actually hold audited tables pay for this. Naming
-      # Solid Queue's database in config.correlated_databases would put a
+      # Solid Queue's connection in config.correlated_connections would put a
       # comparison -- and periodically a round trip -- on every poll and claim.
       #
       # Note what a `false` here does and does not do: the connection carries no
@@ -98,7 +98,7 @@ module AuditLog
       # still fires, and still writes every row. This gates correlation, not
       # auditing.
       def stamped_database?(conn)
-        AuditLog.config.correlated_databases.include?(conn.pool&.db_config&.name)
+        AuditLog.config.correlated_connections.include?(conn.pool&.db_config&.name)
       end
     end
   end

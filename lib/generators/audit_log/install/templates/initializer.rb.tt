@@ -81,11 +81,24 @@ AuditLog.configure do |config|
     # "sessions" => "session store; churn with no compliance value",
   )
 
-  # Databases whose connections carry the audit correlation context. This decides
-  # who pays for the correlation round trip, NOT what is audited -- a database
-  # left out is still fully audited, its rows simply arrive with no actor and no
-  # request_id. Name only databases that actually hold audited tables.
-  # config.correlated_databases = %w[primary]
+  # LEAVE THIS ALONE unless this app has more than one database. The default is
+  # right for nearly every app, including one whose database.yml has no
+  # `primary:` key at all -- Rails names a flat, single-database config
+  # "primary", so `%w[primary]` already matches it.
+  #
+  # These are CONNECTION names as Rails names them (`primary`, `queue`), NOT
+  # database names: the value is compared against
+  # `connection.pool.db_config.name`. Putting a database name here -- the
+  # tempting mistake -- matches no connection, and the failure is silent. Every
+  # trigger still fires and every row is still written; they simply all arrive
+  # with a NULL actor and NULL request_id. The engine now refuses to boot on a
+  # value that matches nothing, which is how you would find out.
+  #
+  # What it actually decides is who PAYS for the correlation round trip, not what
+  # is audited: a connection left out is still fully audited. Set it only for a
+  # multi-database app that audits tables outside the primary connection -- and
+  # leave a queue or cache database OUT, so the stamp never fires on a poll.
+  # config.correlated_connections = %w[primary]
 
   # ----------------------------------------------------------------- lifecycle
   # Policy, not implementation -- someone has to own the horizon, and it should be

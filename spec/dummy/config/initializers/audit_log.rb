@@ -7,7 +7,7 @@
 # here. If the specs pass against an app with no Devise, no Solid Queue and no
 # Pundit, that claim is true rather than merely asserted.
 AuditLog.configure do |config|
-  config.correlated_databases = %w[primary]
+  config.correlated_connections = %w[primary]
 
   # Plain session lookup -- see ApplicationController#current_user. The reference
   # app resolves the same thing through Devise, and the library cannot tell.
