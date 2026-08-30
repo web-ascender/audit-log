@@ -104,11 +104,11 @@ RSpec.describe AuditLog::Timeline do
       cursor = nil
 
       10.times do
-        pagy = TimelinePager.new(cursor).paginate(tl.activity_keys, limit: 2)
-        break if pagy.records.empty?
+        page = TimelinePager.new(cursor).paginate(tl.activity_keys, limit: 2)
+        break if page.records.empty?
 
-        seen.concat(pagy.records.map(&:key))
-        cursor = pagy.next
+        seen.concat(page.records.map(&:key))
+        cursor = page.next
         break if cursor.nil?
       end
 

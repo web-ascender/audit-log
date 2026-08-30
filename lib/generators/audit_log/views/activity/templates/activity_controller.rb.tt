@@ -57,8 +57,8 @@ class ActivityController < ApplicationController
       record_type: @record_type, record_id: @record_id, range: bounded_range
     )
 
-    @pagy       = paginate(timeline.activity_keys, limit: PER_PAGE)
-    @activities = timeline.activities(@pagy.records)
+    @page       = paginate(timeline.activity_keys, limit: PER_PAGE)
+    @activities = timeline.activities(@page.records)
     @timeline   = timeline
   end
 

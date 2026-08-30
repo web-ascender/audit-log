@@ -16,8 +16,8 @@ module AuditLog
       return stream_csv(AuditLog::CsvExport.for(report.events), "audit-action-#{@action}") if
         request.format.csv?
 
-      @pagy     = paginate(report.events)
-      @events   = @pagy.records
+      @page     = paginate(report.events)
+      @events   = @page.records
       @by_actor = report.by_actor
       @entry    = AuditLog::Registry[@action]
     end

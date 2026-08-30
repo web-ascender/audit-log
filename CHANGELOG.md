@@ -3,6 +3,38 @@
 Notable changes to `audit_log`. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.0 — 2026-08-30
+
+**`pagy` is no longer a dependency.** `AuditLog::Pagination` is unchanged in shape
+— `include` it, call `paginate(scope, limit:)`, read `records` and `next` — and is
+now this library's own keyset pager rather than a wrapper over `Pagy::Keyset`.
+
+The reason is the host application, not Pagy. Bundler resolves one `pagy` per app;
+keyset paging exists in Pagy from 9.0 and the `jsonify_keyset_attributes:` hook
+that `FULL_PRECISION` cannot work without only from 9.3, and Pagy 43 removed that
+hook again. The only honest dependency was therefore `~> 9.3` — two releases — and
+it propagated into every adopter's own pagination: an app on Pagy 5, or on current
+Pagy, could not install 0.1.0 at all. Nothing here ever used Pagy's frontend.
+DESIGN §11.0 carries the amendment.
+
+### Changed
+
+- **`pagy` removed from the gemspec.** The one runtime dependency besides `rails`
+  is now `csv`. Paginate the rest of your app with anything, or nothing.
+- **`@pagy` renamed to `@page`** in the engine's controllers and views, in the
+  `audit_log:views:activity` templates, and in the README. If you generated the
+  activity views under 0.1.0 they are yours and keep working — the rename is not
+  applied to files you already own, and `@pagy` is still a valid ivar name.
+- **A non-column ordering now raises `Pagination::InvalidCursor`** and falls back
+  to the newest page, where it previously raised `NoMethodError` on an
+  `Arel::Nodes::SqlLiteral` and took the screen down.
+
+### Unchanged
+
+Rule 2 itself, every screen, the cursor format, and all four properties DESIGN
+§11.0 lists — including the microsecond cursor, which `pagination_spec` still
+pins with six rows inside one millisecond.
+
 ## 0.1.0 — 2026-08-30
 
 First release. There is deliberately no history before this entry: the library

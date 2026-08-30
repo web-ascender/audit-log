@@ -186,18 +186,18 @@ module AuditLog
 
     # Keyset paging controls: "older", and a way back to the top. No page
     # numbers and no total, on purpose -- see AuditLog::Pagination and §11.0
-    # Rule 2. `pagy.next` is nil exactly when this is the last page, which is
+    # Rule 2. `page.next` is nil exactly when this is the last page, which is
     # how the screen can say "end of results" honestly instead of leaving the
     # reader to guess whether a cap was hit.
-    def audit_pagination(pagy, count)
-      return if pagy.nil?
+    def audit_pagination(page, count)
+      return if page.nil?
 
       tag.nav(class: "pagination") do
         safe_join([
           tag.span("#{count} row#{"s" unless count == 1} on this page", class: "small"),
           (link_to("Back to newest", url_for(page: nil), class: "button") if params[:page].present?),
-          if pagy.next
-            link_to "Older →", url_for(page: pagy.next), class: "button"
+          if page.next
+            link_to "Older →", url_for(page: page.next), class: "button"
           else
             tag.span("End of results.", class: "small muted")
           end

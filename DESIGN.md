@@ -150,11 +150,12 @@ the partition-creation job. Workable, one more moving part. Below 11, abandon pa
   partitioned tables force `structure.sql` regardless (§4), and `pg_dump` already captures functions
   and triggers, so `fx` would add a dependency for nothing.
 
-  The **auditor UI** does take two, and they are worth naming precisely because the sentence above
-  is easy to over-read: `pagy` for keyset pagination (§11.0) and `csv` for export (§11.4a) — the
-  latter because `csv` stopped being a Ruby default gem in 3.4, so `require "csv"` alone is a
-  `LoadError`. Neither is referenced by the trigger, the correlation context, or the event
-  subscriber; an adopter who takes only layers 1 and 2 needs neither. [revised 2026-08-28]
+  The **auditor UI** takes exactly one, `csv` for export (§11.4a) — because `csv` stopped being a
+  Ruby default gem in 3.4, so `require "csv"` alone is a `LoadError`. It is not referenced by the
+  trigger, the correlation context, or the event subscriber; an adopter who takes only layers 1 and
+  2 does not need it. Keyset pagination (§11.0) used to be a second, `pagy`; it is now this
+  library's own and depends on nothing, for a reason that is about the host app rather than about
+  Pagy — see §11.0's amendment. [revised 2026-08-30]
 - **No `pg` dependency, and that is deliberate rather than an oversight.**  **[added 2026-08-29]**
   This library is PostgreSQL-only and could not be anything else, so declaring the adapter looks
   like plain honesty. It is not. The host application picks its own `pg` build and version — which
@@ -1675,9 +1676,9 @@ database. Either forbid it in the UI or route it to a background export job.
 
 **Rule 2 — paginate by keyset, never by offset, and never render a total count.**
 `OFFSET 200000` re-reads every skipped row, and `SELECT COUNT(*)` over millions of rows blocks the
-page. Use Pagy's keyset pagination (`Pagy::Keyset`, Pagy 9+) ordered by `(occurred_at DESC, id DESC)`
-— unique because `id` comes from one sequence shared across all partitions. Where a count is
-genuinely wanted, show "1–50 of many" via `Pagy::Countless`.
+page. Paginate by keyset, ordered by `(occurred_at DESC, id DESC)` — unique because `id` comes from one
+sequence shared across all partitions. Where a count is genuinely wanted, show "1–50 of many"
+rather than a total.
 
 **Implemented 2026-08-28** in `AuditLog::Pagination`, replacing the fixed row caps (50 events, 100
 actions, 200 changes) the screens shipped with. Those caps were a *silent* truncation: an auditor
@@ -1689,20 +1690,20 @@ Three properties are worth stating because each one is a way this could have gon
 1. **The keyset predicate is ANDed onto the screen's date range, never substituted for it.** Rule 1
    bought partition pruning; Rule 2 must not spend it. `pagination_spec.rb` asserts `occurred_at`
    survives in the paged query.
-2. **A cursor that does not belong to the screen falls back to the newest page.** Pagy raises
+2. **A cursor that does not belong to the screen falls back to the newest page.** `Page` raises
    rather than guessing when the cursor's keys do not match the ordering, and the recovery has to
    be visible — silently applying a mismatched cursor would drop rows off an audit screen.
 3. **The last page says "End of results."** A fixed cap could only imply it.
-4. **The cursor carries microseconds.** Pagy builds it with `to_json`, and ActiveSupport renders a
+4. **The cursor carries microseconds.** It is built with `to_json`, and ActiveSupport renders a
    `Time` at `ActiveSupport::JSON::Encoding.time_precision` — which defaults to **3**, milliseconds.
    `occurred_at` is `clock_timestamp()`, i.e. microseconds, and in practice every row carries
    sub-millisecond digits. A truncated cursor names an instant slightly *earlier* than the row it
    was minted from, so the next page's `occurred_at < cursor` skips everything in the gap and rows
    vanish between pages — the precise failure this replaced the row caps to prevent, reintroduced
    by a default. It surfaced as a one-in-eight flake, because it needs a row to land inside that
-   sub-millisecond window at a page boundary. Fixed with a `jsonify_keyset_attributes` lambda
-   scoped to the cursor, rather than by raising the global `time_precision`, which would change
-   every JSON response the host application renders.
+   sub-millisecond window at a page boundary. Fixed with a `FULL_PRECISION` lambda scoped to the
+   cursor, rather than by raising the global `time_precision`, which would change every JSON
+   response the host application renders.
 
 `config.page_size` (50) is a rendering choice with no cost curve behind it: there is no OFFSET to
 grow and no COUNT to compute. The dashboard keeps fixed limits deliberately — its lists are "10
@@ -1716,6 +1717,36 @@ cursor and silently drops rows between pages, as a rare flake, in an audit view.
 application would rediscover the same defect one flake at a time. The module also carries the
 mismatched-cursor fallback, which is the other thing a hand-rolled pager gets wrong — by raising,
 or worse, by applying it.
+
+**Amendment [2026-08-30, v0.2.0]: the pager is this library's own, and `pagy` is no longer a
+dependency.** Rule 2 is unchanged — keyset, no offset, no total — and so is every property above.
+What changed is who implements it, and the argument is about the *host application*, not about Pagy.
+
+Bundler resolves exactly one `pagy` per application. Pagy grew keyset pagination in 9.0 and the
+`jsonify_keyset_attributes:` hook that property 4 cannot be satisfied without in 9.3, then removed
+that hook again in the 43 rewrite. So the only dependency this library could honestly have declared
+was `~> 9.3` — a window two releases wide — and a gem's dependency is not confined to the gem: it
+would have propagated into the host's own pagination, where it has no business being. An app on
+Pagy 5 could not have installed this library at all; an app on 9.3 could never have upgraded past
+it. Both were measured against a real bundle, not reasoned about: released 0.1.0 fails to resolve
+alongside `pagy 5.10.1`, and 0.2.0 resolves alongside 5.10.1, 9.4.0 and 43.6.2 equally.
+
+An audit log dictating how the rest of an application paginates is a bad trade for ~90 lines, and
+those 90 lines are logic this module already had opinions about. What was actually imported from
+Pagy was a keyset predicate and a base64 cursor: nothing here ever used Pagy's frontend —
+`audit_pagination` has always rendered the engine's own nav, and a host renders
+`url_for(page: page.next)`. The public shape (`include`, `paginate(scope, limit:)`, `records`,
+`next`) is unchanged, which is why the reference app's suite passed against the swap unmodified.
+
+Two things improved rather than merely holding. A non-column ordering now raises
+`Pagination::InvalidCursor` and falls back to page one, where `Pagy::Keyset#extract_keyset` raised
+`undefined method 'name' for an Arel::Nodes::SqlLiteral` and took the screen down — the same class
+of failure as `actor_path(nil)` in §11.8. And `FULL_PRECISION` is now a plain method call rather
+than a third-party hook a major version is free to delete, which is precisely how it was nearly
+lost. The predicate is deliberately spelled as an OR of ANDs rather than the shorter row-wise
+tuple `(a, b) < (?, ?)`: the tuple form evaluates to NULL, and therefore matches nothing, if any
+component is NULL — the same trap `Timeline::ActivityKey`'s synthetic `key` exists to keep out of
+this comparison, kept closed even where a caller has not.
 
 Both models are read-only (`def readonly? = persisted?` — **not** `= true`, which breaks inserts
 and silently disables layer 2; see §12) and paired with a query object per screen.

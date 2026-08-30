@@ -32,9 +32,9 @@ RSpec.describe AuditLog::Pagination do
     seen   = []
     cursor = nil
     20.times do
-      pagy = paginator(cursor)
-      seen.concat(pagy.records.map(&:id))
-      cursor = pagy.next
+      page = paginator(cursor)
+      seen.concat(page.records.map(&:id))
+      cursor = page.next
       break if cursor.nil?
     end
 
@@ -99,9 +99,9 @@ RSpec.describe AuditLog::Pagination do
       seen   = []
       cursor = nil
       10.times do
-        pagy = paginator(cursor, limit: 2)
-        seen.concat(pagy.records.map(&:record_id))
-        cursor = pagy.next
+        page = paginator(cursor, limit: 2)
+        seen.concat(page.records.map(&:record_id))
+        cursor = page.next
         break if cursor.nil?
       end
 

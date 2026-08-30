@@ -21,8 +21,8 @@ module AuditLog
       return stream_csv(AuditLog::CsvExport.for(query.changes), "audit-#{@record_type}") if
         request.format.csv?
 
-      @pagy            = paginate(query.changes)
-      @changes         = @pagy.records
+      @page            = paginate(query.changes)
+      @changes         = @page.records
       @touched_columns = query.touched_columns
     end
 
@@ -41,10 +41,10 @@ module AuditLog
       return stream_csv(AuditLog::CsvExport.for(csv_scope),
                         "audit-#{@record_type}-#{@record_id}-#{@view}") if request.format.csv?
 
-      @pagy = paginate(paginated_scope)
+      @page = paginate(paginated_scope)
       case @view
       when "actions"
-        @events             = @pagy.records
+        @events             = @page.records
         @changes_by_request = timeline.changes_for(@events)
         @correlated         = timeline.correlated(limit: correlation_scan)
       when "timeline"
@@ -53,10 +53,10 @@ module AuditLog
         # contract can build a real view. A presenter nothing in the gem consumes
         # drifts from what the auditor UI actually does -- the same argument that
         # makes Coverage back both the rake task and the shared example.
-        @activities     = record_timeline.activities(@pagy.records)
+        @activities     = record_timeline.activities(@page.records)
         @timeline_scope = record_timeline
       else
-        @changes = @pagy.records
+        @changes = @page.records
       end
     end
 

@@ -34,7 +34,7 @@ module AuditLog
   # directions -- to satisfy an audit gem is a bad trade for the ~90 lines below,
   # all of which is logic this module already had opinions about. Nothing used
   # Pagy's frontend: `audit_pagination` renders the engine's own nav, and a host
-  # renders `url_for(page: pagy.next)`. What was actually imported was a keyset
+  # renders `url_for(page: page.next)`. What was actually imported was a keyset
   # predicate and a base64 cursor.
   module Pagination
     # Serialize the cursor's timestamp at MICROSECOND precision.
