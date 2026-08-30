@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+### Freezing is automatic now  **[2026-08-29]**
+
+`audit_log:partitions` — the daily task — now freezes each partition once its
+month closes, so nobody has to decide when to run `freeze`.
+
+**A marker is what made that possible.** `freeze_closed!` re-froze *every* closed
+partition on *every* call: unbounded work growing with the retention horizon,
+plus an `ANALYZE` re-sampling statistics that cannot have changed on an immutable
+partition. That is precisely why it needed a human to pick a moment. Each frozen
+partition is now marked with a table comment, so the daily run does only what is
+newly closed — nothing on most days, one partition per table on the first run of
+a month.
+
+Two orderings in it are load-bearing:
+
+- **Provision first, freeze second.** Creation is the half whose failure is a
+  write-path outage, so it commits before a `VACUUM` that might turn out slow.
+- **VACUUM first, mark second.** The reverse would skip a partition forever if
+  the VACUUM failed after the comment committed; this way a failure just means it
+  is retried tomorrow.
+
+**Redaction clears the markers.** It issues `UPDATE` against the parent table, so
+it reaches every attached partition including frozen ones and dirties pages
+there. Left marked, such a partition would never be frozen again and the
+anti-wraparound vacuum freezing exists to pre-empt would arrive anyway — on a
+table everybody believed was handled. It clears all of them, because it filters
+on record type and id and cannot know which months it touched; the daily task
+re-freezes over the following runs.
+
+**A drain deliberately does not**, and that absence is documented because it
+looks like an oversight. The design started with drain-clears-markers, and the
+spec written to prove it failed with `PG::CheckViolation`: Postgres refuses an
+insert into the default partition whose range another partition already claims.
+Rows reach the default only when *nothing* covers their month, so a drain's
+targets are always partitions it created moments earlier — new, and therefore
+unfrozen. The guard was removed rather than shipped with a comment claiming it
+was load-bearing.
+
+`audit_log:partitions:freeze` stays as a manual catch-up, with `FORCE=1` to redo
+partitions already marked.
+
+Freezing also had **no specs at all** before it started running daily, which is
+exactly when it needed them. `VACUUM` cannot run inside a transaction and every
+example runs in one, so the VACUUM statement is swallowed and the assertions
+cover selection and marking — which is where the logic lives.
+
+345 examples, 0 failures.
+
+
 ### The partition lifecycle: a namespace, a marker, and no way to drop by accident  **[2026-08-29]**
 
 Four changes, one theme — retention should be incapable of destroying anything,

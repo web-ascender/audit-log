@@ -389,6 +389,27 @@ Do not "fix" these without reading the linked reasoning first.
 - **`audit_log:redact` takes `FIELDS=`, never `COLUMNS=`.** `COLUMNS` is a
   reserved shell variable holding the terminal width, so it silently arrives as
   a number, matches nothing, and redacts nothing while reporting success.
+- **Freezing runs in the DAILY task, bounded by `FROZEN_MARKER`, and the marker
+  is what makes that possible.** `freeze_closed!` used to re-freeze every closed
+  partition on every call — unbounded work growing with the retention horizon,
+  plus an `ANALYZE` re-sampling statistics that cannot have changed on an
+  immutable partition. That is what forced an operator to choose a moment.
+  Marked, it does only what is newly closed: nothing most days, one partition per
+  table on the first of a month. VACUUM first and mark second, never the reverse
+  — marking first would skip a partition forever if the VACUUM then failed. And
+  provisioning commits BEFORE the freeze in the daily task, so a slow VACUUM
+  cannot delay the half whose failure is a write-path outage.
+- **`AuditLog::Redaction` clears every frozen marker, and a drain deliberately
+  does not.** Redaction UPDATEs the PARENT, so it reaches every attached
+  partition including frozen ones and dirties pages there; left marked, the
+  anti-wraparound vacuum freezing exists to pre-empt arrives anyway, on a table
+  everybody believed was handled. It clears all of them because it filters on
+  record_type/record_id and cannot know which months it touched. A DRAIN needs
+  none of this, and the reason is worth keeping because its absence looks like a
+  bug: Postgres refuses an insert into the default partition whose range another
+  partition claims, so a drain's targets are always partitions it created moments
+  earlier — new, therefore unfrozen. Verified, not assumed; a spec asserting the
+  drain path failed with `PG::CheckViolation` proving the row cannot get there.
 - **The partition tasks live under `audit_log:partitions:`, and the daily task
   keeps the bare name.** Rake stores tasks by full name string, so a task and a
   namespace can share one — verified in a real app, not assumed. That is the

@@ -62,11 +62,27 @@ module AuditLog
                           columns: columns,
                           redacted_by: AuditLog::ActorLabel.for(actor))
 
-          {
+          result = {
             changes: redact_diffs!(record_type, record_id, columns, marker, connection),
             events:  redact_event_payloads!(record_type, record_id, marker, connection),
             marker:  marker
           }
+
+          # A redaction UPDATEs the PARENT table, so it reaches every attached
+          # partition -- including closed ones already marked frozen, whose pages
+          # it has just dirtied. Clearing the markers lets the daily task freeze
+          # them again; leaving them would mean the anti-wraparound vacuum that
+          # freezing exists to pre-empt arrives anyway, on partitions everybody
+          # believed were handled.
+          #
+          # Every marker rather than the ones actually touched, because this
+          # filters on record_type/record_id and has no idea which months those
+          # rows lived in. Erasure requests are rare and a re-freeze is cheap.
+          AuditLog::Partitions.clear_frozen_marker!(
+            AuditLog::Partitions.frozen_partitions(connection: connection),
+            connection: connection
+          )
+          result
         end
       end
 

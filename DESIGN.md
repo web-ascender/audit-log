@@ -1263,7 +1263,7 @@ everything detached is a DBA-only artifact that happens to still be in the datab
 | **Provisioned** | a future month, created ahead of time | yes (empty) | not yet | yes | so a write never arrives to find no partition — the outage `partitions` exists to prevent |
 | **Live** | the current month | yes | **yes** — every audited change lands here | yes | the write target |
 | **Closed** | its month has passed | yes | redaction only | yes | the readable history; immutable in normal operation |
-| **Frozen** | closed, and `VACUUM FREEZE`d | yes | redaction only | yes | pays the freeze cost deliberately instead of as an anti-wraparound storm later |
+| **Frozen** | closed, `VACUUM FREEZE`d, and marked | yes | redaction only — which un-marks it | yes | pays the freeze cost deliberately instead of as an anti-wraparound storm later |
 | **Rolled up** | a closed year's months merged into one yearly partition | yes | redaction only | yes | fewer partitions for the planner once a year is cold |
 | **Default** | the catch-all for rows matching no month | yes | yes, when a month is missing | yes | **should always be empty.** Rows here mean rotation was not running |
 | **Retired** | detached, renamed `_retired_`, marked | **no** | **no — redaction cannot reach it** | yes, by table name | past the horizon, out of service. Reversible with one `ATTACH` |
@@ -1459,10 +1459,23 @@ takes production down.
 
 Because `audit_changes` will be the largest table in the database, keep an eye on:
 - Autovacuum settings — the table is insert-only, so freezing behaviour matters far more than
-  dead-tuple thresholds. Have the rotation job run an explicit `VACUUM FREEZE` on each partition
-  once its month closes: the partition is immutable from that point, and freezing it deterministically
-  beats waiting for an anti-wraparound vacuum to storm through the largest table in the database
-  months later. On PG 18, eager freezing handles the *current* partition too (§20.2).
+  dead-tuple thresholds. **Implemented 2026-08-29 inside the rotation task**: it freezes each
+  partition once its month closes, after provisioning rather than before, so a slow `VACUUM` can
+  never delay the half whose failure is a write-path outage. On PG 18, eager freezing handles the
+  *current* partition too (§20.2).
+
+  What made it automatable was a marker. `freeze_closed!` used to re-freeze every closed partition
+  on every call — unbounded work growing with the retention horizon, plus an `ANALYZE` re-sampling
+  statistics that cannot have changed on an immutable partition — which is exactly why it needed a
+  human to pick a moment. Marked, the work is bounded to what is newly closed: nothing on most days,
+  one partition per table on the first run of a month.
+
+  **Redaction is what un-freezes.** It issues `UPDATE` against the parent, so it reaches every
+  attached partition including frozen ones and dirties pages there; it clears the markers and the
+  daily task re-freezes. A *drain* needs no such handling, and the reason is worth recording because
+  it looks like an omission: Postgres refuses an insert into the default partition whose range
+  another partition already claims, so a drain's targets are always partitions it created moments
+  earlier — new, and therefore unfrozen.
 - `fillfactor` is irrelevant (no updates).
 - Consider `CREATE INDEX CONCURRENTLY` on new partitions only, not the parent, if index build time
   on the parent ever becomes an issue.

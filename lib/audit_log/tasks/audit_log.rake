@@ -55,6 +55,19 @@ namespace :audit_log do
 
     report_unmarked_retired
 
+    # FREEZING RUNS HERE, and after the creation above rather than before it.
+    #
+    # Creation is the safety-critical half -- a missing future partition is a
+    # write-path outage -- so it commits first, and a VACUUM that turns out slow
+    # or fails cannot delay it.
+    #
+    # It is bounded by the frozen marker, so on most days this is two catalog
+    # queries and no work; on the first run of a month it freezes exactly one
+    # partition per table. That is what makes it safe to do daily, and it takes
+    # the "when should I run freeze?" decision away from the operator entirely.
+    frozen = AuditLog::Partitions.freeze_closed!
+    puts "Froze: #{frozen.join(', ')}" if frozen.any?
+
     # Not partitions and not in `list`, so nothing else would ever mention them --
     # while each holds a full year of audit data.
     AuditLog::Partitions.orphaned_rollups.each do |r|
@@ -86,6 +99,13 @@ namespace :audit_log do
 
         created = r[:created].any? ? " into new partition(s) #{r[:created].join(", ")}" : ""
         puts "#{table}_default: moved #{r[:moved]} row(s)#{created}."
+
+        # Rows landing in a frozen partition dirty it, so its marker was cleared
+        # and the next daily run will freeze it again. Said out loud because it
+        # explains why `audit_log:partitions` is about to do work tomorrow.
+        if r[:unfrozen].present?
+          puts "  unfrozen (will re-freeze on the next daily run): #{r[:unfrozen].join(", ")}"
+        end
       end
     end
 
@@ -228,10 +248,13 @@ namespace :audit_log do
       report_undateable(before) if before
     end
 
-    desc "VACUUM FREEZE every closed partition"
+    desc "VACUUM FREEZE closed partitions. Runs in audit_log:partitions already. FORCE=1 to redo all"
     task freeze: :environment do
-      frozen = AuditLog::Partitions.freeze_closed!
-      puts frozen.any? ? "Froze: #{frozen.join(', ')}" : "Nothing to freeze."
+      # A manual catch-up. The daily task does this, so reaching for it means
+      # either the daily task has not run, or a marker is wrong and FORCE=1 is
+      # the way to redo work that was already recorded as done.
+      frozen = AuditLog::Partitions.freeze_closed!(force: ENV["FORCE"].present?)
+      puts frozen.any? ? "Froze: #{frozen.join(', ')}" : "Nothing to freeze -- every closed partition is already frozen."
     end
   end
 

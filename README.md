@@ -1246,7 +1246,7 @@ stall the write path.
 
 | Task | What it does | Why, and when |
 |---|---|---|
-| `audit_log:partitions` | Creates missing monthly partitions; warns on default-partition overflow and on retired leftovers | **Daily, in cron. Non-negotiable.** A missing future partition is a **write-path outage**, not a degraded report — every audited write fails once the calendar passes the last partition. Keeps `config.partition_months_ahead` (3) provisioned. |
+| `audit_log:partitions` | Creates missing monthly partitions, **freezes newly closed ones**, and warns on default-partition overflow and retired leftovers | **Daily, in cron. Non-negotiable.** A missing future partition is a **write-path outage**, not a degraded report — every audited write fails once the calendar passes the last partition. Keeps `config.partition_months_ahead` (3) provisioned. Creation commits before the freeze, so a slow `VACUUM` can never delay the half that matters. |
 
 ### Run when something needs it
 
@@ -1270,13 +1270,24 @@ can still see, and which are DBA-only.
 | `audit_log:partitions:export_retired` | Streams **every** retired partition to `DIR` as gzipped CSV + manifest, verifying each | `DIR=/backups/audit`. Exports everything, every run — it does not skip what it exported before, because a file existing in `DIR` is not evidence it is intact or that it ever reached durable storage. Writes through a temp file, so a re-export cannot destroy a good archive. Reports total bytes, which is what tells you whether to be dropping more aggressively. |
 | `audit_log:partitions:export_and_drop_retired` | Exports, verifies, then drops only what verified | **The recommended disposal path.** `DIR=/backups/audit`, optional `BEFORE=YYYY-MM-DD`. Verifies by checksum **and** row count, and anything that fails is reported and left alone. Safe to re-run: export skips nothing, and the drop only takes what passed. |
 | `audit_log:partitions:drop_retired` | Drops retired partitions **without** checking for an export | ⚠️ **Irreversible, and does not look for a backup.** `DRY_RUN=1` first; optional `BEFORE=YYYY-MM-DD`. Offered because a CSV in a directory is not proof of preservation, so requiring one buys less safety than it appears to — and forcing everyone to produce archives they do not want is not this library's call. The judgement that mattered was made upstream by `retention`; this reclaims the disk. |
-| `audit_log:partitions:freeze` | `VACUUM FREEZE` on every closed partition | Safe to schedule monthly, **after** rollup and retention — freezing a partition that is about to be rolled up or detached is wasted work. A closed partition never changes again, so freezing it deliberately beats an anti-wraparound vacuum storming the largest table in your database months later. |
+| `audit_log:partitions:freeze` | `VACUUM FREEZE` closed partitions that are not already frozen | **You do not need to schedule this** — `audit_log:partitions` does it daily. It is here as a manual catch-up, plus `FORCE=1` to redo partitions already marked frozen. |
 
 **`BEFORE=` compares the upper bound**, which is what the retirement marker
 records — so `BEFORE=2025-06-01` does *not* drop a `2025` yearly partition,
 because that partition holds data through `2025-12-31`. A partition whose marker
 cannot be read is skipped by a date-bounded drop rather than guessed at, and the
 task says which.
+
+**Freezing is automatic and you should not have to think about it.** A closed
+partition never changes again, so freezing it deliberately beats an
+anti-wraparound vacuum storming the largest table in your database months later —
+but deciding *when* was a chore this gem had no business handing you. Each frozen
+partition is marked, so the daily task does exactly the newly closed ones:
+nothing on most days, one partition per table on the first run of a month.
+
+The one thing that un-freezes a partition is a **redaction**, which updates the
+parent table and so dirties pages in whatever partitions held the redacted rows.
+It clears the markers, and the next daily runs freeze them again.
 
 **Only partitions this gem retired are ever exported or dropped.** A table merely
 *named* like a retired partition — a manual copy taken before a risky migration,

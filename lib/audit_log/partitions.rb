@@ -86,6 +86,22 @@ module AuditLog
       "#{RETIRED_MARKER} #{{upper: upper.utc.iso8601, retired_at: Time.now.utc.iso8601}.to_json}"
     end
 
+    # Stamped on a partition once it has been VACUUM FREEZEd, so the next run can
+    # tell what is already done.
+    #
+    # WITHOUT IT, FREEZING CANNOT BE AUTOMATIC. `freeze_closed!` used to re-freeze
+    # every closed partition on every call: unbounded work that grows with the
+    # retention horizon, and an ANALYZE re-sampling statistics that cannot have
+    # changed on an immutable partition. That is what forced the operator to
+    # decide *when* to run it. Marked, the work is bounded to what is newly
+    # closed -- usually nothing, once a month exactly one partition per table --
+    # so the daily task can simply do it.
+    #
+    # A live partition can carry no other marker: RETIRED_MARKER goes on detached
+    # tables and ROLLUP_MARKER on staging tables, neither of which is an attached
+    # partition. So there is nothing here to clobber.
+    FROZEN_MARKER = "audit_log:frozen"
+
     # Session-level advisory lock serialising drain / rollup / retire against
     # each other. See `with_maintenance_lock`.
     MAINTENANCE_LOCK_KEY = 0x4155_4449_5401 # "AUDIT" + 01
@@ -449,12 +465,66 @@ module AuditLog
       #
       # Driven off real bounds rather than the name, so a yearly partition
       # produced by rollup_year! is covered without special-casing.
-      def freeze_closed!(connection: ActiveRecord::Base.connection)
+      # VACUUM FREEZE every closed partition that has not been frozen already.
+      #
+      # "Closed" means its month is over, so no ordinary write can reach it --
+      # `occurred_at` is clock_timestamp(), which only ever moves forward. An
+      # insert-only partition that is never frozen deliberately gets frozen
+      # eventually by an anti-wraparound vacuum, which picks its own moment and
+      # picks it on the largest table in the database.
+      #
+      # BOUNDED BY THE MARKER, which is what lets the daily task call this. On
+      # most days nothing is newly closed and this is two catalog queries; on the
+      # first run of a month it freezes exactly one partition per table.
+      #
+      # VACUUM first, mark second. The reverse would skip a partition forever if
+      # the VACUUM failed after the comment committed; this way a failure merely
+      # means it is retried tomorrow.
+      def freeze_closed!(connection: ActiveRecord::Base.connection, force: false)
         cutoff = current_month.to_time(:utc)
+        done   = force ? [] : frozen_partitions(connection: connection)
 
-        partition_bounds(connection: connection).select { |b| b[:upper] <= cutoff }.map do |b|
-          connection.execute("VACUUM (FREEZE, ANALYZE) #{connection.quote_table_name(b[:name])}")
-          b[:name]
+        partition_bounds(connection: connection)
+          .select { |b| b[:upper] <= cutoff }
+          .reject { |b| done.include?(b[:name]) }
+          .map do |b|
+            connection.execute("VACUUM (FREEZE, ANALYZE) #{connection.quote_table_name(b[:name])}")
+            mark_frozen!(b[:name], connection: connection)
+            b[:name]
+          end
+      end
+
+      def frozen_partitions(connection: ActiveRecord::Base.connection)
+        connection.select_values(<<~SQL)
+          SELECT c.relname
+          FROM   pg_class c
+          JOIN   pg_inherits i ON i.inhrelid = c.oid
+          JOIN   pg_class p ON p.oid = i.inhparent
+          WHERE  p.relname IN ('audit_events', 'audit_changes')
+            AND  obj_description(c.oid, 'pg_class') = #{connection.quote(FROZEN_MARKER)}
+        SQL
+      end
+
+      def mark_frozen!(name, connection: ActiveRecord::Base.connection)
+        connection.execute(
+          "COMMENT ON TABLE #{connection.quote_table_name(name)} IS #{connection.quote(FROZEN_MARKER)}"
+        )
+      end
+
+      # Clearing the marker is how a partition becomes freezable again.
+      #
+      # AuditLog::Redaction is what needs this. It issues UPDATE against the
+      # PARENT table, so it reaches every attached partition including closed,
+      # frozen ones, and dirties pages there. Left marked, such a partition would
+      # never be frozen again and the anti-wraparound vacuum the freeze exists to
+      # pre-empt would arrive anyway -- on a table everybody believed was handled.
+      #
+      # Redaction cannot know which partitions it touched (it filters on
+      # record_type/record_id, not on time), so it clears every marker and lets
+      # the daily task re-freeze. Erasure requests are rare; a re-freeze is not.
+      def clear_frozen_marker!(names, connection: ActiveRecord::Base.connection)
+        Array(names).each do |name|
+          connection.execute("COMMENT ON TABLE #{connection.quote_table_name(name)} IS NULL")
         end
       end
 
@@ -670,6 +740,13 @@ module AuditLog
               SELECT * FROM #{connection.quote_table_name(staging)}
             SQL
 
+            # No frozen marker to clear here, and that is worth stating because it
+            # looks like an omission. A row reaches the default partition ONLY
+            # when nothing covers its month -- Postgres rejects an insert into the
+            # default whose range another partition already claims -- so the
+            # targets of a drain are always partitions it created a moment ago,
+            # which are new and therefore unfrozen. The interaction that DOES
+            # dirty a frozen partition is AuditLog::Redaction; see FROZEN_MARKER.
             { moved: moved, created: created }
           end
         end

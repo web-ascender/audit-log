@@ -110,6 +110,76 @@ RSpec.describe AuditLog::Partitions, "lifecycle" do
     end
   end
 
+  # Freezing had no specs at all until it started running daily, which is exactly
+  # when it needed them.
+  #
+  # VACUUM CANNOT RUN INSIDE A TRANSACTION, and every example here runs in one, so
+  # the VACUUM statement is swallowed and the assertions are about SELECTION and
+  # MARKING -- which is where all the logic is. Whether Postgres freezes pages
+  # correctly is not this suite's business.
+  describe ".freeze_closed!" do
+    before do
+      allow(conn).to receive(:execute).and_wrap_original do |orig, sql, *rest|
+        sql.to_s.strip.start_with?("VACUUM") ? sql : orig.call(sql, *rest)
+      end
+    end
+
+    it "freezes a closed partition and records that it did" do
+      described_class.create_month!("audit_changes", Date.new(2015, 1, 1))
+
+      expect(described_class.freeze_closed!).to include("audit_changes_2015_01")
+      expect(described_class.frozen_partitions).to include("audit_changes_2015_01")
+    end
+
+    # THE PROPERTY THAT MAKES THE DAILY TASK SAFE. Without it this is unbounded
+    # work that grows with the retention horizon, plus an ANALYZE re-sampling
+    # statistics that cannot have changed -- which is what forced an operator to
+    # decide when to run it.
+    it "does no work on a second run" do
+      described_class.create_month!("audit_changes", Date.new(2015, 1, 1))
+      described_class.freeze_closed!
+
+      expect(described_class.freeze_closed!).to eq([])
+    end
+
+    it "redoes marked partitions when forced, for when a marker is wrong" do
+      described_class.create_month!("audit_changes", Date.new(2015, 1, 1))
+      described_class.freeze_closed!
+
+      expect(described_class.freeze_closed!(force: true)).to include("audit_changes_2015_01")
+    end
+
+    # The current month is still being written to; freezing it would be undone by
+    # the next insert.
+    it "leaves the current month alone" do
+      current = described_class.partition_name("audit_changes", Date.today.beginning_of_month)
+      described_class.create_month!("audit_changes", Date.today.beginning_of_month)
+
+      expect(described_class.freeze_closed!).not_to include(current)
+    end
+
+    # THE INTERACTION THAT WOULD OTHERWISE BITE SILENTLY. Redaction UPDATEs the
+    # PARENT table, so it reaches every attached partition -- including closed
+    # ones already frozen, whose pages it dirties. Left marked, such a partition
+    # is never frozen again and the anti-wraparound vacuum that freezing exists
+    # to pre-empt arrives anyway, on a table everybody believed was handled.
+    #
+    # A drain, by contrast, needs no such handling and that is worth knowing:
+    # Postgres refuses an insert into the default partition whose range another
+    # partition claims, so a drain's targets are always partitions it created a
+    # moment ago -- new, and therefore unfrozen.
+    it "is undone by a redaction, which dirties whatever partitions it touched" do
+      described_class.create_month!("audit_changes", Date.new(2015, 1, 1))
+      described_class.freeze_closed!
+      expect(described_class.frozen_partitions).to include("audit_changes_2015_01")
+
+      AuditLog::Redaction.redact_record!(record_type: "Order", record_id: 1, reason: "DSR-1")
+
+      expect(described_class.frozen_partitions).not_to include("audit_changes_2015_01")
+      expect(described_class.freeze_closed!).to include("audit_changes_2015_01")
+    end
+  end
+
   describe "retention" do
     before { described_class.create_month!("audit_changes", Date.new(2015, 1, 1)) }
 
