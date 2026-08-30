@@ -65,6 +65,7 @@ the authority on *why* any of this is shaped the way it is.
 - [Advanced](#advanced)
   - [Attaching to a table that already exists](#attaching-to-a-table-that-already-exists)
   - [Re-attaching, and changing a table's exclusions](#re-attaching-and-changing-a-tables-exclusions)
+  - [Installing into a schema other than `public`](#installing-into-a-schema-other-than-public)
   - [Why objects and not relations](#why-objects-and-not-relations)
 - [Why this one, and not a callback-based gem](#why-this-one-and-not-a-callback-based-gem)
 - [Why not one of the popular gems?](#why-not-one-of-the-popular-gems)
@@ -1232,8 +1233,8 @@ Three things to check first. None is about *when* the trigger is attached; all
 three are about the shape of the table.
 
 - **[Step 2](#2-install) must already have run.** `CREATE TRIGGER` resolves
-  `public.audit_row_change` at creation time, so a missing install fails the
-  migration loudly. This is the harmless one.
+  `audit_row_change` at creation time, so a missing install fails the migration
+  loudly. This is the harmless one.
 - **The table needs a `bigint`-compatible `id`.** The trigger function assigns
   `rec_id bigint := NEW.id`, and `audit_changes.record_id` is `bigint NOT NULL`.
   A `create_table id: false` join table, a `uuid` primary key, or a primary key
@@ -1308,6 +1309,49 @@ that. The reachable paths are two branches each attaching the same table, a late
 "fix" migration attaching a trigger the table already has, and a migration
 attaching to a table whose trigger already arrived via `db/structure.sql` (which
 carries every trigger, since `schema_format = :sql`).
+
+### Installing into a schema other than `public`
+
+Everything installs into the **current schema** — the first entry on the
+connection's `search_path`. For a normal Rails app that is `public` and there is
+nothing here to do.
+
+It matters if your app puts data in more than one schema, because the audit
+tables, their partitions and the trigger function all have to agree on which one.
+They do: `AuditLog::Schema.install!` creates the tables and the function together
+in whatever schema is current, and `attach_audit_trigger` binds each trigger to
+the function copy sitting beside it. Run the install once per schema and each one
+gets an independent, self-contained audit log.
+
+```ruby
+# In a schema-per-tenant app (ros-apartment and friends), migrations already run
+# once per tenant with that tenant's search_path active -- so the ordinary
+# install migration does the right thing per tenant with no changes.
+#
+# What does NOT sweep automatically is anything scheduled. The daily task is the
+# one whose failure is a write-path outage, so it is the one to get right:
+Apartment::Tenant.each { AuditLog::Partitions.ensure! }
+```
+
+The same wrapping applies to `audit_log:coverage`, `audit_log:reconcile`,
+`audit_log:redact` and the retention tasks — each acts on one schema per call.
+This gem has no tenancy configuration and names no tenancy library; it only
+declines to assume `public`.
+
+Three things to know:
+
+- **A trigger's destination is fixed when it is attached, not when it fires.** A
+  table in `public` that is written while another schema's `search_path` is
+  active still files its audit rows in `public`, where the table lives. That is
+  what you want for records deliberately kept outside per-tenant data.
+- **If you provision a schema by cloning another one** rather than by migrating
+  it, call `AuditLog::Schema.install_function!` in that schema afterwards. A
+  clone may carry a function still pointing at the schema it was copied from, and
+  that failure is silent — rows land in the wrong table and everything reports
+  success.
+- **`rake audit_log:coverage` will ask about tables you consider dead.** A schema
+  cloned from a template contains every table in the template, including ones
+  that schema never uses. Exempt them in `config.unaudited_tables` with a reason.
 
 ### Why objects and not relations
 

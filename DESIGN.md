@@ -377,14 +377,24 @@ reasons — see below.
 
 ## 5. The trigger function
 
-One function, defined once, parameterized per table. It runs with the caller's privileges (see
-§12 — we are not enforcing append-only grants), but still pins `search_path` so the function
-cannot be hijacked by a schema-shadowed object.
+One function per schema, parameterized per table. It runs with the caller's privileges (see
+§12 — we are not enforcing append-only grants), pins `search_path` to `pg_catalog`, and names its
+destination in full — between them, the function cannot be hijacked by a schema-shadowed object.
+
+`{{schema}}` below is substituted by `AuditLog::Schema.install_function!` with the schema it is
+installing into, which for almost every application is `public`. **That substitution is not a
+multitenancy feature; it is the absence of an assumption**, and §14 is where the assumption's
+absence gets used. The function used to be `public.audit_row_change`, pinned to
+`SET search_path = pg_catalog, public`, writing to an unqualified `audit_changes`. In an
+application whose `search_path` is not `public` that combination is wrong in the worst available
+way: `audit_tables.sql` creates its tables unqualified, so they follow `search_path` into whatever
+schema is current — and every row the triggers wrote went to `public` instead. The writes
+succeeded. Nothing reported anything.
 
 ```sql
-CREATE OR REPLACE FUNCTION public.audit_row_change() RETURNS trigger
+CREATE OR REPLACE FUNCTION {{schema}}.audit_row_change() RETURNS trigger
 LANGUAGE plpgsql
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog
 AS $$
 DECLARE
   excluded text[] := string_to_array(coalesce(TG_ARGV[0], ''), ',');
@@ -460,7 +470,7 @@ def attach_audit_trigger(table, model: nil, exclude: [])
   execute <<~SQL
     CREATE TRIGGER #{trigger_name(table)}
     AFTER INSERT OR UPDATE OR DELETE ON #{quote_table_name(table)}
-    FOR EACH ROW EXECUTE FUNCTION public.audit_row_change(
+    FOR EACH ROW EXECUTE FUNCTION audit_row_change(
       #{quote(cols.join(","))}, #{quote(model)}
     );
   SQL
@@ -472,6 +482,15 @@ end
 
 def trigger_name(table) = "#{table}_audit"
 ```
+
+**The function is named UNQUALIFIED, and that is load-bearing.**  **[added 2026-08-30]**
+`CREATE TRIGGER` resolves the name through `search_path` and then stores the OID it resolved to, so
+the binding is permanent from that moment. A trigger therefore attaches to the copy of the function
+that the same migration run installed, under the same `search_path` — which is what keeps a row's
+audit trail in the schema the row lives in. Writing `public.audit_row_change` here is what used to
+send every schema's writes to one table (§14). If no `audit_row_change` is visible at all, the
+migration fails loudly, which is the intended outcome: the alternative to a missing function is a
+silent one.
 
 **Two of those signatures changed after this section was first written, and both changes are
 decisions.**  **[revised 2026-08-29]** The default exclusion list is
@@ -2519,36 +2538,131 @@ for a subject that is not set (`subject_type`/`subject_id` nil) will not be foun
 
 ---
 
-## 14. Multitenancy notes
+## 14. Multitenancy notes  **[rewritten 2026-08-30]**
 
-**This design assumes a single-schema, single-tenant-per-database or row-level-tenanted app.** That
-is the normal case for us. NGEN-style schema-per-tenant (`ros-apartment`) is unique to that project
-and is *not* the target. Documented here only so the general solution does not have to be
-redesigned if it ever recurs.
+**This library makes no tenancy assumption at all. It installs into, and operates on, the CURRENT
+schema.** For the single-schema application — which is nearly all of them — `current_schema()` is
+`public` and this section is a distinction without a difference. It is written down because the
+library previously assumed `public` outright, in two directions, and both failures were silent.
+
+### The change, and why it is not a feature
+
+`audit_tables.sql` has always created its tables unqualified, so they follow `search_path`. Three
+things did not:
+
+1. **The trigger function was `public.audit_row_change`, pinned to
+   `SET search_path = pg_catalog, public`, writing to an unqualified `audit_changes`.** The pin
+   made the destination `public.audit_changes` no matter which schema the trigger fired in. So the
+   tables landed in one schema and every row landed in another. The writes succeeded.
+2. **`Partitions.exists?` asked `to_regclass('public.' || name)`.** Provisioning a second schema
+   found `public`'s partition, reported the work already done, and created nothing. The parent sat
+   there with no partitions, and the first audited write died on `no partition of relation
+   "audit_changes" found for row` — the one loud failure in the set, and only because Postgres
+   refuses to route a row it has nowhere to put.
+3. **`Partitions.attached?`, the three inventory queries and both `Coverage` queries filtered on
+   `relname` alone.** The mirror image: they saw every schema's objects at once, so one schema's
+   healthy state answered questions asked about another's. For a forcing function whose entire job
+   is to notice a table nobody decided about, that is the whole ballgame — `Coverage` would pass
+   while a table went unaudited.
+
+The fix is `current_schema()` in place of `'public'`, a schema filter on the queries that had
+none, and a trigger function installed beside the tables it writes to (§5). None of it adds a
+config surface, a code path or a concept, and none of it costs a single-schema application
+anything. **It is the removal of an assumption, not the addition of a capability** — which is why
+there is no `config.tenant_schemas` and why nothing in this library names a tenancy gem.
 
 ### Row-level tenanting (`acts_as_tenant`) — easy
 
-Add `tenant_id bigint` to both tables, index it leading (`(tenant_id, occurred_at DESC)`), and have
-the trigger read a third GUC `app.tenant_id` alongside the other two. Roughly zero extra complexity.
+Unchanged and unaffected: one schema, so every question above has one answer. If you want the
+tenant on the audit rows themselves, add `tenant_id bigint` to both tables, index it leading
+(`(tenant_id, occurred_at DESC)`), and have the trigger read a third GUC `app.tenant_id` alongside
+the other two. Roughly zero extra complexity.
 
-### Schema-per-tenant (`ros-apartment`) — gotchas
+### Schema-per-tenant (`ros-apartment`)
 
-1. **Define the trigger function once in `public`** and reference it schema-qualified
-   (`EXECUTE FUNCTION public.audit_row_change(...)`). Apartment clones the template schema when
-   provisioning a tenant, so a function defined per-schema means N copies to maintain and N places
-   to fix a bug.
-2. **New-tenant provisioning must be verified.** Triggers get cloned with the schema, but a tenant
-   created from a stale template silently loses auditing. Add a post-provision check that asserts
-   every audited table in the new schema has its trigger, and fail provisioning if not.
-3. **`structure.sql` is mandatory anyway** (partitions), so set `Apartment.use_sql = true` and
-   confirm tenant creation loads the structure dump including functions and triggers.
-4. **Reconsider partitioning per tenant.** N tenants × M months of partitions on two tables gets
-   large fast. If per-tenant volume is low, keep the audit tables unpartitioned inside each tenant
-   schema — schema separation already bounds table size, and you get tenant isolation for free.
-5. **GUCs are session-scoped and unaffected by `search_path`**, so the correlation mechanism in §6
-   works unchanged.
-6. **Cross-tenant audit reporting requires a UNION across schemas.** Usually unnecessary — audits
-   are per-tenant — but confirm before assuming.
+Each tenant schema gets its own audit tables, own partitions, and own copy of the trigger function.
+Tenant isolation is then a property of the storage rather than of every query — nothing in the
+library has to remember a `WHERE tenant = …`, because there is nothing to forget. A dropped tenant
+schema takes its audit log with it, and a tenant's history is inside the backup of that tenant.
+
+It works because Apartment already runs migrations once per tenant with the tenant's `search_path`
+active. `AuditLog::Schema.install!` installs into whatever schema that is; `attach_audit_trigger`
+binds to the function copy installed beside it. The library is not told any of this and does not
+detect it.
+
+**The trigger function's destination is `TG_TABLE_SCHEMA`-equivalent by construction, and the
+alternatives were considered and rejected.** Three ways to get the row into the right table:
+
+- *Let the function inherit the caller's `search_path`* (delete the `SET` clause). One line, no
+  runtime cost — and wrong for any table deliberately kept outside the per-tenant data. Apartment's
+  `excluded_models` pin such a model to `public.organizations`, and it is written **while a
+  tenant's `search_path` is active**; an inheriting function files that row in whichever tenant
+  happened to be current, scattering one global record's history across every schema. It also makes
+  the destination depend on a mutable session setting, which is the property the pin existed to
+  deny.
+- *Build the INSERT dynamically from `TG_TABLE_SCHEMA`* (`EXECUTE format(…)`). Always correct, and
+  it reads the catalog rather than a session variable — but it turns readable SQL into string
+  assembly and re-plans on every audited write, a cost paid by every application to serve the rare
+  one.
+- *Install one copy per schema, each naming its own destination in full.* Chosen. Static SQL, no
+  re-plan, `search_path` pinned to `pg_catalog` so the hijack protection is unchanged, and the
+  `excluded_models` case comes out right because a trigger created during the `public` migration
+  pass binds to `public`'s copy permanently. **In a single-schema application there is exactly one
+  copy**, so the "N copies to maintain" objection — which an earlier version of this section made,
+  and made the shared-function recommendation on — does not apply to the case that recommendation
+  was protecting.
+
+Verified rather than assumed: `spec/audit_log/schema_isolation_spec.rb` installs into a bare second
+schema and asserts all of it, including that shadowing `audit_changes` into an earlier schema does
+not redirect a write. It uses no tenancy library — a search_path and a second schema is all this
+library is entitled to know about, the same discipline that keeps Devise and Solid Queue out of
+`spec/dummy` (§16).
+
+**What the host app still owns.** The library operates on one schema per call, so anything that
+sweeps has to be swept by the host:
+
+```ruby
+# The daily cron line. Its failure is a write-path outage (§8), for every tenant.
+Apartment::Tenant.each { AuditLog::Partitions.ensure! }
+```
+
+Same shape for `audit_log:coverage`, `audit_log:reconcile`, retention, rollup and redaction. This
+is deliberately not a config hook: a lambda returning schema names would put tenancy awareness
+inside the library and would need a testing story `spec/dummy` cannot provide without acquiring a
+dependency it exists to refuse.
+
+**Two sharp edges, both about tenant creation rather than migration.**
+
+1. **A tenant created by cloning, rather than by migrating, needs its function re-installed.**
+   Apartment provisions a new tenant by `pg_dump`-ing the template schema and text-rewriting
+   `public.<name>` into the new schema's name. That carries the audit tables and their partitions
+   across, which is what you want, and it rewrites the function body's
+   `INSERT INTO public.audit_changes` too — which is why `Schema` renders the schema bare rather
+   than quoted, so the reference reads as an ordinary `schema.table` and text tooling can see it.
+   **Do not rely on that.** It is a property of somebody else's regex, and if it ever misses, the
+   new tenant files its rows in `public` and says nothing. Call
+   `AuditLog::Schema.install_function!` in the tenant-creation path and the question stops being
+   interesting.
+2. **Coverage will have opinions about a tenancy library's excluded-model tables.** Apartment
+   excludes a *model*, not a *table*, so `organizations` still exists as an unused clone inside
+   every tenant schema. Scoped coverage sees it, correctly, as a table nobody decided about. Exempt
+   it in `config.unaudited_tables` with the reason — that is the forcing function working, not
+   misfiring.
+
+**Partition count is the real trade, and it is a trade.** N tenants × 2 tables × 84 monthly
+partitions at a 7-year horizon is a large catalog. Per-query pruning is unaffected — a query only
+ever touches one schema's tables — so the cost is catalog size, the daily provisioning run, and
+`pg_dump`. If per-tenant volume is low, consider keeping the audit tables unpartitioned inside each
+tenant schema: schema separation already bounds table size, which is one of the two jobs
+partitioning was doing (§8). Freezing is the other, and it does not go away.
+
+**Cross-tenant audit reporting needs a UNION across schemas, and is not built.** Usually
+unnecessary — audits are per-tenant, and the auditor UI mounted under a tenant's domain reads that
+tenant's tables with no extra work. Confirm it is unnecessary before assuming, because it is the
+one question this storage shape makes harder rather than easier.
+
+**GUCs are session-scoped and unaffected by `search_path`**, so the correlation mechanism in §6
+works unchanged in all of the above.
 
 ---
 

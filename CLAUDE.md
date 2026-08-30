@@ -62,7 +62,7 @@ Update it when you change behaviour.
 | Ruby | **>= 3.3** — the floor is `SecureRandom.uuid_v7` (DESIGN §2.1), not a preference. 3.3.0 exactly also cannot run Rails 8.1, for a reason of Rails' own. Developed on 4.0.6. |
 | Rails | **`~> 8.0`** — floor 8.0 (DESIGN §2.2), and a real ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. Developed on 8.1.3.1. |
 | PostgreSQL | **>= 16.** Developed on 18.6, port 5438 — not the workspace default 5437. CI runs 16 and 18; DESIGN §20 is the authority and says the design "targets PG 16 and requires nothing newer". Verified: the whole suite passes on 16.13. |
-| Tests | RSpec against `spec/dummy` (350 examples), on every push via GitHub Actions — six legs: Ruby 3.3/4.0.6 × Rails 8.0/latest × PG 16/18 |
+| Tests | RSpec against `spec/dummy` (363 examples), on every push via GitHub Actions — six legs: Ruby 3.3/4.0.6 × Rails 8.0/latest × PG 16/18 |
 | Runtime deps | `rails`, `csv` (export). **`pg` and `pagy` deliberately are not** — the host app picks its own `pg` build, and its own pagination gem. `AuditLog::Pagination` is this library's own keyset pager precisely so a `pagy` constraint does not propagate into the host. |
 
 ```bash
@@ -111,6 +111,24 @@ Do not "fix" these without reading the linked reasoning first.
   **is** idempotent (`DROP TRIGGER IF EXISTS`); detach-then-attach in one
   migration is the supported way to change a table's exclusions or model name,
   and it is not retroactive — rows already written keep their diffs.
+- **Nothing here is qualified with `public`; everything operates on
+  `current_schema()`.** The trigger function is installed BESIDE the tables it
+  writes to and names them in full (`{{schema}}` is substituted by
+  `AuditLog::Schema.install_function!`), and `attach_audit_trigger` references it
+  UNQUALIFIED so `CREATE TRIGGER` binds permanently to the copy installed by the
+  same migration run. This is not multitenancy support — it is the removal of an
+  assumption, and it costs a single-schema app nothing because `current_schema()`
+  is `public`. Both directions of the old assumption failed silently: a function
+  pinned to `public` filed EVERY schema's rows in one table while the writes
+  succeeded, and `Partitions.exists?` asking `to_regclass('public.' || name)`
+  found public's partition, reported the work done, and provisioned nothing —
+  leaving a parent with no partitions that died on its first write. The mirror
+  image is just as bad: `attached?`, the inventory queries and both `Coverage`
+  queries filtered on `relname` ALONE, so one schema's trigger vouched for
+  another schema's table and the coverage forcing function passed while a table
+  went unaudited. Do not "simplify" any of this back to a literal, and do not
+  reach for `TG_TABLE_SCHEMA` + a dynamic `EXECUTE` — it is correct but re-plans
+  on every audited write, taxing every app to serve the rare one. DESIGN §14.
 - **Attaching to a table that already exists is fine**, and the "in the migration
   that creates it" wording is a review convention, not a requirement — the helper
   is a bare `CREATE TRIGGER` that reads nothing from the `create_table` beside it,
@@ -762,7 +780,7 @@ one. Do not reintroduce it.
 ## Testing
 
 ```bash
-bundle exec rspec                         # 350 examples, against spec/dummy
+bundle exec rspec                         # 363 examples, against spec/dummy
 bundle exec rspec spec/audit_log          # the library proper
 bundle exec rspec spec/requests           # the auditor UI and the CSV export
 bundle exec rspec spec/preview.rb         # dev tool: renders 17 screens to spec/dummy/public/
@@ -796,6 +814,7 @@ property from different angles — **that nothing goes missing without saying so
 | `timeline_spec` | the published host-facing contract changes shape, a unit of work is dropped or repeated across pages, an event that wrote no change row falls off the timeline, or `headline` starts inventing sentences |
 | `install_generator_spec` | the ControllerContext include lands ahead of authentication, or a skipped step reports success |
 | `event_transport_spec` | layer 2 silently stops emitting on one end of `rails ~> 8.0`, or takes the wrong branch for the Rails it is on |
+| `schema_isolation_spec` | the library reverts to assuming `public` — rows filed in the wrong schema's table, or a provisioning check answered from another schema's state |
 
 A change that makes any of those pass *more easily* is a regression.
 

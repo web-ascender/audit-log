@@ -4,11 +4,19 @@
 --   TG_ARGV[0]  comma-separated column names to exclude from the diff
 --   TG_ARGV[1]  the Rails model name to record as record_type ("Order")
 --
--- Runs with the caller's privileges. `search_path` is pinned regardless, so the
--- function cannot be hijacked by an object shadowed into an earlier schema.
-CREATE OR REPLACE FUNCTION public.audit_row_change() RETURNS trigger
+-- Runs with the caller's privileges. `search_path` is pinned to pg_catalog and
+-- the destination is written out in full, so the function cannot be hijacked by
+-- an object shadowed into an earlier schema.
+--
+-- {{schema}} IS SUBSTITUTED AT INSTALL TIME with the schema the function is being
+-- installed into, which for almost every application is `public`. It is not a
+-- multi-tenancy feature; it is the absence of an assumption. A function pinned to
+-- `public` writes to `public.audit_changes` no matter which schema its trigger
+-- fired in -- so in an application whose search_path is not `public`, every row
+-- lands in the wrong place and nothing says so. See AuditLog::Schema.
+CREATE OR REPLACE FUNCTION {{schema}}.audit_row_change() RETURNS trigger
 LANGUAGE plpgsql
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog
 AS $fn$
 DECLARE
   excluded text[] := string_to_array(coalesce(TG_ARGV[0], ''), ',');
@@ -59,7 +67,7 @@ BEGIN
 
   delta := coalesce(delta, '{}'::jsonb);
 
-  INSERT INTO audit_changes
+  INSERT INTO {{schema}}.audit_changes
     (request_id, record_type, record_id, operation, diff, changed_columns,
      actor_type, actor_id, actor_label)
   VALUES

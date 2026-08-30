@@ -420,7 +420,9 @@ namespace :audit_log do
     big = conn.select_rows(<<~SQL).to_h
       SELECT c.relname, pg_total_relation_size(c.oid)
       FROM pg_class c JOIN pg_inherits i ON i.inhrelid = c.oid
-      JOIN pg_class p ON p.oid = i.inhparent WHERE p.relname = 'audit_changes'
+      JOIN pg_class p ON p.oid = i.inhparent
+      JOIN pg_namespace n ON n.oid = p.relnamespace
+      WHERE p.relname = 'audit_changes' AND n.nspname = current_schema()
     SQL
     threshold = 1024 * 1024
 
@@ -450,7 +452,9 @@ namespace :audit_log do
       SELECT '  ' || c.relname || ': ' || pg_size_pretty(pg_total_relation_size(c.oid))
       FROM pg_class c JOIN pg_inherits i ON i.inhrelid = c.oid
       JOIN pg_class p ON p.oid = i.inhparent
+      JOIN pg_namespace n ON n.oid = p.relnamespace
       WHERE p.relname IN ('audit_changes', 'audit_events')
+        AND n.nspname = current_schema()
       ORDER BY pg_total_relation_size(c.oid) DESC LIMIT 10
     SQL
     puts
@@ -461,7 +465,9 @@ namespace :audit_log do
       SELECT round(
         (SELECT sum(pg_total_relation_size(c.oid))
          FROM pg_class c JOIN pg_inherits i ON i.inhrelid = c.oid
-         JOIN pg_class p ON p.oid = i.inhparent WHERE p.relname = 'audit_changes')::numeric
+         JOIN pg_class p ON p.oid = i.inhparent
+         JOIN pg_namespace n ON n.oid = p.relnamespace
+         WHERE p.relname = 'audit_changes' AND n.nspname = current_schema())::numeric
         / greatest((SELECT count(*) FROM audit_changes), 1), 1)
     SQL
   end

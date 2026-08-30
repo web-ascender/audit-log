@@ -25,13 +25,23 @@ module AuditLog
     end
 
     # Tables with an audit trigger actually attached, per the catalog.
+    #
+    # SCOPED TO current_schema(), which is the schema `@connection.tables` below
+    # reports on -- the two halves of the subtraction in `missing` have to be
+    # asking about the same schema or the answer is meaningless. Unscoped, a
+    # database holding the same table in several schemas lets one schema's
+    # trigger vouch for another schema's table, and coverage passes while a
+    # table goes unaudited. That is the exact failure this class exists to
+    # prevent, arrived at through the class itself.
     def audited_tables
       @audited_tables ||= @connection.select_values(<<~SQL)
         SELECT c.relname
         FROM   pg_trigger t
         JOIN   pg_class c ON c.oid = t.tgrelid
+        JOIN   pg_namespace n ON n.oid = c.relnamespace
         WHERE  NOT t.tgisinternal
           AND  t.tgname LIKE '%\\_audit'
+          AND  n.nspname = current_schema()
       SQL
     end
 
@@ -43,7 +53,9 @@ module AuditLog
       @partition_tables ||= @connection.select_values(<<~SQL)
         SELECT c.relname
         FROM   pg_class c
+        JOIN   pg_namespace n ON n.oid = c.relnamespace
         JOIN   pg_inherits i ON i.inhrelid = c.oid
+        WHERE  n.nspname = current_schema()
       SQL
     end
 

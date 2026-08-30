@@ -20,10 +20,21 @@ module AuditLog
       cols = (AuditLog.config.default_excluded_columns + exclude.map(&:to_s)).uniq
 
       validate_identifiers!(cols)
+      # The function is named UNQUALIFIED, so it resolves through search_path at
+      # CREATE TRIGGER time and Postgres records the OID it resolved to -- the
+      # binding is permanent from then on. That means a trigger is attached to
+      # the copy of the function installed alongside it by the same migration
+      # run, under the same search_path, which is what keeps a row's audit
+      # trail in the schema the row lives in. Qualifying it `public.` here is
+      # what used to send every schema's writes to one table.
+      #
+      # If no audit_row_change is visible, CREATE TRIGGER fails, loudly, during
+      # the migration. That is the intended outcome: the alternative to a
+      # missing function is a silent one.
       execute <<~SQL
         CREATE TRIGGER #{trigger_name(table)}
         AFTER INSERT OR UPDATE OR DELETE ON #{quote_table_name(table)}
-        FOR EACH ROW EXECUTE FUNCTION public.audit_row_change(
+        FOR EACH ROW EXECUTE FUNCTION audit_row_change(
           #{quote(cols.join(","))}, #{quote(model)}
         );
       SQL

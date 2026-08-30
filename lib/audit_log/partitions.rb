@@ -42,6 +42,29 @@ module AuditLog
   # for the duration. All three run under `config.maintenance_lock_timeout` so
   # they fail fast instead of forming a queue behind a long-running transaction,
   # and none of them are wired into the daily task. Run them deliberately.
+  #
+  # ---------------------------------------------------------------------------
+  # EVERY CATALOG QUERY HERE IS SCOPED TO current_schema()
+  #
+  # Partitions are created unqualified, so they land beside the parent in
+  # whatever schema `search_path` names -- and `current_schema()` is that schema.
+  # In the overwhelmingly common single-schema application it is `public` and
+  # this is a distinction without a difference. It is not one when a database
+  # holds the same table name in several schemas, and the two ways to get it
+  # wrong were both present here:
+  #
+  #   HARDCODING 'public' under-matches. `exists?` asked for
+  #   `public.audit_changes_2026_08`, found it, and reported that the partition
+  #   existed -- to a caller provisioning a DIFFERENT schema, which then
+  #   provisioned nothing. The parent table sat there with no partitions and the
+  #   first write to it failed with "no partition of relation ... found for row".
+  #
+  #   FILTERING ON relname ALONE over-matches. `attached?` and the inventory
+  #   queries saw every schema's partitions at once, so one schema's healthy
+  #   state answered questions asked about another's.
+  #
+  # Neither failure announces itself, which is why the scope is spelled on every
+  # query rather than left to whichever ones seemed to need it.
   module Partitions
     TABLES = %w[audit_events audit_changes].freeze
 
@@ -233,7 +256,7 @@ module AuditLog
                  obj_description(c.oid, 'pg_class') AS comment
           FROM   pg_class c
           JOIN   pg_namespace n ON n.oid = c.relnamespace
-          WHERE  n.nspname = 'public'
+          WHERE  n.nspname = current_schema()
             AND  c.relkind = 'r'
             -- Regex, not LIKE: `_` is a LIKE wildcard, so
             -- 'audit_events_retired_%' also matches audit_eventsXretiredY2019.
@@ -258,7 +281,7 @@ module AuditLog
           SELECT c.relname AS name, pg_total_relation_size(c.oid) AS bytes
           FROM   pg_class c
           JOIN   pg_namespace n ON n.oid = c.relnamespace
-          WHERE  n.nspname = 'public'
+          WHERE  n.nspname = current_schema()
             AND  c.relkind = 'r'
             AND  c.relname ~ '^(audit_events|audit_changes)_#{RETIRED_INFIX}_'
             AND  (obj_description(c.oid, 'pg_class') IS NULL
@@ -277,7 +300,7 @@ module AuditLog
           SELECT c.relname AS name, pg_total_relation_size(c.oid) AS bytes
           FROM   pg_class c
           JOIN   pg_namespace n ON n.oid = c.relnamespace
-          WHERE  n.nspname = 'public'
+          WHERE  n.nspname = current_schema()
             AND  c.relkind = 'r'
             AND  obj_description(c.oid, 'pg_class') = #{connection.quote(ROLLUP_MARKER)}
             AND  NOT EXISTS (SELECT 1 FROM pg_inherits WHERE inhrelid = c.oid)
@@ -500,7 +523,9 @@ module AuditLog
           FROM   pg_class c
           JOIN   pg_inherits i ON i.inhrelid = c.oid
           JOIN   pg_class p ON p.oid = i.inhparent
+          JOIN   pg_namespace n ON n.oid = p.relnamespace
           WHERE  p.relname IN ('audit_events', 'audit_changes')
+            AND  n.nspname = current_schema()
             AND  obj_description(c.oid, 'pg_class') = #{connection.quote(FROZEN_MARKER)}
         SQL
       end
@@ -535,7 +560,9 @@ module AuditLog
           FROM   pg_class c
           JOIN   pg_inherits i ON i.inhrelid = c.oid
           JOIN   pg_class p ON p.oid = i.inhparent
+          JOIN   pg_namespace n ON n.oid = p.relnamespace
           WHERE  p.relname IN ('audit_events', 'audit_changes')
+            AND  n.nspname = current_schema()
           ORDER  BY c.relname
         SQL
       end
@@ -554,7 +581,9 @@ module AuditLog
           FROM   pg_class c
           JOIN   pg_inherits i ON i.inhrelid = c.oid
           JOIN   pg_class p ON p.oid = i.inhparent
+          JOIN   pg_namespace n ON n.oid = p.relnamespace
           WHERE  p.relname IN ('audit_events', 'audit_changes')
+            AND  n.nspname = current_schema()
             AND  pg_get_expr(c.relpartbound, c.oid) <> 'DEFAULT'
           ORDER  BY c.relname
         SQL
@@ -602,7 +631,9 @@ module AuditLog
       def rollup_debris?(name, connection:)
         connection.select_value(<<~SQL).present?
           SELECT 1 FROM pg_class c
+          JOIN   pg_namespace n ON n.oid = c.relnamespace
           WHERE  c.relname = #{connection.quote(name)}
+            AND  n.nspname = current_schema()
             AND  obj_description(c.oid, 'pg_class') = #{connection.quote(ROLLUP_MARKER)}
             AND  NOT EXISTS (SELECT 1 FROM pg_inherits WHERE inhrelid = c.oid)
         SQL
@@ -813,8 +844,10 @@ module AuditLog
         connection.select_value(<<~SQL).present?
           SELECT c.relname
           FROM   pg_class c
+          JOIN   pg_namespace n ON n.oid = c.relnamespace
           JOIN   pg_inherits i ON i.inhrelid = c.oid
           WHERE  c.relname = #{connection.quote(name)}
+            AND  n.nspname = current_schema()
         SQL
       end
 
@@ -822,7 +855,7 @@ module AuditLog
         # ::text because the regclass OID has no registered Active Record type,
         # which otherwise logs "unknown OID 2205" on every call.
         connection.select_value(
-          "SELECT to_regclass(#{connection.quote("public.#{name}")})::text"
+          "SELECT to_regclass(#{connection.quote(name)})::text"
         ).present?
       end
 

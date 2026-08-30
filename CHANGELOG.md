@@ -29,6 +29,15 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`spec/audit_log/schema_isolation_spec.rb`** installs the library into a bare
+  second schema and asserts where the rows land, including that a table in
+  another schema keeps its own audit trail and that shadowing `audit_changes`
+  into an earlier `search_path` entry cannot redirect a write. Seven of its
+  eight examples fail against the previous behaviour. It uses no tenancy gem —
+  a second schema and a `search_path` is all this library is entitled to know
+  about.
+- **`AuditLog::Schema.function_sql` and `.qualified_function_name`** are public,
+  so a host app can see what it is about to install.
 - **A boot check.** `Configuration#verify_correlated_connections!` raises when
   the configured names match no connection at all, and warns on a partial miss —
   `%w[primary replica]` is legitimate in an app whose test environment has no
@@ -40,6 +49,39 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
   correlating, and nothing else would say so.
 
 ### Fixed
+
+- **The trigger function is installed into the current schema and names its
+  destination in full**, rather than being `public.audit_row_change` pinned to
+  `SET search_path = pg_catalog, public` and writing to an unqualified
+  `audit_changes`. `attach_audit_trigger` now references the function
+  unqualified, so `CREATE TRIGGER` binds permanently to the copy installed
+  alongside it by the same migration run.
+
+  **Nothing changes for a single-schema application** — `current_schema()` is
+  `public`, one copy of the function is installed, and the emitted DDL is
+  equivalent. In an application whose `search_path` is not `public` the old
+  behaviour was wrong in the worst available way: `audit_tables.sql` creates its
+  tables unqualified, so they followed `search_path` into the current schema
+  while every row the triggers wrote went to `public`. The writes succeeded.
+  Nothing reported anything.
+
+- **`AuditLog::Partitions.exists?` no longer asks `to_regclass('public.' ||
+  name)`.** Provisioning a second schema found `public`'s partition, reported
+  the work already done, and created nothing — leaving a parent with no
+  partitions at all, which then failed on its first audited write with `no
+  partition of relation "audit_changes" found for row`.
+
+- **`Partitions.attached?`, the three partition inventory queries, both
+  `AuditLog::Coverage` queries and three `audit_log:benchmark` queries are
+  scoped to `current_schema()`.** They filtered on `relname` alone, so they saw
+  every schema's objects at once. For `Coverage` that is the whole ballgame: one
+  schema's trigger vouched for another schema's table and the forcing function
+  passed while a table went unaudited.
+
+  This adds no configuration and names no tenancy library. It is the removal of
+  an assumption, not the addition of a feature — see DESIGN §14, which was
+  rewritten and whose previous advice recommended the shared-function
+  arrangement this replaces.
 
 - **The Rails 8.0 CI gap is closed**, and it was a real gap rather than a
   formality. `rails: ["8.0", "latest"]` joins the Ruby and PostgreSQL floor legs

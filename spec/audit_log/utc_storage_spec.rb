@@ -58,8 +58,13 @@ RSpec.describe "UTC storage in the audit tables" do
       gem_file = ->(path) { File.read(File.join(AuditLog::GEM_ROOT, path)) }
 
       trigger = gem_file.call("db/sql/audit_row_change.sql")
-      insert  = trigger[/INSERT INTO audit_changes\s*\((.+?)\)/m, 1]
+      # The destination is schema-qualified ({{schema}} until Schema resolves it),
+      # so the match has to tolerate a prefix. Asserted non-nil first: a guard
+      # whose regex has stopped finding its target passes every later assertion
+      # vacuously, which is the one way this spec could stop protecting anything.
+      insert = trigger[/INSERT INTO \S*audit_changes\s*\((.+?)\)/m, 1]
 
+      expect(insert).to be_present
       expect(insert).not_to include("occurred_at")
       expect(gem_file.call("lib/audit_log/event_subscriber.rb"))
         .not_to match(/occurred_at:/)

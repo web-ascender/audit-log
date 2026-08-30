@@ -44,7 +44,7 @@ CREATE INDEX audit_events_caused_by_idx ON audit_events (caused_by_request_id, o
 
 -- ============================================================================
 -- LAYER 1: forensic detail. One row per row-level change.
--- Written ONLY by public.audit_row_change().
+-- Written ONLY by audit_row_change(), the copy installed into this schema.
 -- ============================================================================
 CREATE TABLE audit_changes (
   id              bigserial,
