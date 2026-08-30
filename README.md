@@ -1095,13 +1095,13 @@ templates.
 
 Registered by the engine, so they appear in any host app's `bin/rails -T`.
 
-**One is mandatory in cron; several others belong there too, with conditions.**
-`audit_log:partitions` is operationally required. `retention`, `rollup` and
-`freeze` are the ones an app with a compliance horizon will *want* scheduled —
-retention that depends on somebody remembering, monthly, for seven years, is not
-retention.
+**One is mandatory in cron; two others belong there too, with conditions.**
+`audit_log:partitions` is operationally required, and it now folds freezing in,
+so there is nothing to schedule for that. `retention` and `rollup` are the two an
+app with a compliance horizon will *want* scheduled — retention that depends on
+somebody remembering, monthly, for seven years, is not retention.
 
-The condition on all three is the same. They take `ACCESS EXCLUSIVE` on an audit
+The condition on both is the same. They take `ACCESS EXCLUSIVE` on an audit
 table, which blocks **every audited write in your application** while it runs, so
 they belong in a low-traffic window. They fail fast rather than queueing
 (`config.maintenance_lock_timeout`, 5s) because a pending `ACCESS EXCLUSIVE`

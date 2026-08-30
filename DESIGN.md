@@ -432,7 +432,7 @@ A migration helper keeps this uniform:
 
 ```ruby
 # db/migrate/.../_helpers, or lib/audit/migration_helpers.rb
-module Audit::MigrationHelpers
+module AuditLog::MigrationHelpers
   DEFAULT_EXCLUDED = %w[
     created_at updated_at lock_version
     password_digest remember_created_at reset_password_token
@@ -474,7 +474,7 @@ attaches the trigger:
 
 ```ruby
 class CreateOrders < ActiveRecord::Migration[8.1]
-  include Audit::MigrationHelpers
+  include AuditLog::MigrationHelpers
 
   def change
     create_table :orders do |t|
@@ -643,11 +643,11 @@ a transaction, and that turned out to be disqualifying rather than a corner case
 
 ```ruby
 # config/initializers/audit_correlation.rb
-module Audit
+module AuditLog
   module TransactionStamp
     def begin_db_transaction
       super
-      Audit::Context.apply!(self)
+      AuditLog::Context.apply!(self)
     end
   end
 
@@ -673,7 +673,7 @@ module Audit
 end
 
 ActiveSupport.on_load(:active_record_postgresqladapter) do
-  prepend Audit::TransactionStamp
+  prepend AuditLog::TransactionStamp
 end
 ```
 
@@ -704,7 +704,7 @@ class Current < ActiveSupport::CurrentAttributes
     super
     self.actor_type  = record&.class&.name
     self.actor_id    = record&.id
-    self.actor_label = Audit::ActorLabel.for(record)
+    self.actor_label = AuditLog::ActorLabel.for(record)
   end
 end
 ```
@@ -715,7 +715,7 @@ jobs (§6.4): a worker can populate the audit identity with **no database query 
 label written by the trigger and the label written by the event subscriber are the same string,
 because both read `Current.actor_label`.
 
-`Audit::ActorLabel.for` may touch associations, so it is called **once per entry point**, never
+`AuditLog::ActorLabel.for` may touch associations, so it is called **once per entry point**, never
 from the statement-level stamping hook (§6.1) — that path is far too hot to query from.
 
 > ⚠️ **A nil actor must leave `actor_label` NULL, not store the string `"System"`.**
@@ -866,8 +866,9 @@ project runs Sidekiq *and* has workers that bypass ActiveJob. It covers ActiveJo
 so **use one or the other, never both** — pick B if any raw workers exist, A otherwise.
 
 ```ruby
-# lib/audit/sidekiq_middleware.rb
-module Audit
+# lib/audit_log/sidekiq_middleware.rb -- NOT SHIPPED. This gem has no Sidekiq
+# dependency; the file is a sketch of what a host app would write for itself.
+module AuditLog
   class SidekiqClientMiddleware
     include Sidekiq::ClientMiddleware
     def call(_job_class, job, _queue, _redis_pool)
@@ -902,13 +903,13 @@ end
 ```ruby
 # config/initializers/sidekiq.rb
 Sidekiq.configure_client do |config|
-  config.client_middleware { |chain| chain.add Audit::SidekiqClientMiddleware }
+  config.client_middleware { |chain| chain.add AuditLog::SidekiqClientMiddleware }
 end
 
 Sidekiq.configure_server do |config|
   # Client middleware on the SERVER too, so job-enqueues-job propagates the chain.
-  config.client_middleware { |chain| chain.add Audit::SidekiqClientMiddleware }
-  config.server_middleware { |chain| chain.add Audit::SidekiqServerMiddleware }
+  config.client_middleware { |chain| chain.add AuditLog::SidekiqClientMiddleware }
+  config.server_middleware { |chain| chain.add AuditLog::SidekiqServerMiddleware }
 end
 ```
 
@@ -951,7 +952,7 @@ UNAUDITED = {
 The same applies to `solid_cache_entries` and `solid_cable_messages` if those are adopted.
 
 **2. Run the queue in its own database, and guard the transaction stamp.** This is Rails 8's
-default posture and it matters here for a reason beyond convention: `Audit::TransactionStamp`
+default posture and it matters here for a reason beyond convention: `AuditLog::TransactionStamp`
 prepends `begin_db_transaction` on the *PostgreSQL adapter class*, so without a guard it fires on
 every Solid Queue connection too — adding a round trip to each poll and claim on the busiest
 transaction path in the system. The guard sketched in §6.1 as `STAMPED_DATABASES` — shipped as
@@ -1029,7 +1030,7 @@ trigger regardless, so the opt-out reduces narrative noise, never audit coverage
 
 ### 6.5 Console, rake tasks, and migrations
 
-These deliberately leave `Current.request_id` blank, so `Audit::Context.apply!` no-ops and the
+These deliberately leave `Current.request_id` blank, so `AuditLog::Context.apply!` no-ops and the
 trigger writes `request_id IS NULL` — the out-of-band signal §9 is built around. Two refinements
 worth making, both described in §9: prompt for a reason when a production console opens and stamp
 a session-scoped `request_id`, and have migrations stamp `source: "migration"` with the version.
@@ -1089,7 +1090,7 @@ guarantee, and it does not hook ActiveRecord. We use it as the front door so dom
 Rails.event.notify("order.submitted", order_id: id, total_cents: total_cents, line_count: lines.size)
 ```
 
-Two subscribers consume it: `Audit::EventSubscriber` writes durably to `audit_events`, and the
+Two subscribers consume it: `AuditLog::EventSubscriber` writes durably to `audit_events`, and the
 observability subscriber ships to Honeybadger/Datadog. Analytics events simply never appear in the
 registry below, so they reach observability and not the audit table.
 
@@ -1100,16 +1101,16 @@ allowlist gives us that, and gives the human sentence a home:
 
 ```ruby
 # config/initializers/audit_registry.rb
-Audit::Registry.register "order.submitted",
+AuditLog::Registry.register "order.submitted",
   subject: ->(p) { ["Order", p[:order_id]] },
   summary: ->(p) { I18n.t("audit.order.submitted", count: p[:line_count],
                                                    total: Money.from_cents(p[:total_cents])) }
 ```
 
 ```ruby
-class Audit::EventSubscriber
+class AuditLog::EventSubscriber
   def emit(event)
-    entry = Audit::Registry[event[:name]] or return
+    entry = AuditLog::Registry[event[:name]] or return
     subject_type, subject_id = entry.subject.call(event[:payload])
 
     AuditEvent.create!(
@@ -1152,7 +1153,7 @@ end
 ### Actor labels
 
 ```ruby
-module Audit::ActorLabel
+module AuditLog::ActorLabel
   def self.for(actor)
     case actor
     when nil     then "System"
@@ -1443,8 +1444,11 @@ takes production down.
 >
 > - **`partitions` must be scheduled**, daily, and its failure is a write-path outage rather than a
 >   degraded report. Non-negotiable.
-> - **`retention`, `rollup` and `freeze` may be scheduled** — monthly or quarterly, in a low-traffic
->   window — provided the scheduler *surfaces failures*. Lock contention raises
+> - **`retention` and `rollup` may be scheduled** — monthly or quarterly, in a low-traffic
+>   window — provided the scheduler *surfaces failures*. (`freeze` was a third here when this
+>   amendment was written; the rotation task absorbed it later the same day, so there is nothing
+>   left to schedule. It takes `SHARE UPDATE EXCLUSIVE`, not `ACCESS EXCLUSIVE`, and never blocked
+>   writes in the first place.) Lock contention raises
 >   (`with_maintenance_lock`) and a lock-timeout raises, so a bad moment produces a non-zero exit
 >   and a retry next cycle, not a silent no-op. A cron that discards output turns that design into
 >   the silent skip it exists to prevent. Note also that `retire!` and `rollup!` commit **per
@@ -1653,7 +1657,7 @@ row per action, newest first, expandable to the field-level diffs it produced.
 
 ```ruby
 # app/queries/audit/actor_activity.rb
-class Audit::ActorActivity
+class AuditLog::ActorActivity
   def initialize(actor:, range:)
     @type, @id, @range = actor.class.name, actor.id, range
   end
@@ -1675,8 +1679,8 @@ end
 ```
 
 ```ruby
-Audit::ActorActivity.new(actor: jane, range: 1.week.ago.beginning_of_day..Time.current)
-Audit::ActorActivity.new(actor: jane, range: Date.new(2026, 8, 20).all_day)   # a specific date
+AuditLog::ActorActivity.new(actor: jane, range: 1.week.ago.beginning_of_day..Time.current)
+AuditLog::ActorActivity.new(actor: jane, range: Date.new(2026, 8, 20).all_day)   # a specific date
 ```
 
 `Date#all_day` builds the range in `Time.zone`, which becomes a `timestamptz` bound and prunes
@@ -2072,7 +2076,7 @@ right for a diff cell in a wide table and wrong here: `metadata` is the structur
 the summary sentence — the exact `total_cents`, the whole tracking number — and an ellipsis in it
 is the screen under-reporting without saying so.
 
-**The action picker needs no query:** `Audit::Registry.keys` is the authoritative list, in memory.
+**The action picker needs no query:** `AuditLog::Registry.keys` is the authoritative list, in memory.
 
 ---
 
@@ -2147,7 +2151,7 @@ The `e.occurred_at` predicate belongs in the `ON` clause, not the `WHERE` — in
 negate the outer join, and without it the planner cannot prune `audit_events` partitions.
 
 - **Phase 4:** run daily as a report and alert when non-empty. Each hit is a mutation path that
-  needs an entry in `Audit::Registry`. The list should trend to zero.
+  needs an entry in `AuditLog::Registry`. The list should trend to zero.
 - **Later, if it never does:** have the job insert a synthetic `audit_events` row
   (`action: "record.changed"`, summary auto-generated from `types` and `change_count`) so the
   narrative timeline becomes complete by construction. Safe to derive after the fact — the
@@ -2314,7 +2318,7 @@ against the wrong model — without operational cost.
 
 > ⚠️ **It must be keyed on `persisted?`, not hardcoded `true`.**
 > `ActiveRecord::Persistence#create_or_update` raises `ReadOnlyRecord` for **inserts** too, so a
-> flat `def readonly? = true` breaks `Audit::EventSubscriber`'s `create!` — the whole of layer 2
+> flat `def readonly? = true` breaks `AuditLog::EventSubscriber`'s `create!` — the whole of layer 2
 > stops working. Keying on `persisted?` expresses the rule actually wanted: rows may be inserted,
 > never updated or destroyed. Found the first time seeds ran.
 

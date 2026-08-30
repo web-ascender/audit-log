@@ -18,7 +18,7 @@ it is, and the section numbers cited from source comments (`plan §6.1`,
 | `README.md` | someone installing the gem | install, use, the auditor UI, and the optional generated views |
 | **`CLAUDE.md`** (this file) | you | terse rules, and what not to "fix" |
 | `DESIGN.md` | someone changing the library | the reasoning, in full |
-| `CHANGELOG.md` | everyone | what changed and why |
+| `CHANGELOG.md` | everyone | what changed between released versions. Unreleased and deliberately thin — `DESIGN.md` carries the reasoning, git carries the detail |
 
 The list of deliberate decisions below is deliberately terse and deliberately
 duplicated from `DESIGN.md` — it exists so an agent that will not read a
@@ -62,7 +62,7 @@ Update it when you change behaviour.
 | Ruby | **>= 3.3** — the floor is `SecureRandom.uuid_v7` (DESIGN §2.1), not a preference. 3.3.0 exactly also cannot run Rails 8.1, for a reason of Rails' own. Developed on 4.0.6. |
 | Rails | **`~> 8.0`** — floor 8.0 (DESIGN §2.2), and a real ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. Developed on 8.1.3.1. |
 | PostgreSQL | **>= 16.** Developed on 18.6, port 5438 — not the workspace default 5437. CI runs 16 and 18; DESIGN §20 is the authority and says the design "targets PG 16 and requires nothing newer". Verified: the whole suite passes on 16.13. |
-| Tests | RSpec against `spec/dummy` (308 examples), on every push via GitHub Actions |
+| Tests | RSpec against `spec/dummy` (346 examples), on every push via GitHub Actions |
 | Runtime deps | `rails`, `pagy` (keyset paging), `csv` (export). **`pg` deliberately is not one** — the host app picks its build. |
 
 ```bash
@@ -424,19 +424,22 @@ Do not "fix" these without reading the linked reasoning first.
   free — `partitions:drain_default` says which "default" it means.
 - **`audit_log:partitions` is the only task that belongs in the DAILY cron — but
   that is not the same as "the only task you may schedule", which is what this
-  said until 2026-08-29.** `retention`, `rollup` and `freeze` are exactly what an
-  app with a compliance horizon should schedule monthly: retention that waits on
-  somebody remembering, for seven years, is an intention rather than a policy,
-  which is DESIGN §16's own argument about forcing functions. The real rules are
-  cadence and conditions. All three take `ACCESS EXCLUSIVE` on an audit table and
-  block every audited write while they run, so they want a low-traffic window;
+  said until 2026-08-29.** `retention` and `rollup` are exactly what an app with a
+  compliance horizon should schedule monthly: retention that waits on somebody
+  remembering, for seven years, is an intention rather than a policy, which is
+  DESIGN §16's own argument about forcing functions. The real rules are cadence
+  and conditions. Both take `ACCESS EXCLUSIVE` on an audit table and block every
+  audited write while they run, so they want a low-traffic window;
   they run under `config.maintenance_lock_timeout` (5s) and RAISE on contention
   rather than queueing, so a bad moment is a non-zero exit and a retry next cycle
   — but only if the scheduler surfaces it. `retire!` and `rollup!` commit per
   partition, so a mid-run failure leaves earlier ones done and the output matters
-  more than the exit status. **`drain_default` is the one that genuinely must not
-  be scheduled**: needing it means a row reached the default partition, which
-  means rotation was not running, and scheduling the repair hides the fault.
+  more than the exit status. **`freeze` is not a third here** — the daily task
+  absorbed it, and `VACUUM (FREEZE, ANALYZE)` takes `SHARE UPDATE EXCLUSIVE` and
+  no advisory lock, so it never blocked writes to begin with.
+  **`drain_default` is the one that genuinely must not be scheduled**: needing it
+  means a row reached the default partition, which means rotation was not
+  running, and scheduling the repair hides the fault.
   DESIGN §8 carries the amendment.
 - **`with_maintenance_lock` wraps its advisory-lock calls in
   `connection.uncached`.** `pg_try_advisory_lock` is a `SELECT` with a side
@@ -668,18 +671,26 @@ Registered by the engine, so they appear in any host app's `rails -T`. From this
 gem, run them inside the dummy app (`cd spec/dummy`).
 
 ```bash
+bin/rails audit_log:partitions         # DAILY CRON. create missing months, freeze newly closed ones
 bin/rails audit_log:coverage           # fail if a table lacks a trigger and a reason
-bin/rails audit_log:partitions         # create missing months; warn on overflow and retired leftovers
-bin/rails audit_log:drain_default      # relocate rows stranded in the default partition
-bin/rails audit_log:rollup             # consolidate closed years into yearly partitions (DRY_RUN=1)
-bin/rails audit_log:retention          # detach/drop partitions past the horizon (DRY_RUN=1)
-bin/rails audit_log:export DIR=…       # stream retired partitions to gzipped CSV + manifest
-bin/rails audit_log:drop_exported DIR= # drop only partitions whose export verifies
-bin/rails audit_log:freeze             # VACUUM FREEZE closed partitions
 bin/rails audit_log:reconcile          # correlated changes with no registered action
+bin/rails audit_log:redact             # RECORD=Type:id REASON=… [FIELDS=a,b] [DRY_RUN=1]
 bin/rails audit_log:benchmark ROWS=n   # generate volume, EXPLAIN the canonical queries
 bin/rails audit_log:benchmark_cleanup  # remove the synthetic rows
+
+bin/rails audit_log:partitions:drain_default             # rows stranded in the default partition
+bin/rails audit_log:partitions:rollup                    # closed years → yearly partitions (DRY_RUN=1)
+bin/rails audit_log:partitions:retention                 # DETACH + mark retired. never drops (DRY_RUN=1)
+bin/rails audit_log:partitions:export_retired DIR=…      # every retired partition → gzipped CSV + manifest
+bin/rails audit_log:partitions:drop_retired              # drop marked partitions, no export check
+bin/rails audit_log:partitions:export_and_drop_retired DIR=…  # the recommended disposal path
+bin/rails audit_log:partitions:freeze                    # manual catch-up; partitions does it daily
 ```
+
+The `partitions:` namespace shares its name with the daily `partitions` task —
+deliberate, and verified in a real app rather than assumed. Rake keys tasks by
+full name string, so the one cron line whose failure is a write-path outage never
+had to change.
 
 The README carries the full reference — what each does, why, and when. Keep the
 two in step: a task added here and not there is a task nobody runs.
@@ -719,7 +730,7 @@ one. Do not reintroduce it.
 ## Testing
 
 ```bash
-bundle exec rspec                         # 308 examples, against spec/dummy
+bundle exec rspec                         # 346 examples, against spec/dummy
 bundle exec rspec spec/audit_log          # the library proper
 bundle exec rspec spec/requests           # the auditor UI and the CSV export
 bundle exec rspec spec/preview.rb         # dev tool: renders 17 screens to spec/dummy/public/
