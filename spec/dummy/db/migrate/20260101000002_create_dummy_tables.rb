@@ -5,7 +5,7 @@
 # touches a parent and many children in one request, a dependent: :destroy
 # cascade, a dependent: :delete_all cascade that Active Record callbacks never
 # see, and a foreign key (created_by_id) whose name does not match its target.
-class CreateDummyTables < ActiveRecord::Migration[8.1]
+class CreateDummyTables < ActiveRecord::Migration[8.0]
   def change
     create_table :users do |t|
       t.string :name,  null: false
