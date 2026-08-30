@@ -17,11 +17,8 @@ the authority on *why* any of this is shaped the way it is.
 - [Summary](#summary)
 - [Requirements](#requirements)
 - [The two layers](#the-two-layers)
-- [Getting started, end to end](#getting-started-end-to-end)
-  - [The generators](#the-generators)
-- [Installing into a Rails 8 app](#installing-into-a-rails-8-app)
-  - [Then run the generator](#then-run-the-generator)
-  - [The two manual steps](#the-two-manual-steps)
+- [Getting started](#getting-started)
+  - [What the generator wrote](#what-the-generator-wrote)
   - [What a model needs](#what-a-model-needs)
 - [Emitting events from a controller action](#emitting-events-from-a-controller-action)
   - [The ordinary case: create, update, destroy](#the-ordinary-case-create-update-destroy)
@@ -49,6 +46,7 @@ the authority on *why* any of this is shaped the way it is.
   - [Storage lifecycle](#storage-lifecycle)
   - [Rarely touched](#rarely-touched)
 - [Generator options](#generator-options)
+  - [The generators](#the-generators)
   - [`audit_log:trigger` options](#audit_logtrigger-options)
   - [`audit_log:views:activity` options](#audit_logviewsactivity-options)
 - [Rake tasks](#rake-tasks)
@@ -126,7 +124,10 @@ end, along with the cases where this gem is the **wrong** choice.
 | Rails | **`~> 8.0`** | 8.0 floor for `Rails.event` (with a fallback); ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. DESIGN §2.2. |
 | PostgreSQL | **>= 16** | Layer 1 *is* a plpgsql trigger writing jsonb into range-partitioned tables, so this is not swappable for another database — but nothing here needs a recent Postgres. 16, 17 and 18 are all supported; CI runs the suite on 16 and 18. DESIGN §20. |
 
-`pg` is deliberately *not* a dependency, so your app picks its own build.
+`pg` is deliberately *not* a dependency, so your app picks its own build. `pagy`
+and `csv` are, and `pagy` is load-bearing for *correctness* rather than
+convenience — see
+[Use `AuditLog::Pagination`](#use-auditlogpagination-do-not-hand-roll-one).
 
 Ruby **3.3.0 exactly** is unusable with Rails 8.1, for a reason unrelated to this
 gem: actionview 8.1.3.1 contains `yield(*, **)` inside a block, which 3.3.0's
@@ -164,195 +165,121 @@ rows constituted "submitting an order".
 
 ---
 
-## Getting started, end to end
+## Getting started
 
-An existing Rails app with existing models. Five steps, three of them generators.
+An existing Rails app with existing models. Work down the list; every step is a
+command, and the reasoning for any of it is linked rather than inline.
 
-```bash
-# 1. Add the gem, then install: initializer, schema migration, integration
-#    points, the auditor UI at /audit, the coverage spec.
-bin/rails generate audit_log:install
-
-# 2. One line per audited table. Which tables deserve auditing is a judgement
-#    about your domain, so nothing can infer it.
-bin/rails generate audit_log:trigger orders   --model=Order
-bin/rails generate audit_log:trigger products --model=Product --exclude=search_vector
-bin/rails db:migrate
-
-# 3. Prove nothing escaped the decision. Fails until every table is either
-#    audited or listed in config.unaudited_tables with a written reason.
-bin/rails audit_log:coverage
-
-# 4. Name the actions worth a sentence, in config/initializers/audit_log.rb,
-#    and call AuditLog.notify from the code that performs them. Optional --
-#    every change is already recorded without this; the registry is what makes
-#    the log readable rather than merely complete.
-
-# 5. Give your own pages an activity history. Takes any number of models.
-bin/rails generate audit_log:views:activity Order Product LineItem
-```
-
-Then edit `RecordActivity#audit_activity_visible?` — the generator prints this in
-red, because it denies everyone until you do.
-
-**Later, when a new model needs one:**
-
-```bash
-bin/rails generate audit_log:views:activity Invoice
-```
-
-The second run adds `Invoice` to the allowlist and wires up its show page. Every
-file already generated is left alone.
-
-### The generators
-
-| | Does | Run it |
-|---|---|---|
-| `audit_log:install` | initializer, schema migration, `ControllerContext` and `JobContext` includes, mounts the engine, coverage spec | once |
-| `audit_log:trigger TABLE --model=Model` | a migration with one `attach_audit_trigger` line | once per audited table |
-| `audit_log:trigger TABLE --replace` | detach-then-attach, to change a table's model or exclusions | when those change |
-| `audit_log:views:activity Model [Model...]` | controller, concern, helper, views, route, locale, stylesheet — and wires each model's show page | once, then again per new model |
-
-Every flag each one takes is in [Generator options](#generator-options).
-
-## Installing into a Rails 8 app
+**1. Add the gem.**
 
 ```ruby
 # Gemfile
 gem "audit_log", git: "https://github.com/web-ascender/audit-log"
 ```
 
-A private repo, so `bundle` needs credentials for the company GitHub org. For
-local co-development against the reference app, use a path instead:
-`gem "audit_log", path: "../audit-log"`.
+A private repo, so `bundle` needs credentials for the company GitHub org. Use
+`path: "../audit-log"` for local co-development.
 
-`pagy` and `csv` come with it. Both are for the auditor UI only — layers 1 and 2
-reference neither — but they are hard dependencies rather than optional ones,
-because `pagy` is load-bearing for *correctness*: `AuditLog::Pagination` is keyset
-paging, and offset paging on a newest-first view of an append-only table
-duplicates rows across a page boundary after a single concurrent write. See
-[DESIGN §11.0 Rule 2](DESIGN.md).
-
-### Then run the generator
+**2. Install.**
 
 ```bash
 bin/rails generate audit_log:install
+bin/rails db:migrate
 ```
 
-Which does steps 1–7 below. **Read the list anyway.** The generator reports what
-it could not do, two of the steps are irreducibly manual, and one thing it does
-needs your eyes on it.
+Writes the initializer, the schema migration, the two `include`s, the engine
+mount and the coverage spec — see
+[What the generator wrote](#what-the-generator-wrote), which also lists what it
+reports rather than does.
 
-Options: `--mount-at=/audit`, and `--skip-migration`, `--skip-routes`,
-`--skip-controller`, `--skip-job`, `--skip-spec`. Re-running is safe — every step
-detects work already done and reports `skip` rather than injecting twice.
+> ⚠️ **Confirm one thing before moving on.** The generator puts
+> `include AuditLog::ControllerContext` after the last `before_action` it can
+> find in `ApplicationController`. If it lands *ahead* of your authentication, it
+> reads a `current_user` that is not resolved yet and **every audit row gets a
+> NULL actor, silently.** Look at the file.
 
-**The one thing to check afterwards.** `AuditLog::ControllerContext` is
-`included do before_action :set_audit_context end`, so *where* the include sits in
-`ApplicationController` decides callback order. Ahead of your authentication, it
-reads a `current_user` that is not resolved yet — and **every audit row in the
-application gets a NULL actor, silently.** The generator lands it after the last
-`before_action` it can find and then asks you to confirm; there is no way for it
-to be certain, so confirm.
+**3. Attach a trigger to each audited table.**
 
-1. **`config.active_record.schema_format = :sql`** in `config/application.rb`.
-   REQUIRED, and required before your first migration: `schema.rb` cannot
-   represent partitioned tables, trigger functions, or triggers.
+```bash
+bin/rails generate audit_log:trigger orders   --model=Order
+bin/rails generate audit_log:trigger products --model=Product --exclude=search_vector
+bin/rails db:migrate
+```
 
-   The generator will **not** flip this silently on an app that already has a
-   `db/schema.rb` — switching an established app is disruptive, so it tells you
-   and stops.
+One line per table, and the entire per-model cost of the design — nothing goes in
+the model class. Which tables are worth auditing is a judgement about your
+domain, so nothing can infer it for you.
 
-2. **`config/initializers/audit_log.rb`** — the coupling points, and the registry
-   of auditable actions. Every one is a lambda; this is the only file that knows
-   anything about your app. The generator writes a commented starting point.
+Two things to know, both covered in
+[Attaching to a table that already exists](#attaching-to-a-table-that-already-exists):
+the table needs a `bigint` primary key named `id` or the first write after
+attaching fails, and there is **no backfill** — rows that predate the trigger
+have no history, so write the attach date down.
 
-3. **A migration** installing the schema:
+Flags: [`audit_log:trigger` options](#audit_logtrigger-options).
 
-   ```ruby
-   class InstallAuditLog < ActiveRecord::Migration[8.1]
-     def up   = AuditLog::Schema.install!(connection)
-     def down = AuditLog::Schema.uninstall!(connection)
-   end
-   ```
+**4. Prove nothing was missed.**
 
-4. **`ApplicationController`: `include AuditLog::ControllerContext`**, after
-   whatever establishes `current_user`. This is the entire web-side integration.
+```bash
+bin/rails audit_log:coverage
+```
 
-5. **`ApplicationJob`: `include AuditLog::JobContext`.** The entire job-side
-   integration.
+Fails until every table is either audited or listed in
+`config.unaudited_tables` **with a written reason**. The generator also wrote a
+spec asserting the same thing, so the decision cannot be skipped instead of made.
 
-6. **`config/routes.rb`: `mount AuditLog::Engine => "/audit", as: :audit`.**
-   Gate it — `config.authorize` defaults to a no-op, which is right for a demo
-   and wrong for anything else.
+**5. Schedule the daily task.**
 
-7. **A coverage spec**, three lines, using the shared example the gem ships:
+```
+0 2 * * *   bin/rails audit_log:partitions
+```
 
-   ```ruby
-   # spec/audit_log/coverage_spec.rb
-   require "rails_helper"
-   require "audit_log/rspec"
+**A missing future partition is a write-path outage**, not a degraded report.
+This is the one task that belongs in a cron; the rest are in
+[Rake tasks](#rake-tasks).
 
-   RSpec.describe "audit trigger coverage" do
-     it_behaves_like "an app with complete audit coverage"
-   end
-   ```
+**6. Read `config/initializers/audit_log.rb` before deploying.**
 
-   This is the forcing function: a table that is neither audited nor exempted with
-   a written reason fails the build. Do not weaken it to make a build pass. It
-   shares `AuditLog::Coverage` with `rake audit_log:coverage`, so the spec and the
-   task cannot disagree about what counts as covered.
+`config.authorize` defaults to a **no-op**, which is right for a demo and wrong
+for you. Everything else is in [Configuration](#configuration).
 
-### The two manual steps
+At this point every change to an audited table is recorded, with an actor and a
+correlation id, and readable at `/audit`. The two steps below are optional.
 
-8. **Attach a trigger per audited table.** One line per table, and the entire
-   per-model cost of the design:
+**7. Name the actions worth a sentence** — *optional*, and what turns a complete
+log into a readable one. See
+[Emitting events](#emitting-events-from-a-controller-action).
 
-   ```ruby
-   create_table :orders { |t| ... }
-   attach_audit_trigger :orders, model: "Order"
-   ```
+**8. Put a history on your own pages** — *optional*.
 
-   For a table that already exists:
+```bash
+bin/rails generate audit_log:views:activity Order Product LineItem
+```
 
-   ```bash
-   bin/rails generate audit_log:trigger orders --model=Order
-   bin/rails generate audit_log:trigger orders --model=Order --exclude=internal_notes --replace
-   ```
+Then edit `RecordActivity#audit_activity_visible?`, which the generator prints in
+red because it **denies everyone** until you do. Running it again later adds a
+model and leaves your edits alone. See
+[Building an activity history](#building-an-activity-history-in-your-own-app).
 
-   `--replace` generates detach-then-attach, which is the supported way to
-   *change* a table's model or exclusion list: attach is deliberately not
-   idempotent, so a plain second attach fails with `42710` rather than letting two
-   triggers coexist and double-write under different exclusion sets. It is not
-   retroactive — rows already written keep the diffs they were written with.
 
-   The generator warns about, and **cannot check**, the one hard constraint: the
-   trigger assigns `rec_id bigint := NEW.id`, so an `id: false` join table, a
-   `uuid` primary key or a primary key not named `id` **fails on the first write
-   after attaching**, not at migration time. It has no connection to your table.
+### What the generator wrote
 
-   Placing the attach beside `create_table` is a review convention, not a
-   requirement — see
-   [Attaching to a table that already exists](#attaching-to-a-table-that-already-exists).
+Step 2 does all of this. Worth a look rather than a read — it reports anything it
+could not do, and two of these need a decision from you.
 
-   **There is no backfill, and the gap is worth recording.** Rows that existed
-   before the attach have no history — the trigger records *changes*, and those
-   changes did not pass through it. The first `UPDATE` of a pre-existing row still
-   yields a complete `[old, new]` pair, and a `DELETE` still snapshots the whole
-   final row, so the gap is narrower than it sounds. What it leaves is a record
-   with no `audit_changes` rows being ambiguous between "never changed" and
-   "predates the trigger" — so **write the attach date down**. The migration's own
-   timestamp is the durable answer. See
-   [Attaching to a table that already exists](#attaching-to-a-table-that-already-exists).
+| | What | Check |
+|---|---|---|
+| `config/application.rb` | `config.active_record.schema_format = :sql` | **Required, and required before your first migration** — `schema.rb` cannot represent partitioned tables or triggers. On an app that already has a `db/schema.rb` the generator **refuses** and tells you, rather than flipping it silently. |
+| `config/initializers/audit_log.rb` | every coupling point, as a lambda | The only file that knows anything about your app. [Configuration](#configuration) is the full list. |
+| `db/migrate/…_install_audit_log.rb` | `AuditLog::Schema.install!` | The two partitioned tables, their indexes, and the trigger function. |
+| `ApplicationController` | `include AuditLog::ControllerContext` | ⚠️ **Must sit after whatever sets `current_user`** — see the warning in step 2. |
+| `ApplicationJob` | `include AuditLog::JobContext` | The entire job-side integration. |
+| `config/routes.rb` | `mount AuditLog::Engine => "/audit"` | Gate it. `config.authorize` is a no-op by default. |
+| `spec/audit_log/coverage_spec.rb` | three lines, using a shared example | The forcing function. Shares `AuditLog::Coverage` with the rake task, so the two cannot disagree about what counts as covered. Do not weaken it to make a build pass. |
 
-   Nobody can generate the *decision* for you: which tables are worth auditing is
-   a judgement about your domain. Step 7 is what stops it being skipped instead of
-   made.
-
-9. **Schedule `AuditLog::Partitions.ensure!` daily** (or
-   `rake audit_log:partitions`). **A missing future partition is a write-path
-   outage**, not a degraded report. Nothing else in `partitions.rb` belongs in a
-   cron — see [Rake tasks](#rake-tasks).
+Re-running is safe: every step detects work already done and reports `skip`
+rather than injecting twice. Flags: `--mount-at=/audit`, `--skip-migration`,
+`--skip-routes`, `--skip-controller`, `--skip-job`, `--skip-spec`.
 
 ### What a model needs
 
@@ -1046,8 +973,19 @@ knowing anything about any of them.
 ## Generator options
 
 Every flag the three generators take. `audit_log:install`'s are listed with the
-step-by-step in [Then run the generator](#then-run-the-generator); the two below
+step-by-step in [What the generator wrote](#what-the-generator-wrote); the two below
 are the ones with decisions in them.
+
+### The generators
+
+| | Does | Run it |
+|---|---|---|
+| `audit_log:install` | initializer, schema migration, `ControllerContext` and `JobContext` includes, mounts the engine, coverage spec | once |
+| `audit_log:trigger TABLE --model=Model` | a migration with one `attach_audit_trigger` line | once per audited table |
+| `audit_log:trigger TABLE --replace` | detach-then-attach, to change a table's model or exclusions | when those change |
+| `audit_log:views:activity Model [Model...]` | controller, concern, helper, views, route, locale, stylesheet — and wires each model's show page | once, then again per new model |
+
+Every flag each one takes is in [Generator options](#generator-options).
 
 ### `audit_log:trigger` options
 

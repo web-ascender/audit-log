@@ -16,6 +16,18 @@ touch it. `readme_spec` now fails if an attribute exists that the README does no
 name — the same forcing function already applied to rake tasks, and for the same
 reason: a coupling point nobody can discover is one nobody sets.
 
+**"Getting started" and "Installing" merged into one numbered checklist.** They
+overlapped: the first listed five steps as commands, the second re-listed nine
+with the reasoning inline, and a reader following along hit both. There is now
+one list — eight steps, each a command, with every *why* linked rather than
+inline. Nobody needs "why this gem works this way" before they have it working.
+
+What the install generator does is a **verification table** below the checklist
+rather than seven numbered paragraphs inside it: what it wrote, and what to check
+about each. The one thing that genuinely cannot wait — that
+`ControllerContext` landing ahead of your authentication silently NULLs every
+actor — stays in the step, as a callout.
+
 **Reference material moved out of the guides.** The generator flag tables sat
 inside "Getting started", and the 21-attribute configuration table sat between
 "Installing" and "Emitting events" — both are lookup, not reading, and both
