@@ -33,9 +33,11 @@ the authority on *why* any of this is shaped the way it is.
   - [Registering actions](#registering-actions)
   - [Emitting it: create, update, destroy](#emitting-it-create-update-destroy)
   - [An action that spans several writes](#an-action-that-spans-several-writes)
+  - [Letting `audited` open the transaction](#letting-audited-open-the-transaction)
   - [An action whose writes skip Active Record](#an-action-whose-writes-skip-active-record)
   - [An action that only enqueues work](#an-action-that-only-enqueues-work)
   - [Payload rules](#payload-rules)
+  - [Declaring a payload contract](#declaring-a-payload-contract)
   - [Finding the actions you have not registered yet](#finding-the-actions-you-have-not-registered-yet)
 - [Reading one record's history](#reading-one-records-history)
 - [Building an activity history in your own app](#building-an-activity-history-in-your-own-app)
@@ -342,6 +344,7 @@ It takes two pieces, in two files:
 |---|---|---|
 | `AuditLog::Registry.register` | `config/initializers/audit_log.rb` | declares the action and renders its human summary |
 | `AuditLog.notify` | the controller, model or job | emits it, carrying the payload that summary reads |
+| `AuditLog.audited` | the model or service | the same emit, with the transaction opened for you — see [below](#letting-audited-open-the-transaction) |
 
 You never pass the actor, IP, source, timestamp or `request_id`. All five come
 from `AuditLog::Current`, which `ControllerContext` populated in a
@@ -409,7 +412,7 @@ glossary says everywhere — which is right: it documents what the name means no
 not a historical claim about any event.
 
 > [!NOTE]
-> A call to `AuditLog.notify(...)` for an action that is **not** registered is a silent no-op:
+> A call to `AuditLog.notify(...)` (or `AuditLog.audited`) for an action that is **not** registered is a silent no-op:
 >- the event still reaches any other `Rails.event` subscriber, which is how
 >  analytics events stay out of the audit tables;
 >- the change rows land as they always would, so the record layer stays complete;
@@ -510,6 +513,90 @@ event cannot commit without the writes it claims happened.
 person who clicked is already on the row. Do not re-send `current_user` as a
 payload key; it is duplication that can later disagree with `actor_label`.
 
+### Letting `audited` open the transaction
+
+`AuditLog.audited` is sugar for exactly the shape above — it opens the
+transaction, runs your block, and emits the event as the last statement inside
+it. Same guarantees:
+
+```ruby
+# app/models/order.rb
+def submit!(by:)
+  AuditLog.audited("order.submitted", on: self,
+                   order_id: id, number: number, approver: by.to_label) do |audit|
+    update!(status: "submitted", submitted_at: Time.current)
+    line_items.each { |item| item.update!(unit_price_cents: item.product.price_cents) }
+    customer.update!(balance_cents: customer.balance_cents + total_cents)
+
+    audit[:line_count]  = line_items.size
+    audit[:total_cents] = total_cents
+  end
+end
+```
+
+**The payload is built in two places, and which half a key belongs to is the one
+rule to learn:**
+
+> **Identity and inputs are keyword arguments. Outcomes go through `audit`.**
+
+Ids, references, a `reason` off params, the actor's label — the block cannot
+change them, so they read naturally beside the action name, where the registry
+entry's `subject:` lambda reads them. Counts, totals, a tracking number belonging
+to a record the block has not created yet — those are produced *by* the writes,
+so they can only be collected after them.
+
+Putting an outcome in the keyword slot records **pre-write** state under a
+sentence describing the write. `total_cents` above is recalculated from the line
+items the block reprices; passed as a keyword it would file the pre-submit total
+under "order submitted", and the screen would render it without complaint.
+Nothing can mechanically prove a value is an input, so the guard that exists is
+the one that can be built: **a key set in both slots raises**, and says which
+slot to remove it from.
+
+`audit` takes keys three ways, all equivalent:
+
+```ruby
+audit[:line_count] = line_items.size                        # assignment
+audit.merge!(line_count: line_items.size, total_cents: n)   # keywords
+audit.merge!({line_count: line_items.size})                 # a hash
+```
+
+`audit.merge` — without the `!` — raises rather than doing what Ruby's
+convention says it does, which on a collector would be to build a hash, discard
+it, and emit the event without those keys.
+
+Two more things worth knowing:
+
+**Pass `on:`.** It is what opens the transaction, and it defaults to
+`ActiveRecord::Base` — right for a single-database app, and wrong for a model on
+a secondary connection via `connects_to`, where that transaction would wrap none
+of your writes and a rollback would discard nothing while appearing to work.
+`on: self` inside a model instance method, or the model class, is right by
+construction.
+
+**The emit is inside the transaction, not after commit.** "Only if the writes
+succeeded" comes free — a raise never reaches the last statement — and the
+guarantee holds in the other direction too: if the event write fails, the
+business changes roll back with it. An `after_commit` emit would leave the
+changes standing with no narrative.
+
+`audited` returns the block's value, so a method can still return what it built:
+
+```ruby
+def ship!(carrier:)
+  AuditLog.audited("order.shipped", on: self, order_id: id, carrier: carrier) do |audit|
+    shipment = shipments.create!(carrier: carrier)
+    update!(status: "shipped")
+
+    audit[:tracking_number] = shipment.tracking_number   # did not exist until now
+    shipment                                             # ...and this comes back to the caller
+  end
+end
+```
+
+The explicit `transaction do ... AuditLog.notify ... end` form is not deprecated
+and never will be. Use it wherever several notifies belong in one transaction.
+
 ### An action whose writes skip Active Record
 
 Nothing changes. Emit the event exactly as above — layer 1 catches the rows from
@@ -567,9 +654,53 @@ clicked a button, which is not what happened.
   `subject:` cannot be reached by a record-level erasure at all.
 - **`nil` values are dropped** (`payload.compact`), so a key that is sometimes
   absent will be absent from `metadata`, not present as `null`.
+- **A missing key is silent unless you declare it.** See
+  [Declaring a payload contract](#declaring-a-payload-contract) below.
 - **Do not rescue around `notify`.** The engine sets
   `Rails.event.raise_on_error = true` on purpose: a failed audit write must not
   vanish while the change it described commits anyway.
+
+### Declaring a payload contract
+
+The payload keys a call site passes and the `p[...]` reads in the registry entry
+are a contract between two files, and by default nothing checks it. A typo on
+either side renders a gap in a stored sentence — and summaries are frozen at
+emit time, so that gap can never be repaired.
+
+`requires:` is the third point that makes the two agree:
+
+```ruby
+AuditLog::Registry.register "order.submitted",
+  requires: %i[order_id reference customer_name line_count total_cents],
+  subject: ->(p) { ["Order", p[:order_id]] },
+  summary: ->(p) { "Submitted order #{p[:reference]} — #{p[:line_count]} line items" }
+```
+
+Emit `order.submitted` without `line_count` — from `notify`, from `audited`, or
+from a bare `Rails.event.notify` — and it raises `AuditLog::MissingPayloadKeys`
+naming the key. Because the check runs where the row is written, it is inside
+your transaction: the change rolls back rather than committing beside a sentence
+with a hole in it, which is the same position the engine takes with
+`raise_on_error`.
+
+Four things about it are deliberate:
+
+- **It is opt-in per entry.** An entry with no `requires:` is unchecked, exactly
+  as before. That is what keeps this from being a landmine — a raise in
+  production is only reachable where somebody deliberately wrote a contract, and
+  an app adopts it action by action the way the registry itself fills in.
+  Deleting the line is the escape valve; there is no config flag to soften the
+  check.
+- **Extra keys pass, and are still stored.** Payloads legitimately grow, and a
+  call-site typo is already caught by the missing half — `refernce:` means
+  `reference` is absent.
+- **It checks that the key is present, not that the value is.** `metadata` is
+  stored `.compact`ed, so a deliberate `reason: nil` and a forgotten `reason:`
+  produce an identical row. The declaration is the only place that distinction
+  survives.
+- **List what the entry cannot render without, not every key it reads.** A
+  summary spelled `Array(p[:columns]).presence || "all values"` has already
+  decided that key is optional; requiring it contradicts the entry.
 
 ### Finding the actions you have not registered yet
 

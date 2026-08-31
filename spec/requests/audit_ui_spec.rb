@@ -238,9 +238,11 @@ RSpec.describe "the auditor UI", type: :request do
         expect(response.body).to include(event.metadata["reference"])
       end
 
+      # order.deleted is the dummy's one entry with no `requires:`, so it is the
+      # only action that can still be emitted empty -- which is the point of it.
       it "shows nothing for an action that carried no payload" do
-        as_actor(staff) { AuditLog.notify("order.approved") }
-        event = AuditLog::Event.for_action("order.approved").newest_first.first
+        as_actor(staff) { AuditLog.notify("order.deleted") }
+        event = AuditLog::Event.for_action("order.deleted").newest_first.first
         expect(event.metadata).to eq({})
 
         get audit.request_path(event.request_id)

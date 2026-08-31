@@ -88,7 +88,10 @@ RSpec.describe "CSV export", type: :request do
   # the extension and the screen quietly serves HTML for an action that does not
   # exist. A header-only assertion passes against that, so this asserts rows.
   it "exports the event layer for an action whose id contains dots" do
-    as_actor(staff) { AuditLog.notify("order.created", order_id: @order.id) }
+    as_actor(staff) do
+      AuditLog.notify("order.created", order_id: @order.id, reference: @order.reference,
+                                       customer_name: @order.customer.name)
+    end
 
     get "/audit/actions/order.created", params: { format: "csv" }
 

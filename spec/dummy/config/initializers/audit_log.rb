@@ -59,16 +59,19 @@ Rails.application.config.to_prepare do
   AuditLog::Registry.clear!
 
   AuditLog::Registry.register "order.created",
+    requires: %i[order_id reference customer_name],
     description: "A new order was drafted.",
     subject: ->(p) { ["Order", p[:order_id]] },
     summary: ->(p) { "Drafted order #{p[:reference]} for #{p[:customer_name]}" }
 
   AuditLog::Registry.register "order.updated",
+    requires: %i[order_id reference line_count],
     description: "An existing draft order was edited.",
     subject: ->(p) { ["Order", p[:order_id]] },
     summary: ->(p) { "Edited order #{p[:reference]} (#{p[:line_count]} line items)" }
 
   AuditLog::Registry.register "order.submitted",
+    requires: %i[order_id reference customer_name line_count total_cents],
     description: "An order was submitted for fulfillment.",
     subject: ->(p) { ["Order", p[:order_id]] },
     summary: lambda { |p|
@@ -77,58 +80,76 @@ Rails.application.config.to_prepare do
     }
 
   AuditLog::Registry.register "order.approved",
+    requires: %i[order_id reference approver],
     description: "An order was approved.",
     subject: ->(p) { ["Order", p[:order_id]] },
     summary: ->(p) { "Approved order #{p[:reference]}" }
 
   AuditLog::Registry.register "order.cancelled",
+    requires: %i[order_id reference reason],
     description: "An order was cancelled and its line items removed.",
     subject: ->(p) { ["Order", p[:order_id]] },
     summary: ->(p) { "Cancelled order #{p[:reference]} (#{p[:reason]})" }
 
+  # Deliberately the ONE entry with no `requires:`. The library says an entry
+  # without it is unchecked, exactly as before this feature existed, and an app
+  # where every entry declares one leaves that claim untested -- so this file
+  # carries both shapes. It is also the only action that can be emitted with an
+  # empty payload, which is the state shared/_event_payload renders as "nothing",
+  # and audit_ui_spec needs somewhere to assert that. A real app would declare
+  # %i[order_id reference] here.
   AuditLog::Registry.register "order.deleted",
     description: "An order was destroyed, cascading to its line items and shipments.",
     subject: ->(p) { ["Order", p[:order_id]] },
     summary: ->(p) { "Deleted order #{p[:reference]} and everything under it" }
 
   AuditLog::Registry.register "order.shipped",
+    requires: %i[order_id reference carrier tracking_number],
     description: "A shipment was recorded against an order by a background job.",
     subject: ->(p) { ["Order", p[:order_id]] },
     summary: ->(p) { "Shipped order #{p[:reference]} via #{p[:carrier]} (#{p[:tracking_number]})" }
 
   AuditLog::Registry.register "customer.created",
+    requires: %i[customer_id name],
     subject: ->(p) { ["Customer", p[:customer_id]] },
     summary: ->(p) { "Added customer #{p[:name]}" }
 
   AuditLog::Registry.register "customer.updated",
+    requires: %i[customer_id name],
     subject: ->(p) { ["Customer", p[:customer_id]] },
     summary: ->(p) { "Updated customer #{p[:name]} (#{Array(p[:fields]).join(', ')})" }
 
   AuditLog::Registry.register "price.bulk_adjusted",
+    requires: %i[percent count],
     description: "A bulk price change issued with update_all -- no Active Record " \
                  "callback ran, and the audit log captured every row anyway.",
     summary: ->(p) { "Adjusted prices by #{p[:percent]}% across #{p[:count]} products" }
 
   AuditLog::Registry.register "job.performed",
+    requires: %i[job_class],
     description: "A background job ran. Closes the loop so job activity is never " \
                  "narrative-less in the reconciler.",
     summary: ->(p) { "Ran #{p[:job_class]}" }
 
   AuditLog::Registry.register "console.session_opened",
+    requires: %i[user reason],
     description: "A console session was opened. Its writes carry request_id IS NULL.",
     summary: ->(p) { "Console session opened by #{p[:user]} — #{p[:reason]}" }
 
   AuditLog::Registry.register "audit.bypass",
+    requires: %i[reason by],
     description: "Layer 1 was deliberately disabled for a bulk operation.",
     summary: ->(p) { "Audit logging bypassed by #{p[:by]}: #{p[:reason]}" }
 
   AuditLog::Registry.register "audit.bypass_completed",
+    requires: %i[reason duration_ms],
     summary: ->(p) { "Bypass finished in #{p[:duration_ms]}ms: #{p[:reason]}" }
 
   # The one action that modifies audit rows, so it is also the one whose own row
   # matters most. Note what the summary keeps: what was redacted, from where, by
   # whom and under what authority -- none of which is the redacted data.
   AuditLog::Registry.register "audit.redaction",
+    requires: %i[target_type target_id reason],
     description: "Values were redacted from the audit log under an erasure request. " \
                  "The structural record -- which field changed, when, by whom -- is intact.",
     subject: ->(p) { [p[:target_type], p[:target_id]] },

@@ -13,6 +13,33 @@ module AuditLog
       entry   = AuditLog::Registry[name] or return
       payload = (event[:payload] || {}).symbolize_keys
 
+      # The registry's payload contract, checked at the ONE point every call path
+      # crosses -- AuditLog.notify, AuditLog.audited, and a bare Rails.event.notify
+      # all arrive here. Checking it in `audited` instead would make the guard a
+      # reason to prefer one call site over another, which is backwards.
+      #
+      # Raising is the same position the engine takes with raise_on_error: this
+      # runs inside the caller's transaction, so a broken narrative rolls the
+      # change back rather than committing beside a sentence with a hole in it.
+      #
+      # key? and not the value: metadata is stored `.compact`ed, so a deliberate
+      # `reason: nil` and a forgotten `reason:` produce an identical row, and this
+      # is the only place that distinction can still survive.
+      #
+      # EXTRA keys are not an error and are stored as-is. Payloads legitimately
+      # grow, and a call-site typo is already caught by the missing half.
+      if entry.requires
+        missing = entry.requires.reject { |key| payload.key?(key) }
+        if missing.any?
+          raise AuditLog::MissingPayloadKeys,
+                "#{name} omitted #{missing.map(&:inspect).join(", ")}. Its registry entry " \
+                "declares requires: #{entry.requires.inspect}, and the payload carried " \
+                "#{payload.keys.map(&:inspect).join(", ").presence || "no keys"}. Either the " \
+                "emitting call site is missing the key (or misspelled it), or the entry in " \
+                "config/initializers/audit_log.rb declares one it no longer needs."
+        end
+      end
+
       subject_type, subject_id = entry.subject.call(payload)
 
       # An uncorrelated entry point (bare `rails runner`, a migration) still has

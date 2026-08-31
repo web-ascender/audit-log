@@ -1250,6 +1250,152 @@ end
   fail the request; if a project has noisy third-party subscribers, wrap this subscriber's write
   instead and keep the flag off.
 
+### `AuditLog.audited` — the transaction sugar, and its two payload slots  **[added 2026-08-31]**
+
+The canonical layer-2 call site is a transaction with the `notify` as its last statement (§7,
+§11.0). That is three lines of ceremony at every call site, so `AuditLog.audited` collapses it:
+
+```ruby
+def submit!(by:)
+  AuditLog.audited("order.submitted", on: self,
+                   order_id: id, number: number, approver: by.to_label) do |audit|
+    update!(status: "submitted", submitted_at: Time.current)
+    line_items.each { |item| item.update!(unit_price_cents: item.product.price_cents) }
+
+    audit[:line_count]  = line_items.size
+    audit[:total_cents] = total_cents
+  end
+end
+```
+
+It opens `on.transaction`, runs the block, and calls `notify` as the last statement **inside** that
+transaction, so both directions of R3 are unchanged: a raise never reaches the emit, and a failed
+emit rolls the writes back. An `after_commit` emit — the obvious reading of "notify only if the
+transaction succeeded" — would break the second direction, leaving change rows standing with no
+narrative. The block's raise is what expresses "only if it succeeded", and it costs nothing.
+
+#### Identity and inputs are eager; outcomes are collected
+
+The payload is built in two places, and the split is the design rather than a convenience.
+
+Keyword arguments are evaluated **before** the block, which is exactly right for values the block
+cannot change — ids, references, a `reason` off params, the actor label. They also read beside the
+action name, which is where the registry entry's `subject:` lambda reads them, so `audited` and
+`notify` look like one API rather than two.
+
+Outcomes cannot go there. `total_cents` above is recalculated from the line items the block
+reprices; `order.shipped`'s `tracking_number` belongs to a `Shipment` the block has not created
+yet. Passed as a keyword, the first files the pre-submit total under a sentence saying the order was
+submitted and renders without complaint — a log that says something that did not happen, which is
+the failure this document is organised around.
+
+**An earlier draft of this API made the payload the block's return value**, on the theory that it
+made the mistake impossible. It does not; it forecloses one spelling of it. A block that opens with
+`payload = {order_id: id, total_cents: total_cents}` and returns it at the bottom is just as stale
+and has no guard at all. The real defence was always that the payload is built after the writes, by
+convention and review, and the two-slot form has that convention working for it identically — while
+giving back the block's return value and removing the load-bearing last expression, where appending
+a line changed what got emitted.
+
+So the guard is the one that can actually be built: **a key set in both slots raises.** Nothing can
+prove a value is an input, but a key appearing twice is unambiguous — if the block changes it, it
+belonged in the block. The message names that fix rather than reporting a collision, because this is
+the only moment the rule can be taught to somebody who is breaking it.
+
+#### `AuditLog::Payload` wraps a Hash rather than subclassing one
+
+The collector takes keys three ways — `audit[:k] = v`, `audit.merge!(k: v)`, `audit.merge!({...})` —
+because all three are mutating, unambiguous, and Hash-idiomatic, and a developer should not have to
+remember which one this library chose.
+
+`merge` **without** the bang is a tombstone that raises. Ruby's convention is that it returns a new
+hash and leaves the receiver alone, so on a collector it is a silent under-report: the keys are
+computed, discarded, and the event emits without them while the summary renders a gap. There is no
+spelling of `[]=` with the same trap, which is why that one needs no tombstone.
+
+Subclassing `Hash` would have given all of this for free, and would have published `delete`,
+`clear`, `replace` and `reject!` as part of what a block may do to an audit payload. Same argument
+that keeps `Timeline::Activity` from being an `ActiveRecord::Base` (§11.2b), on a smaller object.
+Six methods and one tombstone is the whole surface.
+
+Keys are normalised to symbols on the way in, which is not cosmetic: `EventSubscriber#emit`
+symbolizes at write time, so `audit["order_id"] = x` against an eager `order_id:` would arrive as
+two keys, collapse to one there, and silently take whichever landed last — an overwrite that walks
+straight past the guard. Ruby 3 admits non-Symbol keys in keyword arguments, so `merge!` normalises
+its kwargs as well as its positional hash; a spec caught that hole during development.
+
+#### `on:` exists because a module-level helper has to pick a connection
+
+The explicit form is right by construction — `transaction do` inside a model is that model's
+connection. `AuditLog.audited` defaults to `ActiveRecord::Base`, which is correct for a
+single-database app and wrong for a model on a secondary connection via `connects_to`: that
+transaction wraps none of the writes, so a rollback discards nothing while appearing to work. That
+is the same silence `config.correlated_connections` exists to prevent (§14), reached from a
+different direction, and the mitigation is the same — the README shows `on: self` and says why.
+Requiring `on:` outright, or requiring it only in apps with more than one connection pool, are both
+open and both defensible under §16's forcing-function argument.
+
+The explicit form is not deprecated. It remains the option when several notifies belong to one
+transaction.
+
+### The payload contract — `requires:`  **[added 2026-08-31]**
+
+The registry's `summary` and `subject` lambdas read `p[...]`; the call site passes keys. Nothing
+checked that those two agreed, and this document said so in the README's own words: *"a typo renders
+an empty gap."* The gap is unusually expensive here because summaries are rendered at emit time and
+stored (R6) — a sentence with a hole in it cannot be repaired by fixing the entry afterwards, and an
+`order_id` missing from a `subject` lambda drops the action off the record's history screen entirely.
+
+`requires:` is the third point that makes the two agree, so a typo on **either** side fails against
+it:
+
+```ruby
+AuditLog::Registry.register "order.submitted",
+  requires: %i[order_id reference customer_name line_count total_cents],
+  subject: ->(p) { ["Order", p[:order_id]] },
+  summary: ->(p) { "Submitted order #{p[:reference]} — #{p[:line_count]} line items" }
+```
+
+**Where it runs.** `EventSubscriber#emit`, immediately after the entry lookup. That is the one point
+every call path crosses — `AuditLog.notify`, `AuditLog.audited`, and a bare `Rails.event.notify`.
+Checking it in `audited` instead would make the guard a reason to prefer one call site over another,
+which is backwards. It also puts the check inside the caller's transaction, so a violation rolls the
+change back rather than committing beside a holed sentence — the same position §7 already takes with
+`raise_on_error`, applied to a second way the narrative can be wrong.
+
+**Why it raises rather than warning.** A warning is what the situation already produces: the gap is
+visible on the screen and nobody is told. The library's existing answer to "a broken audit beside a
+committed change" is to raise, and this is that case.
+
+**Why it is opt-in per entry.** A raise on a rare branch — the first time in eight months that
+`cancel!` is called without a reason — is a latent landmine, and that is the real objection to
+enforcing this at all. Opt-in defuses it: an entry with no `requires:` behaves exactly as before, so
+the raise is only reachable where somebody deliberately wrote a contract, and an app adopts it action
+by action the way the registry itself fills in. Deleting the line is the escape valve. There is
+deliberately **no config flag** to soften the check globally, for the reason `retention_action` is
+gone (§8): a default that can be flipped is weaker than an option that is absent, and the per-entry
+declaration is self-documenting in a way a flag is not.
+
+**Three deliberate softenings.**
+
+- *Extra keys pass and are still stored.* Payloads legitimately grow, and a call-site typo is already
+  caught by the missing half — `refernce:` means `reference` is absent. Raising on extras would buy
+  nothing and block ordinary evolution.
+- *Key presence, not value presence.* `metadata` is stored `.compact`ed, so a deliberate `reason: nil`
+  and a forgotten `reason:` produce an identical row. The declaration is the only place that
+  distinction can still survive, so the test is `key?`.
+- *It lists what the entry cannot RENDER without, not every key the lambdas read.* `audit.redaction`
+  reads `columns` and `redacted_by` and requires neither, because its summary is spelled
+  `Array(p[:columns]).presence || "all recorded values"` — a lambda that has already decided those are
+  optional. Requiring them would contradict the entry.
+
+**What it does not do.** The declaration is itself hand-maintained and can drift from the lambdas.
+The keys a lambda actually reads can be derived by passing it a `Hash` with a recording default proc,
+and that works on all fifteen of `spec/dummy`'s entries — but it under-detects on a branch
+(`p[:a] ? p[:b] : p[:c]` records two of three keys), misses `p.fetch(:x)` entirely, and crashes on
+`p[:a] + 1`. Sound as a suggestion for `audit_log:reconcile` to report, unsound as the enforcement
+basis. Left open.
+
 ### Actor labels
 
 ```ruby

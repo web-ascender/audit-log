@@ -151,6 +151,68 @@ Do not "fix" these without reading the linked reasoning first.
   `ActiveSupport::EventReporter` otherwise swallows subscriber exceptions, which
   would mean a failed audit write vanishes while the change rows it describes
   commit anyway.
+- **`AuditLog.audited` builds its payload in TWO slots, and the split is the
+  design.** Keyword arguments are evaluated before the block, which is right for
+  IDENTITY AND INPUTS (ids, references, a `reason` off params, the actor label)
+  and silently wrong for OUTCOMES — `spec/dummy` `Order#submit!` recalculates
+  `total_cents` from the line items it reprices, and `order.shipped`'s
+  `tracking_number` belongs to a record the block has not created yet. An outcome
+  in the keyword slot files pre-write state under a sentence describing the write
+  and renders without complaint. Nothing can prove a value is an input, so the
+  one buildable guard is `Payload`'s: **a key set in both slots raises**, with a
+  message naming the fix rather than reporting the collision — that is the only
+  moment the rule reaches somebody breaking it. An earlier draft made the payload
+  the block's RETURN VALUE, on the theory that it made the mistake impossible; it
+  does not (a hash built at the top of the block and returned at the bottom is
+  just as stale, with no guard), and it cost the block's return value and made
+  the last expression load-bearing. Do not go back to it, and do not add a
+  `payload:` lambda beside the two slots. The emit is the last statement INSIDE
+  the transaction, never `after_commit`: a raise skipping it is what "only if the
+  writes succeeded" means, and it keeps the other direction of R3 — a failed
+  event write still rolls the changes back. `on:` opens the transaction and
+  defaults to `ActiveRecord::Base`, which wraps NONE of the writes for a model on
+  a secondary connection via `connects_to`; the README shows `on: self`. DESIGN §7.
+- **`Registry.register requires:` raises on a missing payload key, and its three
+  softenings are each deliberate.** It is the third point that makes the call
+  site's keys and the entry's `p[...]` reads agree, so a typo on EITHER side
+  fails against it — worth having because summaries are frozen at emit time, so
+  a holed sentence can never be repaired. The check lives in
+  `EventSubscriber#emit`, the ONE point `notify`, `audited` and a bare
+  `Rails.event.notify` all cross; putting it in `audited` would make the guard a
+  reason to prefer one call site over another. It therefore runs inside the
+  caller's transaction, so a violation rolls the change back — same position as
+  `raise_on_error`. The softenings: (1) **opt-in per entry** — no `requires:`
+  means unchecked, which is what keeps a rare branch from being a production
+  landmine, and deleting the line is the escape valve. There is deliberately NO
+  config flag to soften it globally, for the reason `retention_action` is gone.
+  (2) **extras pass and are still stored** — payloads grow, and a call-site typo
+  is already caught by the missing half. (3) **`key?`, not the value** —
+  `metadata` is stored `.compact`ed, so a deliberate `reason: nil` and a
+  forgotten `reason:` are the same row, and the declaration is the only place
+  that distinction survives. A declaration lists what the entry cannot RENDER
+  without, not every key it reads: `audit.redaction` reads `columns` and requires
+  it not, because `Array(p[:columns]).presence || "all recorded values"` has
+  already decided it is optional. DESIGN §7.
+- **`spec/dummy` declares `requires:` on fourteen entries and leaves
+  `order.deleted` undeclared ON PURPOSE.** An app where every entry declares one
+  leaves the library's "unchecked without it" claim untested, and `order.deleted`
+  is consequently the only action that can be emitted with an empty payload —
+  which is the state `shared/_event_payload` renders as nothing, and
+  `audit_ui_spec` needs somewhere to assert it. Do not "finish the job" by
+  declaring it. `payload_contract_spec` pins that exactly one entry is undeclared.
+- **`AuditLog::Payload` WRAPS a Hash and must not subclass one, and `merge`
+  without the bang is a tombstone that raises.** Subclassing publishes `delete`,
+  `clear`, `replace` and `reject!` as things a block may do to an audit payload —
+  the same argument that keeps `Timeline::Activity` from being an
+  `ActiveRecord::Base`. And Ruby's `merge` returns a new hash and leaves the
+  receiver alone, so on a collector it is a silent under-report: keys computed,
+  discarded, event emitted without them, summary rendering a gap, nothing raised.
+  `[]=` has no such twin, which is why it needs no tombstone. Keys are normalised
+  to symbols because `EventSubscriber#emit` symbolizes at write time — without
+  it, `audit["order_id"] = x` against an eager `order_id:` is two keys that
+  collapse there and silently take whichever landed last, walking past the guard
+  above. Ruby 3 admits non-Symbol keys in KEYWORD arguments too, so `merge!`
+  normalises its kwargs as well as its positional hash; a spec caught that hole.
 - **`self.enqueue_after_transaction_commit = true` is set on the job class.**
   `config.active_job.enqueue_after_transaction_commit` in `application.rb` is
   explicitly filtered out by ActiveJob's railtie and does nothing.

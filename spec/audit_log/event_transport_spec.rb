@@ -29,7 +29,10 @@ RSpec.describe "layer 2's event transport" do
     actor = create_user
 
     expect {
-      as_actor(actor) { AuditLog.notify("order.submitted", order_id: 4321) }
+      as_actor(actor) do
+        AuditLog.notify("order.submitted", order_id: 4321, reference: "SO-1", customer_name: "X",
+                                           line_count: 1, total_cents: 100)
+      end
     }.to change { AuditLog::Event.where(action: "order.submitted").count }.by(1)
 
     event = AuditLog::Event.where(action: "order.submitted").last

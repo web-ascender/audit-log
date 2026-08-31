@@ -3,6 +3,47 @@
 Notable changes to `audit_log`. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- **`AuditLog.audited(action, on:, **identity) { |audit| … }`** — sugar for the
+  canonical layer-2 call site, `transaction do ... AuditLog.notify ... end`. It
+  opens the transaction, runs the block, and emits as the last statement inside
+  it, so both directions of R3 are unchanged: a raise never reaches the emit, and
+  a failed emit rolls the writes back. Returns the block's value.
+
+  **The payload is built in two slots.** Keyword arguments are evaluated before
+  the block, which is right for identity and inputs and silently wrong for
+  outcomes — a total recalculated by the block, a tracking number for a record it
+  has not created yet. Those go through the yielded `AuditLog::Payload`
+  (`audit[:k] = v`, `audit.merge!(k: v)`, `audit.merge!({…})`). A key set in both
+  slots raises, with a message naming which one to remove it from.
+
+  `AuditLog::Payload` wraps a Hash rather than subclassing one, so `delete`,
+  `clear` and `replace` are not part of what a block may do to an audit payload.
+  `merge` without the bang raises: Ruby's convention would have it build a hash
+  and discard it, emitting the event without those keys.
+
+  Purely additive. The explicit `transaction` + `notify` form is unchanged, not
+  deprecated, and remains the option when several notifies belong to one
+  transaction. See DESIGN §7 and the README.
+
+- **`AuditLog::Registry.register requires:`** — an optional payload contract per
+  action. The keys a call site passes and the `p[...]` reads in the entry were
+  checked by nothing, and a typo on either side rendered a gap in a sentence that
+  is frozen at emit time and can never be repaired. Declared, a missing key
+  raises `AuditLog::MissingPayloadKeys` from `EventSubscriber#emit` — the one
+  point `notify`, `audited` and a bare `Rails.event.notify` all cross, and inside
+  the caller's transaction, so the change rolls back rather than committing
+  beside a holed sentence.
+
+  Opt-in per entry: without `requires:` an action behaves exactly as before, so
+  the raise is only reachable where somebody wrote a contract. Extra keys pass
+  and are still stored. The check is key presence, not value presence — a
+  deliberate `nil` counts as supplied, since `metadata` is stored `.compact`ed
+  and would otherwise be indistinguishable from a forgotten key.
+
 ## 0.3.0 — 2026-08-30
 
 **Two configuration surfaces were quietly lying, and this release stops both.**

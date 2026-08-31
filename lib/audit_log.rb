@@ -41,6 +41,7 @@ module AuditLog
     JobContext:        "audit_log/job_context",
     MigrationHelpers:  "audit_log/migration_helpers",
     Pagination:        "audit_log/pagination",
+    Payload:           "audit_log/payload",
     Partitions:        "audit_log/partitions",
     RecordLabel:       "audit_log/record_label",
     Redaction:         "audit_log/redaction",
@@ -54,6 +55,10 @@ module AuditLog
 
   # Raised when AuditLog::Bypass is invoked from a class that is not allowlisted.
   class BypassNotPermitted < Error; end
+
+  # Raised when an emitted payload omits a key its registry entry declared in
+  # `requires:`. Its own class so a host can rescue or assert on it specifically.
+  class MissingPayloadKeys < Error; end
 
   class << self
     def config
@@ -74,6 +79,72 @@ module AuditLog
       else
         EventSubscriber.new.emit(name: action.to_s, payload: payload)
       end
+    end
+
+    # `notify` with the work attached: opens a transaction, runs the block, and
+    # emits the event as the LAST statement inside it. A raise or an
+    # ActiveRecord::Rollback therefore discards the sentence along with the
+    # changes it describes, which is the same guarantee the explicit
+    # `transaction do ... AuditLog.notify ... end` form gives (R3, atomicity_spec).
+    # Emitting on after_commit instead -- the obvious reading of "notify only if
+    # the transaction succeeded" -- would break the other direction, leaving
+    # change rows standing with no narrative when the event write failed.
+    #
+    #   def submit!(by:)
+    #     AuditLog.audited("order.submitted", on: self,
+    #                      order_id: id, number: number, approver: by.to_label) do |audit|
+    #       update!(status: "submitted", submitted_at: Time.current)
+    #       line_items.each { |i| i.update!(unit_price_cents: i.product.price_cents) }
+    #       customer.update!(balance_cents: customer.balance_cents + total_cents)
+    #
+    #       audit[:line_count]  = line_items.size
+    #       audit[:total_cents] = total_cents
+    #     end
+    #   end
+    #
+    # THE PAYLOAD IS BUILT IN TWO PLACES, and the split is the whole design:
+    #
+    #   IDENTITY AND INPUTS go in the keyword arguments -- ids, references, the
+    #   actor label, a `reason` off params. Ruby evaluates them BEFORE the block,
+    #   which is exactly right for values the block cannot change.
+    #
+    #   OUTCOMES go through the yielded Payload -- counts, totals, a tracking
+    #   number belonging to a record the block has not created yet. These read
+    #   state the writes produce, so they can only be built after them.
+    #
+    # Putting an outcome in the keyword slot records PRE-WRITE state under a
+    # sentence describing the write -- the pre-submit total filed under "order
+    # submitted", rendering without complaint. Nothing can mechanically prove a
+    # value is an input, so the guard that exists is Payload's: a key set in both
+    # slots raises, and says which slot to remove it from.
+    #
+    # The block's return value is the caller's. Nothing about its last expression
+    # is load-bearing, so appending a line cannot change what gets emitted.
+    #
+    # `on:` is what opens the transaction. It defaults to ActiveRecord::Base,
+    # which is right for a single-database app and WRONG for a model on a
+    # secondary connection via connects_to: that transaction would wrap none of
+    # the writes, so a rollback would discard nothing while appearing to work --
+    # the same silence config.correlated_connections exists to prevent. Pass
+    # `on: self` (or the model class) and it is right by construction.
+    #
+    # Returns the block's value, or nil if the block rolled the transaction back.
+    def audited(action, on: ActiveRecord::Base, **eager)
+      unless block_given?
+        raise ArgumentError, "AuditLog.audited(#{action.inspect}) requires a block -- it is " \
+                             "the transaction the event commits with. To emit without one, " \
+                             "call AuditLog.notify."
+      end
+
+      payload = Payload.new(action, eager)
+      result  = nil
+
+      on.transaction do
+        result = yield payload
+        notify(action, **payload.to_h)
+      end
+
+      result
     end
 
     # Runs a block with auditing disabled for the enclosing transaction.
