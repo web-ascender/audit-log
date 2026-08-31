@@ -150,6 +150,30 @@ end
 Rails.application.config.to_prepare do
   AuditLog::Registry.clear!
 
+  # A registry entry takes three options:
+  #
+  #   summary:      REQUIRED. lambda -> String.
+  #                 Describes a SPECIFIC OCCURRENCE. Usually a noun, a verb and
+  #                 some kind of human-friendly record descriptor.
+  #                 e.g. ->(p) { "Submitted Order #{p[:number]}" }
+  #                 Stored on the row (audit_events.summary), rendered at emit
+  #                 and frozen -- editing the lambda changes what future rows
+  #                 say, never what past ones said.
+  #
+  #   subject:      Optional, recommended. lambda -> [type, id].
+  #                 Tracks the model type and id each occurrence was about.
+  #                 e.g. ->(p) { ["Order", p[:order_id]] }
+  #                 Stored as the indexed subject_type / subject_id columns.
+  #                 Set it whenever the summary could carry personal data, or a
+  #                 later erasure request will not reach these rows.
+  #
+  #   description:  Optional, recommended. A plain String, not a lambda.
+  #                 A descriptive label for the ACTION ITSELF rather than any
+  #                 one occurrence -- so it takes no payload.
+  #                 e.g. "Submitted an Order"  (for "order.submitted")
+  #                 Not stored on any row; it lives only in this file, and is
+  #                 shown at the top of /audit/actions/<name>.
+  #
   # AuditLog::Registry.register "order.submitted",
   #   description: "An order was submitted for fulfillment.",
   #   subject: ->(p) { ["Order", p[:order_id]] },

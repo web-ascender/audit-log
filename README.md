@@ -17,6 +17,7 @@ the authority on *why* any of this is shaped the way it is.
 - [Summary](#summary)
 - [Requirements](#requirements)
 - [The two layers](#the-two-layers)
+- [Demo Rails App](#demo-rails-app)
 - [Getting started](#getting-started)
   - [1. Add the gem](#1-add-the-gem)
   - [2. Install](#2-install)
@@ -28,8 +29,9 @@ the authority on *why* any of this is shaped the way it is.
   - [8. Optional: Put a history on your own pages](#8-optional-put-a-history-on-your-own-pages)
   - [What the generator wrote](#what-the-generator-wrote)
   - [What a model needs](#what-a-model-needs)
-- [Emitting events from a controller action](#emitting-events-from-a-controller-action)
-  - [The ordinary case: create, update, destroy](#the-ordinary-case-create-update-destroy)
+- [Registering and emitting events](#registering-and-emitting-events)
+  - [Registering actions](#registering-actions)
+  - [Emitting it: create, update, destroy](#emitting-it-create-update-destroy)
   - [An action that spans several writes](#an-action-that-spans-several-writes)
   - [An action whose writes skip Active Record](#an-action-whose-writes-skip-active-record)
   - [An action that only enqueues work](#an-action-that-only-enqueues-work)
@@ -120,12 +122,6 @@ attached — and no model has to opt in or even know.
 - **Zero application constants.** Every coupling point is a lambda on
   `AuditLog.config`, so one library serves every app.
 
-**See it working first?**
-[`audit-log-demo`](https://github.com/web-ascender/audit-log-demo) is a small
-Rails app that installs this gem the way the next section describes — seeded
-data, emitted events, and the generated activity views on real pages. It is the
-worked example the rest of this file refers to as *the reference app*.
-
 Already weighing this against `paper_trail`, `audited` or `logidze`?
 [Why this one](#why-this-one-and-not-a-callback-based-gem) and
 [Why not one of the popular gems?](#why-not-one-of-the-popular-gems) are at the
@@ -179,6 +175,14 @@ rows constituted "submitting an order".
 
 **The join is `request_id`.** One form submit → one `audit_events` row → N
 `audit_changes` rows sharing one UUIDv7.
+
+---
+
+## Demo Rails App
+
+[`audit-log-demo`](https://github.com/web-ascender/audit-log-demo) is a small
+Rails app that installs this gem the way the next section describes — seeded
+data, emitted events, and the generated activity views on real pages. It is the demo app the rest of this file refers to as *the reference app*.
 
 ---
 
@@ -273,12 +277,12 @@ sentence:
 
 ```ruby
 # config/initializers/audit_log.rb
-AuditLog::Registry.register "invoice.voided",
-  subject: ->(p) { ["Invoice", p[:invoice_id]] },
-  summary: ->(p) { "Voided invoice #{p[:number]} (#{p[:reason]})" }
+AuditLog::Registry.register "order.cancelled",
+  subject: ->(p) { ["Order", p[:order_id]] },
+  summary: ->(p) { "Cancelled order #{p[:number]} (#{p[:reason]})" }
 
 # the controller, model or job — after the write succeeds
-AuditLog.notify("invoice.voided", invoice_id: @invoice.id, number: number,
+AuditLog.notify("order.cancelled", order_id: @order.id, number: number,
                 reason: params[:reason])
 ```
 
@@ -286,7 +290,7 @@ This is what turns a complete log into a readable one: layer 2, the sentences an
 auditor reads instead of a field diff. `bin/rails audit_log:reconcile` tells you
 which actions you have not named yet, so it fills in over time rather than
 up front. See
-[Emitting events](#emitting-events-from-a-controller-action).
+[Registering and emitting events](#registering-and-emitting-events).
 
 ### 8. Optional: Put a history on your own pages
 
@@ -325,7 +329,7 @@ Nothing! No include, no concern, no callback, no base class. An audited model is
 an ordinary `ApplicationRecord`. The one line of per-model cost lives in the
 migration, next to the table it audits.
 
-## Emitting events from a controller action
+## Registering and emitting events
 
 Once the trigger is attached and `ControllerContext` is included, every row your
 controllers touch is already being recorded — field by field, with no code in the
@@ -339,98 +343,135 @@ It takes two pieces, in two files:
 | `AuditLog::Registry.register` | `config/initializers/audit_log.rb` | declares the action and renders its human summary |
 | `AuditLog.notify` | the controller, model or job | emits it, carrying the payload that summary reads |
 
-**A `notify` with no registry entry is a silent no-op** — the event reaches any
-observability subscriber and never becomes an `audit_events` row. That is how
-analytics stays out of the audit tables (`registry.rb`), and it is also the
-first thing to check when an action does not show up on `/audit`.
-
 You never pass the actor, IP, source, timestamp or `request_id`. All five come
 from `AuditLog::Current`, which `ControllerContext` populated in a
 `before_action` — the payload is only the domain detail.
 
-### The ordinary case: create, update, destroy
+### Registering actions
+
+Actions with business significance should be registered in
+`config/initializers/audit_log.rb`. Registering is how you customize action labels and define the primary model type and id, so it can be
+queried correctly.
+
+**This step is optional, but highly recommended.** Layer 1 triggers have already written a field-level diff of every row the
+action touched, under the same actor and `request_id`. Registering gets you
+readability, not completeness — the difference between an auditor reading
+"Cancelled order SO-4471 (duplicate)" and reading four column diffs to infer it.
 
 ```ruby
-class InvoicesController < ApplicationController
-  before_action :set_invoice, only: %i[update void]
+AuditLog::Registry.register "order.created",
+  description: "An order was placed for a customer.",
+  subject: ->(p) { ["Order", p[:order_id]] },
+  summary: lambda { |p|
+    "Placed order #{p[:number]} for #{p[:customer]} — " \
+      "#{ActiveSupport::NumberHelper.number_to_currency(p[:total_cents].to_i / 100.0)}"
+  }
+
+AuditLog::Registry.register "order.updated",
+  subject: ->(p) { ["Order", p[:order_id]] },
+  summary: ->(p) { "Edited order #{p[:number]} (#{Array(p[:fields]).join(', ')})" }
+
+AuditLog::Registry.register "order.cancelled",
+  description: "An order was destroyed, cascading to its line items.",
+  subject: ->(p) { ["Order", p[:order_id]] },
+  summary: ->(p) { "Cancelled order #{p[:number]} (#{p[:reason]})" }
+```
+
+#### `.register` options:
+
+| | Shape | Purpose | Example | Stored on the row? |
+|---|---|---|---|---|
+| `summary:` <br><br> (required) | lambda → `String` | Describe a **specific occurrence**. Should usually include a noun, verb and some kind of human-friendly record descriptor | <span style="white-space: nowrap;">`"Submitted Order #{p[:number]}"`<span> | yes — `audit_events.summary`, rendered at emit and frozen |
+| `subject:` <br><br> (optional - recommended) | lambda → `[type, id]`, optional | Track the model type and id (each occurrence) | `["Order", p[:order_id]]` | yes — `subject_type` / `subject_id`, indexed |
+| `description:` <br><br> (optional - recommended) | `String` | What this action means, in general | `"An order was submitted for fulfillment."` <br> (for an action registered as `"order.submitted"`) | no — it lives only in this initializer |
+
+**`summary:`** is the evidence sentence, and it is what every screen shows.
+Interpolate the payload so each row says something specific: `Placed order
+SO-4471 for Acme — $1,240.00`, not "an order was placed". It is rendered
+**once, at emit time**, and stored, so editing the lambda changes what future
+rows say and never what past rows said — a copy edit must not alter the
+historical record.
+
+**`subject:`** is a pointer, not prose; nothing renders it as text. It names the
+aggregate root the action was about, and three things read those two columns: the
+indexed half of a record's history screen, the events leg of `AuditLog::Timeline`,
+and `redact_record!`, which finds an action's rows by subject — so **an entry
+whose summary can carry personal data should always set it**, or a later erasure
+request will not reach it (DESIGN §13). Omit it only for an action with no single
+subject, such as a bulk price change; those rows still appear in a record's
+*correlated* section, which is matched on `request_id` and capped.
+
+**`description:`** is the glossary entry an auditor reads at the top of
+`/audit/actions/order.cancelled` when they need to know what that name signifies
+in your app. Write it once, in the present tense, about the action rather than
+any occurrence of it. Because it is not stored, editing it changes what the
+glossary says everywhere — which is right: it documents what the name means now,
+not a historical claim about any event.
+
+> [!NOTE]
+> A call to `AuditLog.notify(...)` for an action that is **not** registered is a silent no-op:
+>- the event still reaches any other `Rails.event` subscriber, which is how
+>  analytics events stay out of the audit tables;
+>- the change rows land as they always would, so the record layer stays complete;
+>- the activity simply has no `headline`, and a timeline renders it as
+>  `:change_only` — the diff, with no sentence over the top of it;
+>- `bin/rails audit_log:reconcile` lists it, which is how this file fills in over
+>  time instead of being an up-front project. This is the first thing to check when an action does not show up on `/audit`.
+
+### Emitting it: create, update, destroy
+
+The payload keys below and the `p[...]` reads in the entry above are the contract
+between the two files — nothing checks it for you, and a typo renders an empty gap
+in a sentence.
+
+```ruby
+class OrdersController < ApplicationController
+  before_action :set_order, only: %i[update cancel]
 
   def create
-    @invoice = Invoice.new(invoice_params)
+    @order = Order.new(order_params)
 
     # Emit INSIDE the success branch. An event for a save that failed
     # validation is a lie the audit log cannot take back.
-    if @invoice.save
-      AuditLog.notify("invoice.created",
-        invoice_id: @invoice.id,
-        number:     @invoice.number,
-        customer:   @invoice.customer.name,
-        total_cents: @invoice.total_cents)
-      redirect_to @invoice, notice: "Invoice created."
+    if @order.save
+      AuditLog.notify("order.created",
+        order_id:   @order.id,
+        number:     @order.number,
+        customer:   @order.customer.name,
+        total_cents: @order.total_cents)
+      redirect_to @order, notice: "Order created."
     else
       render :new, status: :unprocessable_entity
     end
   end
 
   def update
-    if @invoice.update(invoice_params)
+    if @order.update(order_params)
       # `saved_changes` is a good payload: it says WHICH fields moved without
       # duplicating layer 1's before/after values, which audit_changes already
       # holds against this same request_id.
-      AuditLog.notify("invoice.updated",
-        invoice_id: @invoice.id,
-        number:     @invoice.number,
-        fields:     @invoice.saved_changes.keys - %w[updated_at])
-      redirect_to @invoice, notice: "Invoice updated."
+      AuditLog.notify("order.updated",
+        order_id:   @order.id,
+        number:     @order.number,
+        fields:     @order.saved_changes.keys - %w[updated_at])
+      redirect_to @order, notice: "Order updated."
     else
       render :edit, status: :unprocessable_entity
     end
   end
 
-  def void
+  def cancel
     # Read anything the summary needs BEFORE the row goes away.
-    number = @invoice.number
+    number = @order.number
 
-    @invoice.destroy!
-    AuditLog.notify("invoice.voided",
-      invoice_id: @invoice.id, number: number,
+    @order.destroy!
+    AuditLog.notify("order.cancelled",
+      order_id: @order.id, number: number,
       reason: params[:reason].presence || "no reason given")
-    redirect_to invoices_path, notice: "Invoice voided."
+    redirect_to orders_path, notice: "Order cancelled."
   end
 end
 ```
-
-The matching half, in `config/initializers/audit_log.rb`. The payload keys and
-the lambda's `p[...]` reads are the contract between the two files — nothing
-checks it for you, and a typo renders an empty gap in a sentence:
-
-```ruby
-AuditLog::Registry.register "invoice.created",
-  description: "An invoice was raised against a customer.",
-  subject: ->(p) { ["Invoice", p[:invoice_id]] },
-  summary: lambda { |p|
-    "Raised invoice #{p[:number]} for #{p[:customer]} — " \
-      "#{ActiveSupport::NumberHelper.number_to_currency(p[:total_cents].to_i / 100.0)}"
-  }
-
-AuditLog::Registry.register "invoice.updated",
-  subject: ->(p) { ["Invoice", p[:invoice_id]] },
-  summary: ->(p) { "Edited invoice #{p[:number]} (#{Array(p[:fields]).join(', ')})" }
-
-AuditLog::Registry.register "invoice.voided",
-  description: "An invoice was destroyed, cascading to its line items.",
-  subject: ->(p) { ["Invoice", p[:invoice_id]] },
-  summary: ->(p) { "Voided invoice #{p[:number]} (#{p[:reason]})" }
-```
-
-`subject:` names the aggregate root the action was about. It is indexed
-(`subject_type, subject_id, occurred_at DESC`) and it is how `redact_record!`
-finds an action's rows — **an entry whose summary can carry personal data should
-always set it**, or a later erasure request will not reach it (DESIGN §13). Omit
-it only for an action with no single subject, such as a bulk price change.
-
-The summary is rendered **once, at emit time**, and stored. Editing one of these
-lambdas changes what future rows say, never what past rows said — a copy edit
-must not alter the historical record.
 
 ### An action that spans several writes
 
@@ -438,24 +479,24 @@ Put the `notify` in the model or service, inside the same transaction as the
 work, and let the controller stay a controller:
 
 ```ruby
-# app/controllers/invoices_controller.rb
-def issue
-  @invoice.issue!(by: current_user)
-  redirect_to @invoice, notice: "Invoice issued."
+# app/controllers/orders_controller.rb
+def submit
+  @order.submit!(by: current_user)
+  redirect_to @order, notice: "Order submitted."
 end
 
-# app/models/invoice.rb
-def issue!(by:)
+# app/models/order.rb
+def submit!(by:)
   transaction do
-    update!(status: "issued", issued_at: Time.current)
+    update!(status: "submitted", submitted_at: Time.current)
     line_items.each { |item| item.update!(unit_price_cents: item.product.price_cents) }
     customer.update!(balance_cents: customer.balance_cents + total_cents)
 
     # One notify for the whole action, not one per row: layer 1 already wrote a
     # row per row. Inside the transaction, so a rollback discards the sentence
     # along with the changes it describes.
-    AuditLog.notify("invoice.issued",
-      invoice_id: id, number: number, line_count: line_items.size,
+    AuditLog.notify("order.submitted",
+      order_id: id, number: number, line_count: line_items.size,
       total_cents: total_cents, approver: by.to_label)
   end
 end
@@ -499,13 +540,13 @@ own event when the work actually happens:
 
 ```ruby
 def ship
-  InvoiceDeliveryJob.perform_later(@invoice)
-  redirect_to @invoice, notice: "Delivery queued."
+  OrderShipmentJob.perform_later(@order)
+  redirect_to @order, notice: "Shipment queued."
 end
 ```
 
-An event emitted here would claim the invoice was delivered at the moment
-somebody clicked a button, which is not what happened.
+An event emitted here would claim the order shipped at the moment somebody
+clicked a button, which is not what happened.
 
 ### Payload rules
 

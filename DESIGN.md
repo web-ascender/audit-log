@@ -1844,7 +1844,7 @@ One indexed query on `request_id` for the whole page. This is where the design p
 
 > ⚠️ **Do not build the actor timeline off `audit_events` alone.** The event registry (§7) is an
 > allowlist, so `audit_events` is complete only for *registered* actions. A change made through a
-> controller that never emitted a registered event exists in `audit_changes` and nowhere else. The
+> controller that never emitted a registered action exists in `audit_changes` and nowhere else. The
 > screen must therefore offer both views — "Actions" (narrative, from events) and "All changes"
 > (complete, from changes) — and §11.5 keeps the gap between them visible and shrinking.
 

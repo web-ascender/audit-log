@@ -11,7 +11,7 @@ module AuditLog
   #              registry, and the compliance-grade answer to "modify or delete".
   #
   # Building an actor timeline off events alone is the trap: a change made
-  # through a path that never emitted a registered event exists in audit_changes
+  # through a path that never emitted a registered action exists in audit_changes
   # and nowhere else. Reconciler keeps that gap visible and shrinking.
   class ActorActivity
     attr_reader :actor_type, :actor_id, :range
