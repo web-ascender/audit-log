@@ -257,6 +257,142 @@ RSpec.describe "AuditLog.audited" do
       .to raise_error(ArgumentError, /requires a block.*AuditLog\.notify/m)
   end
 
+  # `on.transaction` JOINS a transaction the caller already opened rather than
+  # nesting one -- which is the whole answer to "can I hand audited my
+  # transaction?", since ActiveRecord::Transaction cannot be passed back in to
+  # re-enter one.
+  #
+  # NOTE on reading these: RSpec's fixture transaction is `joinable: false`, so
+  # the FIRST `transaction` inside an example is a savepoint. The caller
+  # transaction each example opens is therefore the thing audited joins.
+  describe "inside a transaction the caller already opened" do
+    it "joins it rather than nesting, so the event commits with the caller's work" do
+      order = build_order
+
+      as_actor(user) do
+        ActiveRecord::Base.transaction do
+          depth = ActiveRecord::Base.connection.open_transactions
+          AuditLog.audited("order.deleted", on: order, order_id: order.id) do
+            expect(ActiveRecord::Base.connection.open_transactions).to eq(depth)
+          end
+        end
+      end
+
+      expect(AuditLog::Event.where(action: "order.deleted").count).to eq(1)
+    end
+
+    it "discards the event when the CALLER's transaction rolls back" do
+      order = build_order
+      before_events = AuditLog::Event.count
+
+      as_actor(user) do
+        ActiveRecord::Base.transaction do
+          AuditLog.audited("order.deleted", on: order, order_id: order.id) do
+            order.update!(status: "cancelled")
+          end
+          raise ActiveRecord::Rollback
+        end
+      end
+
+      expect(order.reload.status).to eq("draft")
+      expect(AuditLog::Event.count).to eq(before_events)
+    end
+
+    # The trap this guard exists for. A joined transaction swallows
+    # ActiveRecord::Rollback, so without the guard the writes commit, no event is
+    # emitted, and audited returns nil as though it had rolled back. Verified by
+    # probe before the guard existed: the order committed as "submitted" with
+    # zero audit_events rows.
+    it "raises rather than letting a swallowed Rollback commit writes with no narrative" do
+      order = build_order
+
+      expect {
+        as_actor(user) do
+          ActiveRecord::Base.transaction do
+            AuditLog.audited("order.deleted", on: order, order_id: order.id) do
+              order.update!(status: "cancelled")
+              raise ActiveRecord::Rollback
+            end
+          end
+        end
+      }.to raise_error(AuditLog::Error, /JOINED a transaction.*requires_new/m)
+    end
+
+    it "does not fire that guard when audited owns the transaction" do
+      order = build_order
+
+      expect {
+        as_actor(user) do
+          AuditLog.audited("order.deleted", on: order, order_id: order.id) do
+            raise ActiveRecord::Rollback
+          end
+        end
+      }.not_to raise_error
+    end
+
+    it "honours transaction: {requires_new: true}, so the rollback discards for real" do
+      order = build_order
+      before_events = AuditLog::Event.count
+
+      as_actor(user) do
+        ActiveRecord::Base.transaction do
+          AuditLog.audited("order.deleted", on: order, order_id: order.id,
+                           transaction: {requires_new: true}) do
+            order.update!(status: "cancelled")
+            raise ActiveRecord::Rollback
+          end
+        end
+      end
+
+      expect(order.reload.status).to eq("draft")
+      expect(AuditLog::Event.count).to eq(before_events)
+    end
+  end
+
+  describe "the yielded transaction" do
+    # So a caller can use Rails' transaction callbacks without opening a
+    # transaction of its own purely to reach one. Whether Rails then FIRES the
+    # callback is Rails' business and not asserted here; what this library owes
+    # is the object.
+    it "yields the ActiveRecord::Transaction as a second argument" do
+      order = build_order
+      yielded = nil
+
+      as_actor(user) do
+        AuditLog.audited("order.deleted", on: order, order_id: order.id) { |_a, tx| yielded = tx }
+      end
+
+      expect(yielded).to be_a(ActiveRecord::Transaction)
+      expect(yielded).to respond_to(:after_commit, :after_rollback)
+    end
+
+    it "is the CALLER's transaction when joined, so callbacks fire on their commit" do
+      order = build_order
+      outer = nil
+      inner = nil
+
+      as_actor(user) do
+        ActiveRecord::Base.transaction do |tx|
+          outer = tx
+          AuditLog.audited("order.deleted", on: order, order_id: order.id) { |_a, t| inner = t }
+        end
+      end
+
+      expect(inner).to equal(outer)
+    end
+
+    it "still accepts blocks that name one argument or none" do
+      order = build_order
+
+      expect {
+        as_actor(user) do
+          AuditLog.audited("order.deleted", on: order, order_id: order.id) { |audit| audit[:x] = 1 }
+          AuditLog.audited("order.deleted", on: order, order_id: order.id) { }
+        end
+      }.to change(AuditLog::Event, :count).by(2)
+    end
+  end
+
   describe "on:" do
     it "opens the transaction on the object it is given" do
       order = build_order

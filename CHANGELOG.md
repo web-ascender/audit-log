@@ -29,6 +29,17 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
   deprecated, and remains the option when several notifies belong to one
   transaction. See DESIGN §7 and the README.
 
+- **`AuditLog.audited` now yields the `ActiveRecord::Transaction`** as a second
+  block argument, accepts `transaction:` options passed through to
+  `ActiveRecord::Base.transaction`, and raises on an `ActiveRecord::Rollback` it
+  could not honour. It has always joined a caller's open transaction — that is
+  the only way Rails allows one to be handed over — but a joined transaction
+  swallows `ActiveRecord::Rollback`, and the sugar hides the nesting. Left
+  unguarded that committed the writes, emitted no event, and returned `nil` as
+  though it had rolled back. Yielding the transaction lets a caller use Rails'
+  transaction callbacks without opening one of its own; when joined it is their
+  transaction, so callbacks fire on their outermost commit.
+
 - **`AuditLog::Registry.register requires:`** — an optional payload contract per
   action. The keys a call site passes and the `p[...]` reads in the entry were
   checked by nothing, and a typo on either side rendered a gap in a sentence that

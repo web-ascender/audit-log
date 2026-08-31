@@ -594,6 +594,58 @@ def ship!(carrier:)
 end
 ```
 
+**Calling it inside a transaction you already opened works, and is the normal
+case.** `audited` *joins* an open transaction on the same connection rather than
+nesting one, so the event commits and rolls back with your unit of work. There is
+no other way to hand a transaction over in Rails — `ActiveRecord::Transaction`
+cannot be passed back in to re-enter one, so joining is the handover.
+
+The block is yielded that transaction as a second argument, so you can use Rails'
+[transaction callbacks](https://api.rubyonrails.org/classes/ActiveRecord/ConnectionAdapters/DatabaseStatements.html#method-i-transaction-label-Transaction+callbacks)
+without opening a transaction of your own just to reach one:
+
+```ruby
+AuditLog.audited("order.shipped", on: self, order_id: id) do |audit, tx|
+  tx.after_commit { NotifyCustomerJob.perform_later(id) }
+
+  shipment = shipments.create!(carrier: carrier)
+  audit[:tracking_number] = shipment.tracking_number
+end
+```
+
+When joined, that is *your* transaction object, so the callback fires on your
+outermost commit rather than on ours. Blocks naming one argument or none are
+unaffected. Need a savepoint instead of a join? `transaction:` is passed straight
+through to `ActiveRecord::Base.transaction`:
+
+```ruby
+AuditLog.audited("order.shipped", on: self, transaction: {requires_new: true}, ...)
+```
+
+`on:` and `transaction:` are the only two keywords reserved from the payload.
+
+Outside `audited`, the same callbacks are reachable through
+[`current_transaction`](https://api.rubyonrails.org/classes/ActiveRecord/Transactions/ClassMethods.html#method-i-current_transaction),
+which is often what you actually want — with no transaction open it returns a
+null object whose `after_commit` runs the block immediately, so one spelling
+covers both cases:
+
+```ruby
+Order.current_transaction.after_commit { NotifyCustomerJob.perform_later(id) }
+```
+
+It is a class method, so `Order.current_transaction`, not `order.current_transaction`.
+
+> [!WARNING]
+> **A joined transaction swallows `ActiveRecord::Rollback`** — this is Rails'
+> documented [nested transaction](https://api.rubyonrails.org/classes/ActiveRecord/ConnectionAdapters/DatabaseStatements.html#method-i-transaction-label-Nested+transactions+support)
+> behaviour, and `audited` hides the nesting, so the block looks like it owns a
+> transaction it does not. Raising `ActiveRecord::Rollback` there would commit
+> your writes, emit no event, and have `audited` return `nil` as though it had
+> rolled back. `audited` detects that and raises instead. Use
+> `transaction: {requires_new: true}` for a savepoint the rollback can actually
+> discard, or raise a real exception to abort the enclosing transaction.
+
 The explicit `transaction do ... AuditLog.notify ... end` form is not deprecated
 and never will be. Use it wherever several notifies belong in one transaction.
 

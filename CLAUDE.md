@@ -200,6 +200,29 @@ Do not "fix" these without reading the linked reasoning first.
   which is the state `shared/_event_payload` renders as nothing, and
   `audit_ui_spec` needs somewhere to assert it. Do not "finish the job" by
   declaring it. `payload_contract_spec` pins that exactly one entry is undeclared.
+- **`AuditLog.audited` JOINS a caller's open transaction, yields that transaction
+  as a second block argument, and RAISES on a Rollback it could not honour.**
+  There is no way to hand Rails a transaction handle — `ActiveRecord::Transaction`
+  cannot be passed back into `transaction` to re-enter — so joining IS the
+  handover, and yielding the object is how a caller reaches `after_commit`
+  without opening a transaction purely to get one. When joined it is the
+  CALLER's transaction, so callbacks fire on their outermost commit;
+  `audited_spec` pins that by object identity. A joined transaction swallows
+  `ActiveRecord::Rollback`, and the sugar hides the nesting, so without the guard
+  the writes commit, no event is emitted, and `audited` returns nil as though it
+  had rolled back — measured, not reasoned about: the order committed as
+  "submitted" with zero `audit_events` rows. The guard reads `tx.open?` AFTER the
+  transaction block returns, which is public API needing no connection handle (AR
+  instances expose none): owned — real or savepoint — is closed by then, joined
+  is still open. Do NOT re-spell it as `connection.open_transactions` or
+  `transaction_open?`. `current_transaction` compared by identity is equally
+  correct and was evaluated — it is a CLASS method, and `on:` is idiomatically an
+  instance, so it costs a normalisation for no gain; it IS the right idiom on the
+  CALLER's side, where `NullTransaction#after_commit` runs immediately when no
+  transaction is open. And do NOT default to `requires_new: true` to dodge the
+  whole thing — that would take a savepoint on every nested call and change
+  atomicity for everyone. `transaction:` passes options through; it and `on:` are
+  the only keywords reserved from the payload. DESIGN §7.
 - **`AuditLog::Payload` WRAPS a Hash and must not subclass one, and `merge`
   without the bang is a tombstone that raises.** Subclassing publishes `delete`,
   `clear`, `replace` and `reject!` as things a block may do to an audit payload —

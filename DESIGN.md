@@ -1335,6 +1335,58 @@ different direction, and the mitigation is the same — the README shows `on: se
 Requiring `on:` outright, or requiring it only in apps with more than one connection pool, are both
 open and both defensible under §16's forcing-function argument.
 
+#### Joining the caller's transaction, and the Rollback it swallows
+
+`on.transaction` **joins** an open transaction on the same connection rather than nesting one, so an
+`audited` inside a caller's transaction commits and rolls back with the caller's unit of work. That
+is also the complete answer to "can the caller hand `audited` its transaction?" — it cannot, because
+Rails has no such form. `ActiveRecord::Transaction` is a handle for registering callbacks, not one
+that can be passed back into `transaction` to re-enter. Joining is the handover.
+
+The block is therefore yielded that transaction as a **second argument**, so a caller can reach
+Rails' transaction callbacks without opening a transaction of its own purely to get one. When joined
+it is the caller's own transaction object — verified by identity in `audited_spec` — so an
+`after_commit` registered there fires on their outermost commit, which is what makes this preferable
+to reaching for `requires_new` to obtain a callback. What the object exposes is Rails' business and
+varies by version; on the `~> 8.0` floor it is `after_commit`, `after_rollback`, `open?` and `uuid`
+(`before_commit` is not there, so this library does not promise it). Blocks naming one argument or
+none are unaffected, since a block ignores arguments it does not name.
+
+`transaction:` passes options straight through to `on.transaction`, so `requires_new:`, `isolation:`
+and the rest stay available. It and `on:` are the only two keywords reserved from the payload.
+
+**The trap.** A joined transaction swallows `ActiveRecord::Rollback` — Rails documents this, and
+what makes it worth catching here is that the sugar hides the nesting, so the block looks like it
+owns a transaction it does not. Measured before the guard existed: an `audited` raising
+`ActiveRecord::Rollback` inside a caller's transaction left the order committed as `"submitted"`,
+wrote **zero** `audit_events` rows, and returned `nil` — change rows with no narrative, reported as
+the exact opposite. That is this library's own worst case reached through its own convenience.
+
+It is detected with `tx.open?` **after** the transaction block returns. That is public API and needs
+no connection handle, which matters because Active Record instances do not expose one: a transaction
+we owned — real or savepoint — is closed by then, and one we merely joined is still open. Probed
+across all four cases, including RSpec's transactional fixtures, whose `joinable: false` wrapper
+makes our transaction a genuine savepoint and so correctly does not trip the guard:
+
+| ambient | `open_transactions` before → inside | `tx.open?` after |
+|---|---|---|
+| none | 0 → 1 | `false` — we owned it |
+| caller's ordinary `transaction` | 1 → **1** | **`true` — joined** |
+| `joinable: false` (RSpec fixtures) | 1 → 2 | `false` — savepoint |
+| `requires_new: true` | 1 → 2 | `false` — savepoint |
+
+The guard raises rather than silently escalating, and names both fixes: `requires_new: true` for a
+savepoint the rollback can discard, or a real exception to abort the enclosing transaction.
+
+**`current_transaction` was evaluated as the detector and not adopted.** Capturing
+`on.current_transaction` before the block and comparing it by identity to the yielded transaction
+detects the join *up front* rather than inferring it afterwards, and is correct across the same four
+cases. It is a **class** method, though, and `on:` is idiomatically `self` — an Active Record
+instance, which does not respond to it — so adopting it costs an `on.is_a?(Class) ? on : on.class`
+normalisation for no correctness gain over `tx.open?`. It is the better idiom on the *caller's* side,
+where the receiver is a class anyway and `NullTransaction#after_commit` runs the block immediately
+when no transaction is open, so one spelling covers both cases; the README recommends it there.
+
 The explicit form is not deprecated. It remains the option when several notifies belong to one
 transaction.
 

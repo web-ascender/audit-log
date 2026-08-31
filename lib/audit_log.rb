@@ -128,8 +128,52 @@ module AuditLog
     # the same silence config.correlated_connections exists to prevent. Pass
     # `on: self` (or the model class) and it is right by construction.
     #
+    # ---- Being called inside a transaction the CALLER already opened ---------
+    #
+    # This is the normal case and it works: `on.transaction` JOINS an open
+    # transaction on the same connection rather than nesting one, so the event
+    # commits and rolls back with the caller's unit of work. There is no other
+    # way to hand a transaction over in Rails -- ActiveRecord::Transaction cannot
+    # be passed back in to re-enter, so joining IS the handover.
+    #
+    # The block is yielded the ActiveRecord::Transaction as a SECOND argument, so
+    # a caller can register Rails' transaction callbacks without having to open a
+    # transaction of its own just to reach one:
+    #
+    #   AuditLog.audited("order.shipped", on: self, order_id: id) do |audit, tx|
+    #     tx.after_commit { NotifyCustomerJob.perform_later(id) }
+    #     ...
+    #   end
+    #
+    # When joined, that IS the caller's transaction object, so the callback fires
+    # on their outermost commit rather than on ours -- which is the behaviour you
+    # want and the reason not to reach for requires_new to get it. What the object
+    # exposes is Rails' business and varies by version; on the `~> 8.0` floor it is
+    # after_commit, after_rollback, open? and uuid. Blocks taking no argument or
+    # only |audit| are unaffected -- a block ignores arguments it does not name.
+    #
+    # `transaction:` is passed straight through to `on.transaction`, so a caller
+    # wanting a savepoint says `transaction: {requires_new: true}`. It and `on:`
+    # are the only two keywords reserved from the payload.
+    #
+    # ---- The one trap, which is why the guard below exists -------------------
+    #
+    # A JOINED transaction swallows ActiveRecord::Rollback. Rails documents this;
+    # what makes it worth catching here is that the sugar hides the nesting, so
+    # the block looks like it owns a transaction it does not. Raising Rollback in
+    # it would then commit the writes, emit no event, and have `audited` return
+    # nil as though it had rolled back -- change rows with no narrative, reported
+    # as the opposite. Measured, not reasoned about: the probe left the order
+    # "submitted" with zero audit_events rows.
+    #
+    # It is detected with `tx.open?` AFTER the transaction block returns, which is
+    # public API and needs no connection handle: a transaction we owned (real or
+    # savepoint) is closed by then, and one we merely joined is still open. That
+    # also does not false-positive under RSpec's transactional fixtures, whose
+    # `joinable: false` wrapper means our transaction really is a savepoint.
+    #
     # Returns the block's value, or nil if the block rolled the transaction back.
-    def audited(action, on: ActiveRecord::Base, **eager)
+    def audited(action, on: ActiveRecord::Base, transaction: {}, **eager)
       unless block_given?
         raise ArgumentError, "AuditLog.audited(#{action.inspect}) requires a block -- it is " \
                              "the transaction the event commits with. To emit without one, " \
@@ -138,10 +182,28 @@ module AuditLog
 
       payload = Payload.new(action, eager)
       result  = nil
+      emitted = false
+      opened  = nil
 
-      on.transaction do
-        result = yield payload
+      on.transaction(**transaction) do |tx|
+        opened  = tx
+        result  = yield payload, tx
         notify(action, **payload.to_h)
+        emitted = true
+      end
+
+      # A normal return from `transaction` with the emit unreached means the block
+      # raised ActiveRecord::Rollback; any other exception would have propagated.
+      # If the transaction is still open, we were joined and that rollback did
+      # nothing at all.
+      if !emitted && opened&.open?
+        raise Error, "AuditLog.audited(#{action.inspect}): the block raised " \
+                     "ActiveRecord::Rollback, but this call JOINED a transaction the caller " \
+                     "had already opened -- so nothing was rolled back and no event was " \
+                     "emitted. The writes would have committed with no narrative describing " \
+                     "them. Either pass transaction: {requires_new: true} for a savepoint the " \
+                     "rollback can actually discard, or raise a real exception to abort the " \
+                     "caller's transaction."
       end
 
       result
