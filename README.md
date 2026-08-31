@@ -70,6 +70,8 @@ the authority on *why* any of this is shaped the way it is.
   - [Attaching to a table that already exists](#attaching-to-a-table-that-already-exists)
   - [Re-attaching, and changing a table's exclusions](#re-attaching-and-changing-a-tables-exclusions)
   - [Installing into a schema other than `public`](#installing-into-a-schema-other-than-public)
+  - [Transaction control in `audited`](#transaction-control-in-audited)
+  - [Multi-database apps](#multi-database-apps)
   - [Why objects and not relations](#why-objects-and-not-relations)
 - [Why this one, and not a callback-based gem](#why-this-one-and-not-a-callback-based-gem)
 - [Why not one of the popular gems?](#why-not-one-of-the-popular-gems)
@@ -197,7 +199,7 @@ command, and the reasoning for any of it is linked rather than inline.
 
 ```ruby
 # Gemfile
-gem "audit_log", git: "https://github.com/web-ascender/audit-log", tag: "v0.2.0"
+gem "audit_log", git: "https://github.com/web-ascender/audit-log", tag: "v0.3.0"
 ```
 
 A private repo, so `bundle` needs credentials for the company GitHub org. Pin to
@@ -289,7 +291,9 @@ AuditLog.notify("order.cancelled", order_id: @order.id, number: number,
 ```
 
 This is what turns a complete log into a readable one: layer 2, the sentences an
-auditor reads instead of a field diff. `bin/rails audit_log:reconcile` tells you
+auditor reads instead of a field diff. When the action spans several writes,
+[`AuditLog.audited`](#letting-audited-open-the-transaction) is the same emit with
+the transaction handled for you. `bin/rails audit_log:reconcile` tells you
 which actions you have not named yet, so it fills in over time rather than
 up front. See
 [Registering and emitting events](#registering-and-emitting-events).
@@ -364,6 +368,7 @@ readability, not completeness — the difference between an auditor reading
 ```ruby
 AuditLog::Registry.register "order.created",
   description: "An order was placed for a customer.",
+  requires: %i[order_id],
   subject: ->(p) { ["Order", p[:order_id]] },
   summary: lambda { |p|
     "Placed order #{p[:number]} for #{p[:customer]} — " \
@@ -387,6 +392,7 @@ AuditLog::Registry.register "order.cancelled",
 | `summary:` <br><br> (required) | lambda → `String` | Describe a **specific occurrence**. Should usually include a noun, verb and some kind of human-friendly record descriptor | <span style="white-space: nowrap;">`"Submitted Order #{p[:number]}"`<span> | yes — `audit_events.summary`, rendered at emit and frozen |
 | `subject:` <br><br> (optional - recommended) | lambda → `[type, id]`, optional | Track the model type and id (each occurrence) | `["Order", p[:order_id]]` | yes — `subject_type` / `subject_id`, indexed |
 | `description:` <br><br> (optional - recommended) | `String` | What this action means, in general | `"An order was submitted for fulfillment."` <br> (for an action registered as `"order.submitted"`) | no — it lives only in this initializer |
+| `requires:` <br><br> (optional) | `Array<Symbol>` | Payload keys this entry cannot render without. Emitting it without one raises instead of storing a sentence with a hole in it — see [Declaring a payload contract](#declaring-a-payload-contract) | `%i[order_id number reason]` | no — it is a check, not data |
 
 **`summary:`** is the evidence sentence, and it is what every screen shows.
 Interpolate the payload so each row says something specific: `Placed order
@@ -395,14 +401,12 @@ SO-4471 for Acme — $1,240.00`, not "an order was placed". It is rendered
 rows say and never what past rows said — a copy edit must not alter the
 historical record.
 
-**`subject:`** is a pointer, not prose; nothing renders it as text. It names the
-aggregate root the action was about, and three things read those two columns: the
-indexed half of a record's history screen, the events leg of `AuditLog::Timeline`,
-and `redact_record!`, which finds an action's rows by subject — so **an entry
-whose summary can carry personal data should always set it**, or a later erasure
-request will not reach it (DESIGN §13). Omit it only for an action with no single
-subject, such as a bulk price change; those rows still appear in a record's
-*correlated* section, which is matched on `request_id` and capped.
+**`subject:`** names the record the action was about — a pointer, not prose;
+nothing renders it as text. It is what puts the action on that record's history
+screen, and what a later erasure request follows, so **set it on any entry whose
+summary could carry personal data**, or that erasure will not reach it. Omit it
+only for an action with no single subject, such as a bulk price change; those
+still show up in a record's *correlated* section.
 
 **`description:`** is the glossary entry an auditor reads at the top of
 `/audit/actions/order.cancelled` when they need to know what that name signifies
@@ -424,8 +428,10 @@ not a historical claim about any event.
 ### Emitting it: create, update, destroy
 
 The payload keys below and the `p[...]` reads in the entry above are the contract
-between the two files — nothing checks it for you, and a typo renders an empty gap
-in a sentence.
+between the two files. A typo on either side renders an empty gap in a sentence,
+so once an action settles down, declare its keys with
+[`requires:`](#declaring-a-payload-contract) and the gap becomes an exception
+instead.
 
 ```ruby
 class OrdersController < ApplicationController
@@ -516,96 +522,72 @@ payload key; it is duplication that can later disagree with `actor_label`.
 ### Letting `audited` open the transaction
 
 `AuditLog.audited` is sugar for exactly the shape above — it opens the
-transaction, runs your block, and emits the event as the last statement inside
-it. Same guarantees:
+transaction, runs your block, and emits the event, same guarantees:
 
 ```ruby
 # app/models/order.rb
 def submit!(by:)
-  AuditLog.audited("order.submitted", on: self,
-                   order_id: id, number: number, approver: by.to_label) do |audit|
+  # pass identity data in as keyword arguments (e.g. order_id)
+  AuditLog.audited("order.submitted",
+    order_id: id, number: number, approver: by.to_label) do |audit|
+    # audited opens or joins a transaction
     update!(status: "submitted", submitted_at: Time.current)
     line_items.each { |item| item.update!(unit_price_cents: item.product.price_cents) }
     customer.update!(balance_cents: customer.balance_cents + total_cents)
 
+    # assign outcome data using the `audit` block variable
+    # (e.g total_cents wasn't known until code inside the block was executed)
     audit[:line_count]  = line_items.size
     audit[:total_cents] = total_cents
+
+    # audit data is committed (or rolled back) with the transaction
   end
 end
 ```
 
-**The payload is built in two places, and which half a key belongs to is the one
-rule to learn:**
+| Identity and input data <br> (data that will NOT change inside the block)| Outcomes / Calculated Data <br> (data only known inside the block) |
+|---|---|
+|keyword-arguments pass in to `.audited(...)`|assign using block variable
 
-> **Identity and inputs are keyword arguments. Outcomes go through `audit`.**
+> [!CAUTION]
+> a key set in both places (kwargs and block assignment) will raise an error
 
-Ids, references, a `reason` off params, the actor's label — the block cannot
-change them, so they read naturally beside the action name, where the registry
-entry's `subject:` lambda reads them. Counts, totals, a tracking number belonging
-to a record the block has not created yet — those are produced *by* the writes,
-so they can only be collected after them.
-
-Putting an outcome in the keyword slot records **pre-write** state under a
-sentence describing the write. `total_cents` above is recalculated from the line
-items the block reprices; passed as a keyword it would file the pre-submit total
-under "order submitted", and the screen would render it without complaint.
-Nothing can mechanically prove a value is an input, so the guard that exists is
-the one that can be built: **a key set in both slots raises**, and says which
-slot to remove it from.
-
-`audit` takes keys three ways, all equivalent:
+`audit` block takes keys three ways, all equivalent:
 
 ```ruby
-audit[:line_count] = line_items.size                        # assignment
-audit.merge!(line_count: line_items.size, total_cents: n)   # keywords
-audit.merge!({line_count: line_items.size})                 # a hash
+# assignment
+audit[:line_count] = line_items.size                        
+# keywords    (note .merge! and not .merge)
+audit.merge!(line_count: line_items.size, total_cents: n)   
+# a hash      (note .merge! and not .merge)
+audit.merge!({line_count: line_items.size})                 
 ```
-
-`audit.merge` — without the `!` — raises rather than doing what Ruby's
-convention says it does, which on a collector would be to build a hash, discard
-it, and emit the event without those keys.
-
-Two more things worth knowing:
-
-**Pass `on:`.** It is what opens the transaction, and it defaults to
-`ActiveRecord::Base` — right for a single-database app, and wrong for a model on
-a secondary connection via `connects_to`, where that transaction would wrap none
-of your writes and a rollback would discard nothing while appearing to work.
-`on: self` inside a model instance method, or the model class, is right by
-construction.
-
-**The emit is inside the transaction, not after commit.** "Only if the writes
-succeeded" comes free — a raise never reaches the last statement — and the
-guarantee holds in the other direction too: if the event write fails, the
-business changes roll back with it. An `after_commit` emit would leave the
-changes standing with no narrative.
 
 `audited` returns the block's value, so a method can still return what it built:
 
 ```ruby
 def ship!(carrier:)
-  AuditLog.audited("order.shipped", on: self, order_id: id, carrier: carrier) do |audit|
+  AuditLog.audited("order.shipped", order_id: id, carrier: carrier) do |audit|
     shipment = shipments.create!(carrier: carrier)
     update!(status: "shipped")
+    audit[:tracking_number] = shipment.tracking_number
 
-    audit[:tracking_number] = shipment.tracking_number   # did not exist until now
-    shipment                                             # ...and this comes back to the caller
+    # block returns `shipment` like you'd expect
+    shipment
   end
 end
 ```
 
 **Calling it inside a transaction you already opened works, and is the normal
 case.** `audited` *joins* an open transaction on the same connection rather than
-nesting one, so the event commits and rolls back with your unit of work. There is
-no other way to hand a transaction over in Rails — `ActiveRecord::Transaction`
-cannot be passed back in to re-enter one, so joining is the handover.
+nesting one, so the event commits and rolls back with your unit of work.
 
-The block is yielded that transaction as a second argument, so you can use Rails'
+You can use Rails'
 [transaction callbacks](https://api.rubyonrails.org/classes/ActiveRecord/ConnectionAdapters/DatabaseStatements.html#method-i-transaction-label-Transaction+callbacks)
-without opening a transaction of your own just to reach one:
+without opening a transaction of your own by using the second `tx` block argument:
 
 ```ruby
-AuditLog.audited("order.shipped", on: self, order_id: id) do |audit, tx|
+AuditLog.audited("order.shipped", order_id: id) do |audit, tx|
   tx.after_commit { NotifyCustomerJob.perform_later(id) }
 
   shipment = shipments.create!(carrier: carrier)
@@ -617,47 +599,12 @@ When joined, that is *your* transaction object, so the callback fires on your
 outermost commit rather than on ours. Blocks naming one argument or none are
 unaffected.
 
-> [!CAUTION]
-> **`transaction.before_commit` does not exist**, despite appearing in Rails' own
-> documented example for this API. `ActiveRecord::Transaction` defines only
-> `after_commit`, `after_rollback`, `open?`, `closed?` and `uuid` — verified in
-> the source of both 8.0.5.1 and 8.1.3.1 — so copying that example raises
-> `NoMethodError`. `before_commit` exists on the internal transaction and as a
-> *model* callback (`ActiveRecord::Base.before_commit`), neither of which is the
-> object yielded here. Nothing before the commit needs a callback anyway: the end
-> of your block already runs there. Need a savepoint instead of a join? `transaction:` is passed straight
-through to `ActiveRecord::Base.transaction`:
+That is the whole of the everyday API, and it assumes a single database. Savepoints,
+`ActiveRecord::Rollback` inside a joined transaction, and the transaction callbacks
+Rails documents but does not have are in
+[Transaction control in `audited`](#transaction-control-in-audited); apps using
+`connects_to` need [Multi-database apps](#multi-database-apps).
 
-```ruby
-AuditLog.audited("order.shipped", on: self, transaction: {requires_new: true}, ...)
-```
-
-`on:` and `transaction:` are the only two keywords reserved from the payload.
-
-Outside `audited`, the same callbacks are reachable through
-[`current_transaction`](https://api.rubyonrails.org/classes/ActiveRecord/Transactions/ClassMethods.html#method-i-current_transaction),
-which is often what you actually want — with no transaction open it returns a
-null object whose `after_commit` runs the block immediately, so one spelling
-covers both cases:
-
-```ruby
-Order.current_transaction.after_commit { NotifyCustomerJob.perform_later(id) }
-```
-
-It is a class method, so `Order.current_transaction`, not `order.current_transaction`.
-
-> [!WARNING]
-> **A joined transaction swallows `ActiveRecord::Rollback`** — this is Rails'
-> documented [nested transaction](https://api.rubyonrails.org/classes/ActiveRecord/ConnectionAdapters/DatabaseStatements.html#method-i-transaction-label-Nested+transactions+support)
-> behaviour, and `audited` hides the nesting, so the block looks like it owns a
-> transaction it does not. Raising `ActiveRecord::Rollback` there would commit
-> your writes, emit no event, and have `audited` return `nil` as though it had
-> rolled back. `audited` detects that and raises instead. Use
-> `transaction: {requires_new: true}` for a savepoint the rollback can actually
-> discard, or raise a real exception to abort the enclosing transaction.
-
-The explicit `transaction do ... AuditLog.notify ... end` form is not deprecated
-and never will be. Use it wherever several notifies belong in one transaction.
 
 ### An action whose writes skip Active Record
 
@@ -738,31 +685,19 @@ AuditLog::Registry.register "order.submitted",
   summary: ->(p) { "Submitted order #{p[:reference]} — #{p[:line_count]} line items" }
 ```
 
-Emit `order.submitted` without `line_count` — from `notify`, from `audited`, or
-from a bare `Rails.event.notify` — and it raises `AuditLog::MissingPayloadKeys`
-naming the key. Because the check runs where the row is written, it is inside
-your transaction: the change rolls back rather than committing beside a sentence
-with a hole in it, which is the same position the engine takes with
-`raise_on_error`.
+Emit that action without `line_count` — from `notify`, from `audited`, or from a
+bare `Rails.event.notify` — and it raises `AuditLog::MissingPayloadKeys` naming
+the key, inside your transaction, so the change rolls back with it.
 
-Four things about it are deliberate:
+Four things to know:
 
-- **It is opt-in per entry.** An entry with no `requires:` is unchecked, exactly
-  as before. That is what keeps this from being a landmine — a raise in
-  production is only reachable where somebody deliberately wrote a contract, and
-  an app adopts it action by action the way the registry itself fills in.
-  Deleting the line is the escape valve; there is no config flag to soften the
-  check.
-- **Extra keys pass, and are still stored.** Payloads legitimately grow, and a
-  call-site typo is already caught by the missing half — `refernce:` means
-  `reference` is absent.
-- **It checks that the key is present, not that the value is.** `metadata` is
-  stored `.compact`ed, so a deliberate `reason: nil` and a forgotten `reason:`
-  produce an identical row. The declaration is the only place that distinction
-  survives.
-- **List what the entry cannot render without, not every key it reads.** A
-  summary spelled `Array(p[:columns]).presence || "all values"` has already
-  decided that key is optional; requiring it contradicts the entry.
+- **Opt-in per entry.** An entry with no `requires:` is unchecked (allows anything and **nothing**!)
+- **Extra keys pass, and are still stored.**
+- **A key present with a `nil` value counts as supplied** — `metadata` is stored
+  `.compact`ed, so this is the only place that distinction survives.
+- **List what the entry cannot render without**, not every key it reads.
+
+The reasoning behind each is in [`DESIGN.md`](DESIGN.md) §7.
 
 ### Finding the actions you have not registered yet
 
@@ -787,9 +722,9 @@ issued. This is the compliance-grade answer and the reason it is the landing tab
 **Actions** is `audit_events` — the same history as sentences. It has two
 sections, and the split is deliberate:
 
-- **The actions that named this record as their `subject`.** Served by
-  `(subject_type, subject_id, occurred_at DESC)`, keyset-paged, uncapped. Complete
-  for actions that have a `Registry` entry *and* a `subject:` lambda.
+- **The actions that named this record as their `subject`.** Indexed,
+  keyset-paged and uncapped — complete for actions that have a `Registry` entry
+  *and* a `subject:` lambda.
 - **"Also touched this record"** — actions that wrote to it under a different
   subject or none at all: a bulk update, a save whose subject was the parent, an
   entry registered with no `subject:`. There is no column linking these to the
@@ -989,39 +924,30 @@ trail outlives what it describes and that is exactly when somebody reads it.
 `include AuditLog::Pagination` gives you `paginate(scope, limit:)`, reading the
 cursor from `params[:page]`. It is not a convenience.
 
-A keyset cursor is serialised with `to_json`, and ActiveSupport renders a
-`Time` at **millisecond** precision — while `occurred_at` is `clock_timestamp()`,
-which is **microseconds**. A pager that does not override that mints a cursor
-naming an instant just before the row it came from, and the next page's
-`occurred_at < cursor` skips everything in the gap. **Rows vanish between pages,
-silently.** It presents as a rare flake, not as an error; it took roughly one
-full-suite run in eight to surface here before it was fixed.
+A hand-rolled keyset cursor serialises `occurred_at` at ActiveSupport's default
+**millisecond** precision, while the column is `clock_timestamp()` —
+**microseconds**. The cursor then names an instant just before the row it came
+from, and the next page skips everything in the gap: **rows vanish between pages,
+silently**, as a rare flake rather than an error. This module carries the fix, and
+falls back to the first page on a cursor minted for a different screen rather than
+applying it and dropping rows.
 
-`AuditLog::Pagination::FULL_PRECISION` is the fix, and including the module is
-how you get it. It also falls back to the first page on a cursor minted for a
-different screen, rather than raising or — worse — applying it and dropping rows.
-
-It brings no dependency with it, and that is deliberate. Bundler resolves one
-`pagy` per app; this module needs `Pagy::Keyset` (9.0+) *and* the
-`jsonify_keyset_attributes:` hook (9.3+, removed again in Pagy 43), so depending
-on Pagy would have pinned your app to two of its releases. Paginate the rest of
-your app with whatever you like — these screens are unaffected by it.
-
+It brings no dependency with it, so paginate the rest of your app however you
+already do. [`DESIGN.md`](DESIGN.md) §11.0 has the measurement, and why this is
+hand-rolled rather than built on Pagy.
 
 ### Four things to know
 
-**`headline` is nil when no registered action covered the write, and the library
-will not invent one.** A sentence composed from column names would be *this
-gem's* phrasing rather than yours, would re-render differently after a gem
-upgrade, and on the page would be indistinguishable from a `summary` that was
-frozen at emit time. You have i18n and know what your models are called — and if
-they are STI, names this gem could never guess. `kind` tells you which you are
-holding. Register more actions and more entries become `:narrative`.
+**`headline` is nil when no registered action covered the write**, and the
+library will not invent one — a generated sentence would be this gem's phrasing
+rather than yours, and would be indistinguishable on the page from a `summary`
+frozen at emit time. `kind` tells you which you are holding; register more actions
+and more entries become `:narrative`.
 
 **Never drop the id from a `TouchedRecord`.** `to_s` renders
-`Grommet 10mm (Product #51)` on purpose: the label is resolved *live* from the
-record's current row, the id is what the log recorded. Showing only the label
-lets a rename rewrite what your timeline says happened.
+`Grommet 10mm (Product #51)` on purpose: the label is resolved live, the id is
+what the log recorded. Showing only the label lets a rename rewrite what your
+timeline says happened.
 
 **Set `config.record_url` if you want links.** It is nil by default and that is
 not a placeholder — this gem does not know your routes, and it will not guess
@@ -1043,37 +969,26 @@ so gate it with your own policy layer.
 
 ### Bounding it
 
-`range:` narrows both halves of the union and is the biggest lever on cost.
-Measured against a 36-month horizon (72 monthly partitions across the two
-tables):
-
-| Bound | Partitions touched |
-|---|---|
-| unbounded (default) | 72 |
-| `range: 1.year.ago..Time.current` | 34 |
-| `range: 90.days.ago..Time.current` | 16 |
-| `range: 30.days.ago..Time.current` | 4 |
+`range:` narrows both halves of the union and is the biggest lever on cost: a
+30-day window touches 4 monthly partitions where an unbounded timeline touches
+all 72.
 
 ```ruby
 AuditLog::Timeline.for(@order, range: 90.days.ago..Time.current)   # max age
 AuditLog::Timeline.for(@order, range: (cutoff - 1.year)..cutoff)   # up to a date
 ```
 
-**Close the range at the top, even when the top is "now."** `30.days.ago..`
-touches 12 partitions; `30.days.ago..Time.current` touches 4, for the same span.
-An endless range cannot exclude the months-ahead partitions or the default one.
-(If you pass an endless range anyway, the library closes it at the current
-instant for you — `occurred_at` is written by `clock_timestamp()`, so no row can
-be future-dated.)
+Two rules for writing the range:
 
-**Pass Ruby times, not SQL.** ActiveRecord binds a `Range` as literal timestamps,
-which prune at *plan* time. A SQL expression like `now() - interval '30 days'`
-defers pruning to run time, after the planner has already opened every partition.
+- **Close it at the top, even when the top is "now."** `30.days.ago..` touches 12
+  partitions; `30.days.ago..Time.current` touches 4, for the same span. Pass an
+  endless range anyway and the library closes it for you.
+- **Pass Ruby times, not SQL.** `now() - interval '30 days'` defers pruning until
+  after the planner has already opened every partition.
 
-**The default is unbounded on purpose**, and there is no config-level default: a
-bound nobody asked for is invisible truncation. If you do bound it, **say so** —
-`bounded?` and `scope_description` are there for exactly that, and they are in
-`as_json` too:
+**The default is unbounded on purpose** — a bound nobody asked for is invisible
+truncation. If you do bound it, say so; `bounded?` and `scope_description` exist
+for that, and are in `as_json` too:
 
 ```erb
 <p>Showing <%= timeline.scope_description %>.</p>
@@ -1081,9 +996,11 @@ bound nobody asked for is invisible truncation. If you do bound it, **say so** �
 
 `older_than_window?` answers "is there history before this window" with one
 indexed check per table — the difference between *"end of results"* and *"end of
-the window"*. It is **opt-in and never called for you**, because it deliberately
-looks below the bound; calling it on every page gives back the pruning you just
-bought. Call it once, at the bottom of the last page.
+the window"*. Call it once, at the bottom of the last page. It is never called
+for you, because it deliberately looks below the bound.
+
+The full measurements, and why pruning survives the union and the `GROUP BY`, are
+in [`DESIGN.md`](DESIGN.md) §11.2b, *The date bound*.
 
 ### What the timeline covers
 
@@ -1140,9 +1057,8 @@ captioning an id with the wrong string; `to_audit_label` is the seam for saying 
 explicitly.
 
 **The id is never replaced.** It is what the audit log actually stores, so the
-label annotates it and the screen states once that names are resolved when the
-page loads. This is the opposite of `actor_label.rb`, which *snapshots* its label
-onto every row at write time — see DESIGN §11.8 for why both are right.
+label annotates it, and the screen says once that names are resolved when the page
+loads.
 
 ### The four things a cell can say
 
@@ -1175,9 +1091,9 @@ AuditLog.configure do |config|
 end
 ```
 
-**Reflection, not convention, and this is why:** `orders.created_by_id` points at
-`User`. De-suffixing and classifying the column name gives `CreatedBy`, which does
-not exist. The `belongs_to` carries `class_name: "User"` and gets it right.
+**Reflection, not convention.** The `belongs_to` carries `class_name:`, so
+`orders.created_by_id` resolves to `User` — which no amount of de-suffixing the
+column name would.
 
 ### Two things to know before turning it on
 
@@ -1191,6 +1107,9 @@ not exist. The `belongs_to` carries `class_name: "User"` and gets it right.
 Cost is one primary-key lookup per record type per page, batched before the table
 renders. A type that cannot produce a label is skipped with no query at all, so an
 application that has opted nothing in pays nothing.
+
+Why a label annotates a recorded id here while an actor label is *snapshotted* at
+write time: [`DESIGN.md`](DESIGN.md) §11.8.
 
 ---
 
@@ -1245,7 +1164,7 @@ knowing anything about any of them.
 
 | | Default | Does |
 |---|---|---|
-| `correlated_connections` | `%w[primary]` | Which **connections** carry the correlation context — connection names as they appear in `database.yml` (`primary`, `queue`), *not* database names. The default is right for nearly every app, **including one whose `database.yml` has no `primary:` key**: Rails names a flat single-database config `primary`. **Does not decide what is audited** — a connection left out is still fully audited, its rows just arrive with no actor. The engine refuses to boot if this matches no connection, because that failure is otherwise silent. |
+| `correlated_connections` | `%w[primary]` | Which **connections** carry the correlation context — connection names as they appear in `database.yml` (`primary`, `queue`), *not* database names. The default is right for nearly every app, **including one whose `database.yml` has no `primary:` key**: Rails names a flat single-database config `primary`. **Does not decide what is audited** — a connection left out is still fully audited, its rows just arrive with no actor. The engine refuses to boot if this matches no connection, because that failure is otherwise silent. See [Multi-database apps](#multi-database-apps). |
 | `bypass_allowlist` | `[]` | Classes permitted to call `AuditLog.without_logging`. Empty means the bypass is unavailable, which is the right default. |
 | `raise_on_subscriber_error` | `true` | Whether a failed layer-2 write raises. Leaving it true is what stops an audit failure vanishing while the change it described commits. |
 
@@ -1394,30 +1313,17 @@ because that partition holds data through `2025-12-31`. A partition whose marker
 cannot be read is skipped by a date-bounded drop rather than guessed at, and the
 task says which.
 
-**Freezing is automatic and you should not have to think about it** — but it is
-worth knowing what it is for.
+**Freezing is automatic and you should not have to think about it.** PostgreSQL
+must eventually mark old rows *frozen* or an anti-wraparound vacuum will scan your
+largest table at a moment of its own choosing — and append-only audit tables are
+exactly the shape ordinary vacuuming ignores until then. `audit_log:partitions`
+pre-empts that by freezing each partition as its month closes: nothing on most
+days, one partition per table on the first run of a month.
 
-PostgreSQL decides row visibility by comparing 32-bit transaction ids, and that
-counter wraps. To stay correct it must eventually mark old rows *frozen* —
-"visible to everyone, no comparison needed" — and if nothing does that in time it
-forces an **anti-wraparound vacuum** that scans the whole table, runs even where
-autovacuum is disabled, and picks its own moment. Your audit tables are the
-largest in the database and append-only, which is exactly the shape that gets
-ignored by ordinary vacuuming until wraparound forces the issue.
-
-So freezing is not optional in the end; *choosing when* is the only thing
-actually on offer. Doing it as each month closes turns one unpredictable
-full-table scan into a bounded operation on one partition, per table, per month —
-and a closed partition never changes again, so it is frozen once and then skipped
-by every future vacuum.
-
-Each frozen partition is marked, so the daily task does exactly the newly closed
-ones: nothing on most days, one partition per table on the first run of a month.
-[DESIGN §8](DESIGN.md) has the mechanism in full.
-
-The one thing that un-freezes a partition is a **redaction**, which updates the
-parent table and so dirties pages in whatever partitions held the redacted rows.
-It clears the markers, and the next daily runs freeze them again.
+A **redaction** un-freezes whatever partitions held the redacted rows, because it
+updates the parent table and dirties pages there; the next daily run re-freezes
+them. [DESIGN §8](DESIGN.md) has the mechanism and why the timing is the only
+part actually on offer.
 
 **Only partitions this gem retired are ever exported or dropped.** A table merely
 *named* like a retired partition — a manual copy taken before a risky migration,
@@ -1586,6 +1492,189 @@ Three things to know:
 - **`rake audit_log:coverage` will ask about tables you consider dead.** A schema
   cloned from a template contains every table in the template, including ones
   that schema never uses. Exempt them in `config.unaudited_tables` with a reason.
+
+### Transaction control in `audited`
+
+Everything here is optional. `AuditLog.audited` joins or opens a transaction on
+its own and the defaults are right for a single-database app; this is what to
+reach for when they are not.
+
+**`on:` picks the connection the transaction is opened on**, and defaults to
+`ActiveRecord::Base`. A single-database app never needs it. An app using
+`connects_to` does — see [Multi-database apps](#multi-database-apps) below.
+
+**Need a savepoint instead of a join?** `transaction:` is passed straight through
+to `ActiveRecord::Base.transaction`, so `requires_new:`, `isolation:` and the rest
+stay available:
+
+```ruby
+AuditLog.audited("order.shipped", transaction: {requires_new: true}, ...)
+```
+
+`on:` and `transaction:` are the only two keywords reserved from the payload —
+every other keyword becomes payload.
+
+**The emit is inside the transaction, not after commit.** "Only if the writes
+succeeded" comes free, because a raise never reaches the last statement — and the
+guarantee holds in the other direction too: if the event write fails, the
+business changes roll back with it. An `after_commit` emit would leave the
+changes standing with no narrative.
+
+> [!WARNING]
+> **A joined transaction swallows `ActiveRecord::Rollback`** — this is Rails'
+> documented [nested transaction](https://api.rubyonrails.org/classes/ActiveRecord/ConnectionAdapters/DatabaseStatements.html#method-i-transaction-label-Nested+transactions+support)
+> behaviour, and `audited` hides the nesting, so the block looks like it owns a
+> transaction it does not. Raising `ActiveRecord::Rollback` there would commit
+> your writes, emit no event, and have `audited` return `nil` as though it had
+> rolled back. `audited` detects that and raises instead. Use
+> `transaction: {requires_new: true}` for a savepoint the rollback can actually
+> discard, or raise a real exception to abort the enclosing transaction.
+
+#### Nested transactions, worked through
+
+This is [Rails' own example](https://api.rubyonrails.org/classes/ActiveRecord/ConnectionAdapters/DatabaseStatements.html#method-i-transaction-label-Nested+transactions+support)
+of the surprise. The inner `transaction` **joins** the outer one rather than
+nesting, so `ActiveRecord::Rollback` there is a no-op and **both** posts are
+created:
+
+```ruby
+ActiveRecord::Base.transaction do
+  Post.create(title: "first")
+  ActiveRecord::Base.transaction do
+    Post.create(title: "second")
+    raise ActiveRecord::Rollback     # does nothing
+  end
+end
+```
+
+`audited` opens a transaction, so it is the inner block in that picture — and it
+hides the nesting, which makes the surprise worse. Here it is with an order:
+
+```ruby
+ActiveRecord::Base.transaction do
+  @order.update!(status: "submitted")
+
+  AuditLog.audited("order.shipped", order_id: @order.id) do |audit|
+    shipment = @order.shipments.create!(carrier: carrier)
+    audit[:tracking_number] = shipment.tracking_number
+
+    raise ActiveRecord::Rollback if shipment.tracking_number.blank?
+  end
+end
+```
+
+Left alone, that would commit the shipment and emit **no** `order.shipped` event —
+a change row with nothing describing it, which is the failure this library
+exists to prevent. So `audited` detects it and raises `AuditLog::Error` instead.
+Unrescued, that propagates out of your transaction and the whole thing rolls
+back.
+
+If the inner unit genuinely should be able to abort on its own, give it a
+savepoint and the rollback works as written:
+
+```ruby
+AuditLog.audited("order.shipped", order_id: @order.id,
+                 transaction: {requires_new: true}) do |audit|
+  shipment = @order.shipments.create!(carrier: carrier)
+  audit[:tracking_number] = shipment.tracking_number
+
+  raise ActiveRecord::Rollback if shipment.tracking_number.blank?
+end
+```
+
+Measured outcomes for the four spellings, after the outer block finishes:
+
+| the inner block raises `ActiveRecord::Rollback` | order status | shipment | event |
+|---|---|---|---|
+| Rails' bare nested `transaction` (no `audited`) | `"submitted"` | **created** | — |
+| `audited`, joined — the error left to propagate | `"draft"` | discarded | none |
+| `audited`, joined — the error **rescued** | `"submitted"` | **created** | **none** |
+| `audited` with `transaction: {requires_new: true}` | `"submitted"` | discarded | none |
+
+Row three is why the guard is worth having and why you should not rescue it: a
+committed shipment with no event is exactly the state row one produces silently.
+Row four is the one to reach for when a nested unit is genuinely optional — the
+outer work survives, the inner is discarded, and nothing claims the shipment
+happened.
+
+Nothing changes when the block simply *succeeds* inside your transaction: the
+event joins your unit of work and commits with it, which is the everyday case
+above and needs none of this.
+
+> [!CAUTION]
+> **`transaction.before_commit` does not exist**, despite appearing in Rails' own
+> documented example for this API. `ActiveRecord::Transaction` defines only
+> `after_commit`, `after_rollback`, `open?`, `closed?` and `uuid` — verified in
+> the source of both 8.0.5.1 and 8.1.3.1 — so copying that example raises
+> `NoMethodError`. `before_commit` exists on the internal transaction and as a
+> *model* callback (`ActiveRecord::Base.before_commit`), neither of which is the
+> object yielded here. Nothing before the commit needs a callback anyway: the end
+> of your block already runs there.
+
+**Outside `audited`**, the same callbacks are reachable through
+[`current_transaction`](https://api.rubyonrails.org/classes/ActiveRecord/Transactions/ClassMethods.html#method-i-current_transaction),
+which is often what you actually want — with no transaction open it returns a
+null object whose `after_commit` runs the block immediately, so one spelling
+covers both cases:
+
+```ruby
+Order.current_transaction.after_commit { NotifyCustomerJob.perform_later(id) }
+```
+
+It is a class method, so `Order.current_transaction`, not `order.current_transaction`.
+
+**And the explicit `transaction do ... AuditLog.notify ... end` form is not
+deprecated and never will be.** Use it wherever several notifies belong in one
+transaction.
+
+### Multi-database apps
+
+Everything else in this file assumes one database, which is the ordinary case and
+the one the defaults are tuned for. If your app uses `connects_to` — a separate
+writer and reader, a queue database, a shard — two things need attention. Neither
+affects whether a row is audited: layer 1 is a trigger, so every write to an
+audited table is captured on every connection regardless.
+
+**Set `config.correlated_connections`.** It lists which connections carry the
+actor and `request_id`, by **connection** name as it appears in `database.yml`
+(`primary`, `queue`), never by database name. The default `%w[primary]` is right
+for a single-database app — including one whose `database.yml` has no `primary:`
+key at all, because Rails names a flat config `primary`.
+
+```ruby
+config.correlated_connections = %w[primary shard_one]
+```
+
+A connection left out is still fully audited; its rows simply arrive with a NULL
+actor and NULL `request_id`, indistinguishable from a console session. That
+failure is silent, which is why the engine **refuses to boot** when the value
+matches no connection at all, and warns on a partial miss — `%w[primary replica]`
+is legitimate in an environment that has no replica.
+
+**Pass `on:` to `AuditLog.audited`.** It names what opens the transaction, and it
+defaults to `ActiveRecord::Base`. For a model on a secondary connection that
+transaction wraps **none** of your writes: the block still runs, the rows still
+commit, and a rollback discards nothing while appearing to work.
+
+```ruby
+class Order < SecondaryRecord      # connects_to database: { writing: :shard_one }
+  def submit!
+    AuditLog.audited("order.submitted", on: self, order_id: id) do |audit|
+      update!(status: "submitted")
+      audit[:total_cents] = total_cents
+    end
+  end
+end
+```
+
+`on: self` inside an instance method, or the model class, is right by
+construction — it is the same connection the writes go to. There is no
+equivalent to worry about for `AuditLog.notify`, which opens no transaction and
+joins whatever the caller has.
+
+A **read replica** needs nothing at all. Audit rows are only ever written, and
+`config.correlated_connections` naming a replica that some environments lack is
+the partial-miss case above: a warning, not a failure.
 
 ### Why objects and not relations
 
