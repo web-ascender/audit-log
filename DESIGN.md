@@ -3235,3 +3235,79 @@ cannot find each produce a MANUAL note with the exact lines instead of an edit. 
 usual one: a wrong ivar does not raise. It renders an **empty feed**, which reads as "the audit log
 has no data for this record" — the quiet under-report this entire library is built against, reached
 through a generator that reported success.
+
+---
+
+## 22. What belongs in which document  **[added 2026-08-31]**
+
+Four documents, and the division of labour is a decision like any other here, so it belongs in the
+document that records decisions.
+
+| | Written for | Holds |
+|---|---|---|
+| `README.md` | somebody **using** the gem | how to install it, use it, and reach every feature and option |
+| `CLAUDE.md` | an agent changing the gem | the terse rules, and what not to "fix" |
+| `DESIGN.md` | somebody **changing** the gem | why anything is shaped the way it is |
+| `CHANGELOG.md` | everybody | what changed between releases, deliberately thin |
+
+### The README's own internal split
+
+The README is long enough that "for users" is not a fine enough rule on its own. It runs in two
+registers:
+
+**Early — Summary through the feature guides.** A developer works down it and ends up with a
+correctly installed, correctly configured gem, plus at least introductory knowledge of every feature
+that exists. Examples here assume the ordinary case: one database, no `connects_to`, no savepoints.
+Anything a reader does not need in order to succeed *this afternoon* is not in this half.
+
+**Later — Configuration, Generator options, Rake tasks, Advanced.** Reference tables and the topics
+somebody eventually needs: attaching to an existing table, schema isolation, transaction control,
+multi-database apps. Reached when a reader has a reason, not on the way in.
+
+### The test
+
+For any paragraph: **does it change what the reader does?**
+
+- *Yes* — it stays in the README. Which half depends on whether they need it to get started or only
+  eventually.
+- *No, it explains why the decision was made* — it belongs here. Backstory, measurements, rejected
+  alternatives, bug archaeology, the version history of an API, and comparisons to what the code used
+  to do are all DESIGN material, however interesting.
+
+**One exception, and it is load-bearing:** a "why" that prevents a misuse stays in the README.
+*"The default is unbounded on purpose — a bound nobody asked for is invisible truncation"* is
+rationale, and it is the only thing stopping a reader from adding a bound and quietly truncating a
+compliance screen. The test is not "is this rationale" but "does the reader behave differently
+without it".
+
+### Moving depth out leaves a pointer, and the pointer is checked
+
+When a paragraph moves here, the README keeps a one-line reference — *"the full measurements are in
+DESIGN §11.2b"* — because a reader who wanted that depth has to be able to find it. That only works
+while the section numbers exist, and this document gets renumbered.
+
+`readme_spec` therefore asserts that **every `§n` the README cites resolves to a real heading here**.
+A pointer into nothing is worse than the paragraph it replaced: the reader has been told there is
+more, cannot find it, and neither file would otherwise notice. Same forcing-function argument as
+`coverage_spec` (§16) — a convention nobody can violate silently beats a convention everybody
+remembers.
+
+### What this rule moved, on the pass that produced it (2026-08-31)
+
+Recorded because the examples are more use than the rule:
+
+| Was in README | Now | Why |
+|---|---|---|
+| Keyset cursor bug story — millisecond `to_json` vs microsecond `clock_timestamp()`, "one full-suite run in eight" | §11.0 | The reader needs "use `AuditLog::Pagination`, do not hand-roll one". The flake rate changes nothing they do. |
+| Pagy dependency archaeology — needs 9.0+, hook added 9.3, removed in Pagy 43 | §11.0 | Explains a rejected alternative. |
+| Transaction-id wraparound and anti-wraparound vacuum theory, 29 lines | §8 | Its own first sentence was "freezing is automatic and you should not have to think about it". |
+| Timeline partition-pruning table — 72 / 34 / 16 / 4 | §11.2b | One sentence carries the lever; the table is evidence for the design. |
+| The four "deliberate" bullets under `requires:` | §7 | Each had a usage core inside a paragraph of rationale. Kept the core, moved the paragraph. |
+| `created_by_id` → `CreatedBy` worked example | §11.8 | "Reflection, not convention" is the actionable half. |
+| `(subject_type, subject_id, occurred_at DESC)` | §11.2a | An index definition inside a description of a screen. |
+| `on:` and `correlated_connections`, from the early examples | README *Advanced* | Not DESIGN material — real user-facing options, needed by roughly one app in a hundred. Moved later in the README rather than out of it. |
+
+That last row is the one to keep in mind: **"too deep for the intro" and "belongs in DESIGN" are
+different judgements.** An option a user must eventually set moves *later in the README*; only the
+reasoning behind it comes here.
+

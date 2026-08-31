@@ -41,6 +41,42 @@ data live — none of which this gem knows about. Its `orders/show` renders
 host-facing contract is exercised by a real host rather than asserted by our own
 specs — **if you change a Timeline value object, check that app renders**.
 
+## What belongs in which document
+
+**`DESIGN.md` §22 is the authority.** The terse copy:
+
+`README.md` is for somebody **using** the gem. `DESIGN.md` is for somebody
+**changing** it. The README also has an internal split:
+
+- **Early** (Summary → the feature guides) — a developer works down it and ends
+  up correctly installed and configured, with at least introductory knowledge of
+  every feature. Examples assume the ordinary case: **one database**, no
+  `connects_to`, no savepoints.
+- **Later** (Configuration, Generator options, Rake tasks, Advanced) — reference
+  tables, and topics reached when a reader has a reason rather than on the way in.
+
+**The test for any paragraph: does it change what the reader does?** If yes it
+stays in the README; if it merely explains why the decision was made, it moves to
+`DESIGN.md`. Backstory, measurements, rejected alternatives, bug archaeology, the
+version history of an API, and "what this used to do" are all DESIGN material,
+however interesting — and they are what this README keeps accreting.
+
+**One exception, load-bearing:** a "why" that prevents a MISUSE stays. *"The
+default is unbounded on purpose — a bound nobody asked for is invisible
+truncation"* is rationale, and it is the only thing stopping a reader quietly
+truncating a compliance screen. The test is not "is this rationale" but "does the
+reader behave differently without it".
+
+**"Too deep for the intro" and "belongs in DESIGN" are different judgements.** An
+option a user must eventually set — `on:`, `correlated_connections` — moves LATER
+IN THE README, not out of it. Only the reasoning behind it goes to DESIGN.
+
+**Moving depth out leaves a `§n` pointer, and `readme_spec` asserts every one of
+them resolves to a real DESIGN heading.** A pointer into nothing is worse than the
+paragraph it replaced: the reader has been told there is more and cannot find it.
+DESIGN gets renumbered; that spec is what makes it safe. Do not delete a DESIGN
+section without checking what points at it — the spec will tell you.
+
 ## The one rule that matters most
 
 **This gem must never reference an application constant.** No `User`, no

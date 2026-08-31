@@ -81,6 +81,24 @@ RSpec.describe "README.md" do
       "these config attributes exist but the README never names them: #{undocumented.join(", ")}"
   end
 
+  # The README hands its depth to DESIGN.md by section number (CLAUDE.md, "What
+  # belongs in which document"), which only works while those numbers exist. A
+  # "measurements are in DESIGN §11.2b" that points at nothing is worse than the
+  # paragraph it replaced -- the reader was told there is more and cannot find it,
+  # and nothing else in either file would notice. DESIGN gets renumbered; this is
+  # what makes that safe.
+  it "resolves every DESIGN section it points at" do
+    design = Pathname(AuditLog::GEM_ROOT).join("DESIGN.md").read
+    # `## 7. Layer 2 ...` and `### 11.2b The host-facing timeline ...` both.
+    sections = design.scan(/^\#{2,4} (\d+(?:\.\d+)?[a-z]?)\.? /).flatten.to_set
+    referenced = body.scan(/§\s*(\d+(?:\.\d+)?[a-z]?)/).flatten.uniq
+
+    expect(referenced).not_to be_empty, "the README cites no DESIGN sections at all"
+    dangling = referenced.reject { |r| sections.include?(r) }
+    expect(dangling).to be_empty,
+      "the README points at DESIGN sections that do not exist: #{dangling.map { |d| "§#{d}" }.join(", ")}"
+  end
+
   # Every task the engine registers should be findable by somebody reading the
   # docs rather than by somebody reading the rake file.
   it "documents every rake task the gem registers" do
