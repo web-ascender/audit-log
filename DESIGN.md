@@ -1348,8 +1348,12 @@ Rails' transaction callbacks without opening a transaction of its own purely to 
 it is the caller's own transaction object — verified by identity in `audited_spec` — so an
 `after_commit` registered there fires on their outermost commit, which is what makes this preferable
 to reaching for `requires_new` to obtain a callback. What the object exposes is Rails' business and
-varies by version; on the `~> 8.0` floor it is `after_commit`, `after_rollback`, `open?` and `uuid`
-(`before_commit` is not there, so this library does not promise it). Blocks naming one argument or
+varies by version — though less than Rails' own documentation suggests. The doc block for this API
+shows `transaction.before_commit`, and `ActiveRecord::Transaction` does not define it in **either**
+8.0.5.1 or 8.1.3.1 (verified in the gem source, and by running Rails' example, which raises
+`NoMethodError`). `before_commit` exists on the internal transaction and as a model callback; neither
+is the object yielded here. What is actually there on the `~> 8.0` floor is `after_commit`,
+`after_rollback`, `open?`, `closed?` and `uuid`, so this library promises exactly those. Blocks naming one argument or
 none are unaffected, since a block ignores arguments it does not name.
 
 `transaction:` passes options straight through to `on.transaction`, so `requires_new:`, `isolation:`

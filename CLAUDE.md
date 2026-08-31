@@ -222,7 +222,10 @@ Do not "fix" these without reading the linked reasoning first.
   transaction is open. And do NOT default to `requires_new: true` to dodge the
   whole thing — that would take a savepoint on every nested call and change
   atomicity for everyone. `transaction:` passes options through; it and `on:` are
-  the only keywords reserved from the payload. DESIGN §7.
+  the only keywords reserved from the payload. **`transaction.before_commit` does
+  NOT exist** in 8.0.5.1 or 8.1.3.1 even though Rails' own doc block for this API
+  shows it — verified by running it; it raises `NoMethodError`. Do not add it to
+  an example here. DESIGN §7.
 - **`AuditLog::Payload` WRAPS a Hash and must not subclass one, and `merge`
   without the bang is a tombstone that raises.** Subclassing publishes `delete`,
   `clear`, `replace` and `reject!` as things a block may do to an audit payload —

@@ -615,7 +615,17 @@ end
 
 When joined, that is *your* transaction object, so the callback fires on your
 outermost commit rather than on ours. Blocks naming one argument or none are
-unaffected. Need a savepoint instead of a join? `transaction:` is passed straight
+unaffected.
+
+> [!CAUTION]
+> **`transaction.before_commit` does not exist**, despite appearing in Rails' own
+> documented example for this API. `ActiveRecord::Transaction` defines only
+> `after_commit`, `after_rollback`, `open?`, `closed?` and `uuid` — verified in
+> the source of both 8.0.5.1 and 8.1.3.1 — so copying that example raises
+> `NoMethodError`. `before_commit` exists on the internal transaction and as a
+> *model* callback (`ActiveRecord::Base.before_commit`), neither of which is the
+> object yielded here. Nothing before the commit needs a callback anyway: the end
+> of your block already runs there. Need a savepoint instead of a join? `transaction:` is passed straight
 through to `ActiveRecord::Base.transaction`:
 
 ```ruby
