@@ -98,7 +98,7 @@ Update it when you change behaviour.
 | Ruby | **>= 3.3** — the floor is `SecureRandom.uuid_v7` (DESIGN §2.1), not a preference. 3.3.0 exactly also cannot run Rails 8.1, for a reason of Rails' own. Developed on 4.0.6. |
 | Rails | **`~> 8.0`** — floor 8.0 (DESIGN §2.2), and a real ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. Developed on 8.1.3.1. |
 | PostgreSQL | **>= 16.** Developed on 18.6, port 5438 — not the workspace default 5437. CI runs 16 and 18; DESIGN §20 is the authority and says the design "targets PG 16 and requires nothing newer". Verified: the whole suite passes on 16.13. |
-| Tests | RSpec against `spec/dummy` (363 examples), on every push via GitHub Actions — six legs: Ruby 3.3/4.0.6 × Rails 8.0/latest × PG 16/18 |
+| Tests | RSpec against `spec/dummy` (404 examples), on every push via GitHub Actions — six legs: Ruby 3.3/4.0.6 × Rails 8.0/latest × PG 16/18 |
 | Runtime deps | `rails`, `csv` (export). **`pg` and `pagy` deliberately are not** — the host app picks its own `pg` build, and its own pagination gem. `AuditLog::Pagination` is this library's own keyset pager precisely so a `pagy` constraint does not propagate into the host. |
 
 ```bash
@@ -904,7 +904,7 @@ one. Do not reintroduce it.
 ## Testing
 
 ```bash
-bundle exec rspec                         # 363 examples, against spec/dummy
+bundle exec rspec                         # 404 examples, against spec/dummy
 bundle exec rspec spec/audit_log          # the library proper
 bundle exec rspec spec/requests           # the auditor UI and the CSV export
 bundle exec rspec spec/preview.rb         # dev tool: renders 17 screens to spec/dummy/public/
@@ -998,10 +998,14 @@ Three things about it are load-bearing rather than boilerplate:
   stricter than 4.0.6's. If a future rubygems adds an advisory warning, fix the
   gemspec or consciously narrow the check — do not delete it.
 
-**Unverified claim, deliberately left standing:** `rails ~> 8.0` admits 8.0, but CI
-tests 8.1.3.1 only. The gap is the exact one the Ruby matrix closed, so expect a
-Rails 8.0 leg to find something — `Rails.event` does not exist there, and
-`AuditLog.notify`'s fallback path is consequently untested.
+**Both Rails legs are exercised, and they take different code paths.** Verified
+2026-08-31 by running the whole suite on each: 404 examples pass on 8.0.5.1 and on
+8.1.3.1. `Rails.respond_to?(:event)` is FALSE on 8.0 and TRUE on 8.1, so
+`AuditLog.notify`'s fallback runs on one leg and `Rails.event` on the other —
+`event_transport_spec` asserts which branch it is on rather than assuming.
+`ActiveRecord::Transaction`'s public API is identical on both
+(`after_commit`, `after_rollback`, `closed?`, `open?`, `uuid`), which is why
+`audited` promises exactly those.
 
 ## Deliberately not implemented
 
