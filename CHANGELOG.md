@@ -3,6 +3,56 @@
 Notable changes to `audit_log`. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- **`AuditLog::Timeline::TouchedRecord#field_changes`** — the other records a unit
+  of work touched now carry their own before-and-after, not only which columns
+  they touched. `columns` says a line item's `quantity` changed; this says it went
+  from 10 to 20.
+
+  It closes a gap that only existed on a HOST-rendered timeline: the auditor UI
+  can link a touched record to its own history screen, while `config.record_url`
+  points at the host's business page — current state, not history — and a line
+  item usually has no page at all. Same `FieldChange` objects as the anchor
+  record's list, through one shared construction path, with association labels
+  resolved the same way.
+
+  Free: the unit of work's whole change set is already hydrated for the page and
+  its labels already warmed, so this adds no query, and it is lazy so a screen
+  rendering only the count pays nothing. Additive to the published contract —
+  `as_json` gains a nested `field_changes` array.
+
+  The engine's Timeline tab and the `audit_log:views:activity` templates both
+  render it, collapsed inside the existing "other records changed in this action"
+  disclosure. An app that already generated those views is unaffected; the
+  generator never overwrites, so the snippet in the README is the way to add it to
+  views you own.
+
+## Unreleased
+
+### Added
+
+- **Documentation for coding agents.** The gem now packages `llms.txt` — the
+  [llms.txt](https://llmstxt.org) convention in its packaged form, with links as
+  file paths inside the installed gem rather than URLs. It is a summary and a
+  routing table into `README.md` and `DESIGN.md`, reachable from any host app with
+  `bundle info audit_log --path`.
+
+  `audit_log:install` writes `.claude/skills/audit-log/SKILL.md` into the host so
+  Claude Code finds that entry point without being told, carrying the facts only
+  the installation knows (where the engine is mounted, whether a coverage spec was
+  written). `--skip-skill` declines it. It is a **pointer, not a copy**:
+  create-once, host-owned, never regenerated, and nothing in the library depends on
+  it existing.
+
+  The problem is discovery rather than content — an agent in a host app already has
+  these documents on disk and no reason to look, and the failure that follows is
+  quiet: it answers from what it knows about `paper_trail`, writes a concern into a
+  model class, and records nothing. `CLAUDE.md` is deliberately **not** packaged;
+  `readme_spec` guards both that and every link `llms.txt` makes. DESIGN §24.
+
 ## 0.4.0 — 2026-09-01
 
 ### Added

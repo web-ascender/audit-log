@@ -1,9 +1,9 @@
 # AuditLog — Design Record
 
 **Status:** validated against the working implementation in this gem, and against
-the reference application in `../audit-log-demo`. One exception, marked in its own
-heading: §23 is a design, not a description of code that exists.
-**Last updated:** 2026-08-31
+the reference application in `../audit-log-demo`. No exceptions as of 2026-09-01:
+§23 was the last section describing something unbuilt, and it shipped.
+**Last updated:** 2026-09-01
 
 > **Why this decision is what it is.** This is the reasoning behind every choice in this gem, and
 > it travelled with the code when the library was extracted from the reference app — which was the
@@ -22,9 +22,10 @@ heading: §23 is a design, not a description of code that exists.
 >
 > Sections corrected by actually building the thing are marked **[corrected 2026-08-27]**. Those
 > are the most valuable paragraphs here: every one was a defect that failed *silently*. §21
-> (generators, 2026-08-29), §22 (the documentation split, 2026-08-31) and §23 (dimensions,
-> 2026-08-31) each sit at the end for the same reason nothing renumbered: the numbers are stable,
-> so new material appends rather than inserts.
+> (generators, 2026-08-29), §22 (the documentation split, 2026-08-31), §23 (dimensions,
+> 2026-08-31) and §24 (documentation for coding agents, 2026-09-01) each sit at the end for the
+> same reason nothing renumbered: the numbers are stable, so new material appends rather than
+> inserts.
 ---
 
 ## 1. Goal
@@ -2357,6 +2358,46 @@ models are called, and may have STI names the gem could never guess; it gets `op
 **An activity may legitimately have no change rows at all** — that is the whole point of the events
 leg — so `occurred_at` comes from its `ActivityKey`, not from `max()` over an empty list.
 
+**A `TouchedRecord` carries the other record's own field changes, and it is not there for
+symmetry.**  **[added 2026-09-01]** `columns` says a line item's `quantity` changed; `field_changes`
+says it went from 10 to 20, which is usually the question the reader actually had. Until this
+existed, a host-rendered timeline could not answer it *at all*:
+
+- The **engine** can link a touched record to `record_history_path` and did. A host cannot. What
+  `config.record_url` returns is the host's *business* page for the record — current state, not
+  history — and for a line item there is usually no page of any kind. The link is unavailable
+  precisely where the question gets asked.
+- Rendering the touched record's own *timeline* instead is a different answer to a different
+  question: its other units of work are not this activity, and it would cost a query per touched
+  record on every page.
+
+So the values come with the activity, and they come for free. The unit of work's entire change set
+is already hydrated for the page (one query, `Record.grouped_by_request`) and `LabelResolver#warm`
+is already handed all of it — `Timeline#touched` was throwing the rows away after reading
+`operations` and `changed_columns` off them. Lazy and memoised anyway, so a screen that renders only
+the count pays nothing, and `timeline_spec` pins the query count at zero.
+
+**One construction path, `FieldChange.from_changes`.** There are now two callers — the anchor
+record's list and each touched record's — and the half that is easy to get subtly wrong is the label
+resolution: `side:` matters on a polymorphic column, where resolving an old id against a new type
+captions the cell with the wrong record entirely (§11.8), and `MISSING` / `FAILED` both have to
+collapse to nil at exactly this boundary. A second hand-rolled copy is how one of the two comes to
+differ. The rule CLAUDE.md records from the `operation_name` audit, applied before the copy exists
+rather than after.
+
+**Collapsed, and nested inside a disclosure that is itself collapsed.** Two clicks is deliberate: one
+form submit can touch forty line items, and expanding forty × five values by default buries the
+card's own answer under the answer to a follow-up question. The engine's
+`records/_timeline_activities` renders it — a `field_changes` no screen here consumes is a contract
+nothing keeps honest, the same argument that makes the Timeline tab render value objects rather than
+relations — and `audit_ui_spec` asserts the disclosure is *closed*, not merely present.
+
+One consequence, stated rather than discovered: an INSERT's diff is the whole row, so a line item
+*created* by the unit lists every column, `id` included. That is what the anchor record's own field
+list already does for an insert, so it is the existing rule reaching a new place, not a new
+inconsistency — and the alternative, filtering columns here, would be this library deciding which
+recorded facts are interesting.
+
 **`config.record_url` is nil by default and the default is not a placeholder.** Inferring
 `product_path` from `"Product"` is the same mistake as sniffing a `name` column for a label, and it
 fails at render time on a screen an auditor is reading. Silence is the opt-out. It serves actors
@@ -3243,7 +3284,7 @@ through a generator that reported success.
 
 ## 22. What belongs in which document  **[added 2026-08-31]**
 
-Four documents, and the division of labour is a decision like any other here, so it belongs in the
+Five documents, and the division of labour is a decision like any other here, so it belongs in the
 document that records decisions.
 
 | | Written for | Holds |
@@ -3252,6 +3293,7 @@ document that records decisions.
 | `CLAUDE.md` | an agent changing the gem | the terse rules, and what not to "fix" |
 | `DESIGN.md` | somebody **changing** the gem | why anything is shaped the way it is |
 | `CHANGELOG.md` | everybody | what changed between releases, deliberately thin |
+| `llms.txt` | an agent working in a host app **using** the gem | a summary, and a routing table into the two above. Added 2026-09-01; the reasoning is §24, because it is a distribution decision rather than an editorial one |
 
 ### The README's own internal split
 
@@ -3840,3 +3882,91 @@ belongs in the README as well as here.
   `Schema.install!` to get right on every upgrade and in every tenant schema (§14). The measurement
   is above; the trade was taken deliberately rather than by default.
 
+
+---
+
+## 24. Documentation for coding agents  **[added 2026-09-01]**
+
+§22 divided four documents between two human audiences and one agent audience — `CLAUDE.md`, for
+an agent *changing* this gem. This section covers the audience §22 did not have: an agent working
+in a **host application** that consumes the gem.
+
+### The problem is discovery, not content
+
+That agent already has everything. The gem resolves in the host's bundle, so `README.md`,
+`DESIGN.md` and `CHANGELOG.md` are on disk, complete and current, a `bundle info audit_log --path`
+away. What it does not have is any reason to look, and **nothing in Bundler or RubyGems surfaces a
+gem's documentation** — there is no metadata key for it, no convention, and no tooling. The docs
+are present and invisible.
+
+The failure that follows is specific, quiet, and exactly the shape everything else in this library
+is built against. An agent that has not read them answers from what it knows about `paper_trail`
+and `audited`: it writes a concern into a model class, adds an `has_audit`-style macro, reaches for
+a callback. None of that raises. None of it appears in a diff review as wrong. It simply **records
+nothing**, in a library whose entire premise is that nothing goes unrecorded. §5.2's "what does a
+new model need? nothing in the class" is the single most counter-intuitive fact here, and it is the
+one an agent is most confidently wrong about.
+
+### `llms.txt`, in its packaged form
+
+[llms.txt](https://llmstxt.org) (Answer.AI, 2024) is a *website* convention: `/llms.txt` at a
+domain root, holding an H1, a blockquote summary, and sections of annotated links. It is a
+proposal rather than a standard — no registry, no package-manager hook, and no Ruby ecosystem
+uptake at all.
+
+It is adopted here anyway, with links as **file paths relative to the gem root** rather than URLs,
+because the shape is right even though the transport is not: a short summary plus a routing table
+is what a reader with no context needs, and the alternative spellings would each have been worse.
+A fourth prose document would be a fourth thing to keep in step. A single concatenated
+`llms-full.txt` of README and DESIGN is 6,000 lines of the two documents that already exist. This
+gem is proprietary (`allowed_push_host` is deliberately unusable, §22's header), so there is no
+public documentation site to serve a real one from, and there will not be.
+
+**It is packaged, and `CLAUDE.md` deliberately is not.** `spec.files` carries `llms.txt`, because
+a document not in the gem is a document no host app can reach — which is the whole mechanism.
+`CLAUDE.md` stays out for the mirror-image reason: it is the terse rule list for somebody
+*changing* the library, and shipping it into every host app would hand an agent the rules for the
+wrong job. `readme_spec` asserts both directions, along with every anchor `llms.txt` routes to and
+every `§n` it cites, for the reason §22 gives about pointers: this is the one document nobody reads
+while working, so every way it can rot is invisible.
+
+### The skill the installer writes, and why it is a pointer
+
+`llms.txt` solves what to read, not that anybody looks. So `audit_log:install` writes
+`.claude/skills/audit-log/SKILL.md` into the host — a file Claude Code discovers on its own and
+loads by description when a task touches this gem.
+
+**It points; it does not copy.** A copied summary is a second home for user documentation, which
+§22 already rules out for `DESIGN.md`, and it is worse here than there: this copy lives in
+*somebody else's repository*, cannot be corrected by a gem release, and goes stale silently while
+reading with complete authority. So the generated file carries the resolution command, the routing
+sentence, and the facts that are genuinely local — where the engine was mounted, whether a coverage
+spec exists — and sends everything else to the gem.
+
+**Four warnings are the exception, and they are the same exception §22 already carves out**: a
+"why" that prevents a misuse stays. A pointer nobody follows closes nothing, so the file states
+that a model needs no code, that `notify` without a registry entry is a silent no-op, that
+`AuditLog::Pagination` is not interchangeable, and that coverage is a forcing function rather than
+a lint. Each is an architectural invariant that cannot change without a major version — which is
+what makes them safe to duplicate where an API detail would not be.
+
+**Create-once, host-owned, and no gem-side dependency on it.** Exactly §21.3's boundary, applied to
+a second kind of generated file: a second install run meets a version the host has edited, so it
+reports `skip` and leaves it alone; `--skip-skill` declines it outright; and nothing in the library
+knows whether it exists. There is deliberately **no "your skill file is out of date" check**, for
+§21.3's reason — that turns owned code back into managed code.
+
+### What is deliberately not done
+
+**No `AGENTS.md` written or appended.** It is the cross-tool spelling and it would reach more
+tools, but it is a single file at the host's root that the host owns entirely, and appending to it
+is the `config/locales/en.yml` case from §21.3 — nothing generated should be able to touch a host's
+own file. The README says the one line to add and leaves it to the operator.
+
+**No MCP server.** A documentation server is the fully general answer, and it is a process to run,
+a transport to configure, and a second distribution channel for content that is already sitting in
+the bundle. The gap here was discovery of static files, and a static file closed it.
+
+**No generated content that varies with the gem version.** Everything in the skill would still be
+true at 0.1.0 and at 2.0. The moment a generated pointer needs to know which version it points at,
+it has stopped being a pointer.

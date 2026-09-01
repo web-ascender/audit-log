@@ -1,0 +1,78 @@
+# AuditLog
+
+> A two-layer, compliance-grade audit log for Rails 8 and PostgreSQL, packaged as a
+> `Rails::Engine`. Layer 1 is PostgreSQL `AFTER ... FOR EACH ROW` triggers writing a jsonb
+> field-level diff to a partitioned `audit_changes` table — so `update_all`, `delete_all`,
+> `insert_all`, `upsert_all`, raw SQL, a database cascade, a rake task and a console session
+> are all captured, none of which a callback-based audit gem can see. Layer 2 is a registry
+> of named application events, each with a human-readable summary, written to `audit_events`
+> by one durable subscriber. The two join on a UUIDv7 `request_id`, so one user action reads
+> as one action however many rows it touched.
+
+This is the packaged form of the [llms.txt](https://llmstxt.org) convention: the links below
+are file paths relative to this file, inside the installed gem rather than on a website.
+Resolve the gem root with `bundle info audit_log --path`.
+
+**Read this file, then follow one link.** The three documents below total ~6,000 lines and
+are not meant to be read end to end.
+
+## The documents
+
+- [README.md](README.md): install, use, configure. Written for somebody **using** the gem.
+  Its `## Contents` table is kept accurate by a spec and is the fastest route to a section.
+- [DESIGN.md](DESIGN.md): why every choice is what it is, in full. Written for somebody
+  **changing** the gem. Read the cited `§n` before altering library behaviour — most of the
+  surprising decisions here were a silent defect first, and the section says which.
+- [CHANGELOG.md](CHANGELOG.md): what changed between released versions.
+
+## Where to go for a given task
+
+- **Install it into an app** — [Getting started](README.md#getting-started). Note that
+  `config.active_record.schema_format = :sql` is required, and required *before* the first
+  migration: `schema.rb` cannot represent partitioned tables, trigger functions or triggers.
+- **Put a table in the audit trail** — [What a model needs](README.md#what-a-model-needs).
+  It is one `attach_audit_trigger` line in a migration and **nothing in the model class**:
+  no concern, no callback, no macro, no base class. Code added to the model records nothing.
+- **Record a business action as a sentence** —
+  [Registering and emitting events](README.md#registering-and-emitting-events).
+  `AuditLog.notify` with no `AuditLog::Registry.register` entry is a **silent no-op**.
+- **Read one record's history** —
+  [Reading one record's history](README.md#reading-one-records-history).
+- **Put a history on the app's own pages** —
+  [Building an activity history](README.md#building-an-activity-history-in-your-own-app).
+  Render the `AuditLog::Timeline` value objects, and paginate with `AuditLog::Pagination`
+  and no other pager — a millisecond-precision cursor silently skips rows against
+  microsecond `occurred_at`.
+- **Turn recorded foreign keys into readable labels** —
+  [Making association ids readable](README.md#making-association-ids-readable-optional).
+- **Query by the app's own associations** (department, tenant, region) —
+  [Dimensions](README.md#dimensions-querying-by-your-own-associations-optional).
+- **Change any behaviour of the gem** — [Configuration](README.md#configuration). Every
+  coupling point to the host application is a lambda or string on `AuditLog.config`; the
+  library names no application constant, so the answer is a config attribute rather than a
+  patch.
+- **Operate it** — [Rake tasks](README.md#rake-tasks). `audit_log:partitions` daily is the
+  only task that belongs in cron: a missing future partition is a **write-path outage**, not
+  a degraded report.
+- **Erase personal data from the log** — `audit_log:redact` under
+  [Run when something needs it](README.md#run-when-something-needs-it).
+- **Attach to an existing table, install outside `public`, control the transaction, or run
+  multiple databases** — [Advanced](README.md#advanced).
+- **Decide whether to use this instead of paper_trail or audited** —
+  [Why this one](README.md#why-this-one-and-not-a-callback-based-gem).
+- **Change the library itself** — [Working on this library](README.md#working-on-this-library),
+  then `DESIGN.md`. `CLAUDE.md` in the source repository carries the terse rules; it is
+  deliberately not packaged, because it is written for somebody changing the gem rather than
+  using it.
+
+## Two properties that govern everything
+
+- **Nothing bypasses layer 1.** That is the entire reason the design exists, and it is why
+  the audit lives in a trigger rather than in a callback. A change that makes a write path
+  invisible is a defect however convenient it looks.
+- **Nothing goes missing without saying so.** Coverage, pagination, export, redaction and
+  the timeline each have a spec asserting that specific property, and several defaults look
+  unhelpful for that reason — the timeline is unbounded because a bound nobody asked for is
+  invisible truncation, an unfiltered dimension feed returns nothing rather than everything,
+  and the install generator refuses steps rather than reporting success for work it did not
+  do. Do not weaken one of these to make a build pass.

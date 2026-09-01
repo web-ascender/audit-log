@@ -10,6 +10,11 @@ require "rails_helper"
 # heading that no longer existed, and two renamed headings the contents block
 # still pointed at. Neither breaks anything a spec was watching, and neither is
 # visible until somebody clicks.
+#
+# `llms.txt` is guarded from here too, and from here rather than from its own file
+# because it links into README.md by anchor and the GitHub slug rules below are the
+# subtle part. Two copies of those rules would drift faster than the documents they
+# check.
 RSpec.describe "README.md" do
   README = Pathname(AuditLog::GEM_ROOT).join("README.md")
 
@@ -118,6 +123,61 @@ RSpec.describe "README.md" do
     dangling = referenced.reject { |r| sections.include?(r) }
     expect(dangling).to be_empty,
       "the README points at DESIGN sections that do not exist: #{dangling.map { |d| "§#{d}" }.join(", ")}"
+  end
+
+  # llms.txt is the entry point an AGENT reaches these documents through, and it is
+  # the one document nobody looks at while working -- so every way it can rot is
+  # invisible. It routes by anchor into a README that gets rewritten, it cites
+  # DESIGN sections that get renumbered, and it is useless unless it is packaged.
+  describe "llms.txt" do
+    let(:llms) { Pathname(AuditLog::GEM_ROOT).join("llms.txt").read }
+
+    def packaged
+      Dir.chdir(AuditLog::GEM_ROOT) { Gem::Specification.load("audit_log.gemspec").files }
+    end
+
+    def linked_files
+      llms.scan(/\]\(([^)#]+)(?:#[^)]*)?\)/).flatten.uniq.grep_v(%r{\Ahttps?://})
+    end
+
+    it "resolves every README section it routes to" do
+      linked = llms.scan(/\]\(README\.md#([^)]+)\)/).flatten.uniq
+      expect(linked).not_to be_empty, "llms.txt routes to no README section at all"
+
+      expect(linked - slugs).to be_empty,
+        "llms.txt points at README headings that do not exist: #{(linked - slugs).join(", ")}"
+    end
+
+    it "links no file the gem does not have" do
+      missing = linked_files.reject { |f| Pathname(AuditLog::GEM_ROOT).join(f).exist? }
+
+      expect(missing).to be_empty, "llms.txt links files that do not exist: #{missing.join(", ")}"
+    end
+
+    it "resolves every DESIGN section it cites" do
+      design   = Pathname(AuditLog::GEM_ROOT).join("DESIGN.md").read
+      sections = design.scan(/^\#{2,4} (\d+(?:\.\d+)?[a-z]?)\.? /).flatten.to_set
+      dangling = llms.scan(/§\s*(\d+(?:\.\d+)?[a-z]?)/).flatten.uniq.reject { |r| sections.include?(r) }
+
+      expect(dangling).to be_empty,
+        "llms.txt points at DESIGN sections that do not exist: #{dangling.map { |d| "§#{d}" }.join(", ")}"
+    end
+
+    # The whole mechanism is "an agent resolves `bundle info audit_log --path` and
+    # reads what is there". A document left out of spec.files is present in the
+    # repository and absent from every app that installs the gem.
+    it "is packaged, along with everything it links to" do
+      expect(packaged).to include("llms.txt")
+      expect(linked_files - packaged).to be_empty,
+        "llms.txt links documents that are not in spec.files: #{(linked_files - packaged).join(", ")}"
+    end
+
+    # The mirror image, and a decision rather than an oversight (DESIGN §22, §24):
+    # CLAUDE.md is written for somebody CHANGING the gem, so shipping it to every
+    # host app would hand an agent the rules for the wrong job.
+    it "does not package CLAUDE.md" do
+      expect(packaged).not_to include("CLAUDE.md")
+    end
   end
 
   # Every task the engine registers should be findable by somebody reading the

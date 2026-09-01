@@ -45,7 +45,7 @@ the authority on *why* any of this is shaped the way it is.
   - [A worked example](#a-worked-example)
   - [Writing the view yourself](#writing-the-view-yourself)
   - [Use `AuditLog::Pagination`, do not hand-roll one](#use-auditlogpagination-do-not-hand-roll-one)
-  - [Four things to know](#four-things-to-know)
+  - [Five things to know](#five-things-to-know)
   - [Bounding it](#bounding-it)
   - [What the timeline covers](#what-the-timeline-covers)
 - [Making association ids readable (optional)](#making-association-ids-readable-optional)
@@ -82,6 +82,7 @@ the authority on *why* any of this is shaped the way it is.
   - [Transaction control in `audited`](#transaction-control-in-audited)
   - [Multi-database apps](#multi-database-apps)
   - [Why objects and not relations](#why-objects-and-not-relations)
+  - [Documentation for coding agents](#documentation-for-coding-agents)
 - [Why this one, and not a callback-based gem](#why-this-one-and-not-a-callback-based-gem)
 - [Why not one of the popular gems?](#why-not-one-of-the-popular-gems)
 - [Working on this library](#working-on-this-library)
@@ -335,11 +336,13 @@ could not do, and two of these need a decision from you.
 | `ApplicationController` | `include AuditLog::ControllerContext` | ⚠️ **Must sit after whatever sets `current_user`** — see the warning in step 2. |
 | `ApplicationJob` | `include AuditLog::JobContext` | The entire job-side integration. |
 | `config/routes.rb` | `mount AuditLog::Engine => "/audit"` | Gate it. `config.authorize` is a no-op by default. |
+| `.claude/skills/audit-log/SKILL.md` | a pointer to this gem's own docs, for coding agents | Yours to edit, never regenerated. [Documentation for coding agents](#documentation-for-coding-agents). |
 | `spec/audit_log/coverage_spec.rb` | three lines, using a shared example | The forcing function. Shares `AuditLog::Coverage` with the rake task, so the two cannot disagree about what counts as covered. Do not weaken it to make a build pass. |
 
 Re-running is safe: every step detects work already done and reports `skip`
 rather than injecting twice. Flags: `--mount-at=/audit`, `--skip-migration`,
-`--skip-routes`, `--skip-controller`, `--skip-job`, `--skip-spec`.
+`--skip-routes`, `--skip-controller`, `--skip-job`, `--skip-spec`,
+`--skip-skill`.
 
 ### What a model needs
 
@@ -920,6 +923,12 @@ And the view it feeds:
         <summary><%= activity.also_touched.size %> other records</summary>
         <% activity.also_touched.each do |touched| %>
           <div><%= link_to touched.to_s, touched.url || "#" %></div>
+          <details>
+            <summary><%= pluralize(touched.field_changes.size, "value") %></summary>
+            <% touched.field_changes.each do |fc| %>
+              <div><%= fc.column %>: <%= fc.from %> → <%= fc.to %></div>
+            <% end %>
+          </details>
         <% end %>
       </details>
     <% end %>
@@ -948,7 +957,7 @@ It brings no dependency with it, so paginate the rest of your app however you
 already do. [`DESIGN.md`](DESIGN.md) §11.0 has the measurement, and why this is
 hand-rolled rather than built on Pagy.
 
-### Four things to know
+### Five things to know
 
 **`headline` is nil when no registered action covered the write**, and the
 library will not invent one — a generated sentence would be this gem's phrasing
@@ -960,6 +969,14 @@ and more entries become `:narrative`.
 `Grommet 10mm (Product #51)` on purpose: the label is resolved live, the id is
 what the log recorded. Showing only the label lets a rename rewrite what your
 timeline says happened.
+
+**The other records carry their own before-and-after.**
+`touched.field_changes` is the same `FieldChange` list as the anchor record's,
+already loaded and already labelled with the page — no extra query. Without it a
+reader is told a line item's `quantity` changed and never what it changed to, and
+on your own page there is usually nowhere else to look: a line item has no show
+page to link to. Render it collapsed, and nested inside the "other records"
+disclosure — one form submit can touch forty of them.
 
 **Set `config.record_url` if you want links.** It is nil by default and that is
 not a placeholder — this gem does not know your routes, and it will not guess
@@ -1340,7 +1357,7 @@ are the ones with decisions in them.
 
 | | Does | Run it |
 |---|---|---|
-| `audit_log:install` | initializer, schema migration, `ControllerContext` and `JobContext` includes, mounts the engine, coverage spec | once |
+| `audit_log:install` | initializer, schema migration, `ControllerContext` and `JobContext` includes, mounts the engine, coverage spec, agent skill | once |
 | `audit_log:trigger TABLE --model=Model` | a migration with one `attach_audit_trigger` line | once per audited table |
 | `audit_log:trigger TABLE --replace` | detach-then-attach, to change a table's model or exclusions | when those change |
 | `audit_log:views:activity Model [Model...]` | controller, concern, helper, views, route, locale, stylesheet — and wires each model's show page | once, then again per new model |
@@ -1862,7 +1879,7 @@ screen that looks fine. The value objects make each one a method call.
 |---|---|
 | `Activity` | `kind` (`:narrative` / `:change_only`), `headline`, `action`, `source`, `actor`, `occurred_at`, `operations`, `changed_columns`, `field_changes`, `also_touched`, `metadata`, `redacted?`, `out_of_band?` |
 | `FieldChange` | `column`, `from`, `to`, `cleared?`, `set?`, `from_label` / `to_label`, `association?` |
-| `TouchedRecord` | `type`, `id`, `identifier`, `label`, `label_failed?`, `operations`, `columns`, `url`, `to_s` |
+| `TouchedRecord` | `type`, `id`, `identifier`, `label`, `label_failed?`, `operations`, `columns`, `field_changes`, `url`, `to_s` |
 | `Actor` | `type`, `id`, `label`, `display`, `system?`, `linkable?`, `url` |
 
 `Activity`, `FieldChange`, `TouchedRecord` and `Actor` each have `as_json`, so a
@@ -1879,6 +1896,32 @@ They are separate because keyset paging needs a *relation* to build a cursor fro
 hydration has to be batched, and because the limit belongs above the controller
 where you can see it (DESIGN §11.0 Rule 2) — so the library cannot paginate and
 load in one call.
+
+### Documentation for coding agents
+
+An agent working in your app has this gem resolved in the bundle, so it already
+has these documents on disk — and no reason to look. The gem ships
+[`llms.txt`](llms.txt) as the entry point, in the packaged form of the
+[llms.txt](https://llmstxt.org) convention: a short summary and a routing table
+into `README.md` and `DESIGN.md`, written as file paths rather than URLs.
+
+```bash
+bundle info audit_log --path     # then read llms.txt there
+```
+
+`audit_log:install` writes `.claude/skills/audit-log/SKILL.md` into your app, so
+Claude Code finds that entry point on its own — plus the handful of facts only
+your installation knows, such as where the engine is mounted. It is a **pointer,
+not a copy**: everything version-specific stays in the gem, where it upgrades
+with the gem. The file is yours from the moment it is written — never
+regenerated, never overwritten by a later install, and nothing here depends on it
+existing. `--skip-skill` if you do not want it.
+
+If you use a different tool, point it at `llms.txt` yourself; one line in an
+`AGENTS.md` is enough. Worth doing rather than leaving to chance, because the
+failure mode is specific and quiet: an agent that has not read these docs falls
+back on what it knows about `paper_trail` and writes a concern into a model
+class, where it records nothing at all.
 
 ## Why this one, and not a callback-based gem
 
@@ -1958,6 +2001,7 @@ who will not read a 2,600-line design document first.
 | `lib/audit_log/csv_export.rb` | Streaming CSV for the screens. No row cap. |
 | `lib/audit_log/engine.rb` | Initializers: the adapter prepend, the event subscriber, `PGTZ`. |
 | `lib/audit_log/console.rb` | Narrates console sessions. |
+| `llms.txt` | The packaged entry point for coding agents: a summary, then a routing table into this file and `DESIGN.md`. Guarded by `readme_spec`. |
 | `db/sql/audit_tables.sql` | The two partitioned tables and their indexes. |
 | `db/sql/audit_row_change.sql` | The trigger function. The heart of layer 1. |
 | `app/queries/` | One object per auditor question (`ActorActivity`, `RecordHistory`, `RecordTimeline`, `ActionReport`, `Reconciler`, `Coverage`), plus `LabelResolver` — the per-request association-label cache. |

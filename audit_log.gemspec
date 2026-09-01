@@ -66,6 +66,12 @@ Gem::Specification.new do |spec|
     "lib/**/*",
     "README.md",
     "DESIGN.md",
+    # The agent-facing entry point, and it has to be PACKAGED to do its job: an
+    # agent working in a host app reaches these docs through `bundle info
+    # audit_log --path` and nothing else. CLAUDE.md is deliberately absent from
+    # this list for the mirror-image reason -- it is written for somebody
+    # changing the gem, not using it. DESIGN §24.
+    "llms.txt",
     "CHANGELOG.md",
     "LICENSE.txt"
   ]

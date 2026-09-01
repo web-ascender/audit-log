@@ -31,6 +31,7 @@ module AuditLog
       class_option :skip_controller, type: :boolean, default: false
       class_option :skip_job,        type: :boolean, default: false
       class_option :skip_spec,       type: :boolean, default: false
+      class_option :skip_skill,      type: :boolean, default: false
 
       ORDER_WARNING = <<~TEXT
         ControllerContext registers a before_action. If it runs before your
@@ -183,6 +184,34 @@ module AuditLog
         template "coverage_spec.rb", "spec/audit_log/coverage_spec.rb"
       end
 
+      # ---------------------------------------------------------------- step 8
+      # The pointer that makes the packaged docs reachable.
+      #
+      # An agent working in this host app has the gem resolved in the bundle and
+      # therefore has README.md, DESIGN.md and llms.txt on disk already -- and no
+      # reason to look. Nothing in Bundler or RubyGems surfaces a gem's
+      # documentation, so without a file inside the host the docs are present and
+      # invisible, and the agent falls back on what it knows about paper_trail:
+      # a concern in the model, a callback, a hand-rolled paginator.
+      #
+      # So this writes a POINTER and not a copy. The four warnings it does carry
+      # are architectural invariants, not API detail -- none of them can change
+      # without a major version -- and they are there because a pointer nobody
+      # follows closes nothing. Everything version-specific stays in the gem,
+      # where it upgrades with the gem. DESIGN §24.
+      #
+      # Create-once, like the activity generator's templates and for the same
+      # reason (§21.3): this is the host's file the moment it is written, and a
+      # second install run meets a version they have edited.
+      def create_agent_skill
+        return if options[:skip_skill]
+
+        path = ".claude/skills/audit-log/SKILL.md"
+        return skip("#{path} already exists — left alone") if file_exists?(path)
+
+        template "skill.md", path
+      end
+
       # ---------------------------------------------------------------- report
       def report
         say ""
@@ -233,6 +262,13 @@ module AuditLog
         say "  Read config/initializers/audit_log.rb before deploying. config.authorize"
         say "  defaults to a NO-OP, which is right for a demo and wrong for you.", :red
         say ""
+
+        if file_exists?(".claude/skills/audit-log/SKILL.md")
+          say "  Coding agents: .claude/skills/audit-log/SKILL.md points them at this gem's"
+          say "  own documentation (`bundle info audit_log --path`, then llms.txt). It is"
+          say "  yours to edit; nothing here regenerates it."
+          say ""
+        end
       end
 
       private
@@ -276,6 +312,10 @@ module AuditLog
 
         inject_into_class path, klass, "  #{line}\n"
       end
+
+      # Read by skill.md.tt. Step 8 runs after step 7, so this is the file that
+      # was actually written rather than the one that was meant to be.
+      def coverage_spec? = file_exists?("spec/audit_log/coverage_spec.rb")
 
       def migration_version
         "[#{::ActiveRecord::Migration.current_version}]"

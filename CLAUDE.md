@@ -19,6 +19,7 @@ it is, and the section numbers cited from source comments (`plan §6.1`,
 | **`CLAUDE.md`** (this file) | you | terse rules, and what not to "fix" |
 | `DESIGN.md` | someone changing the library | the reasoning, in full |
 | `CHANGELOG.md` | everyone | what changed between released versions. Deliberately thin — `DESIGN.md` carries the reasoning, git carries the detail |
+| `llms.txt` | an agent in a HOST APP using the gem | a summary and a routing table into README/DESIGN. **Packaged** (`spec.files`); `CLAUDE.md` deliberately is not. DESIGN §24 |
 
 The list of deliberate decisions below is deliberately terse and deliberately
 duplicated from `DESIGN.md` — it exists so an agent that will not read a
@@ -98,7 +99,7 @@ Update it when you change behaviour.
 | Ruby | **>= 3.3** — the floor is `SecureRandom.uuid_v7` (DESIGN §2.1), not a preference. 3.3.0 exactly also cannot run Rails 8.1, for a reason of Rails' own. Developed on 4.0.6. |
 | Rails | **`~> 8.0`** — floor 8.0 (DESIGN §2.2), and a real ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. Developed on 8.1.3.1. |
 | PostgreSQL | **>= 16.** Developed on 18.6, port 5438 — not the workspace default 5437. CI runs 16 and 18; DESIGN §20 is the authority and says the design "targets PG 16 and requires nothing newer". Verified: the whole suite passes on 16.13. |
-| Tests | RSpec against `spec/dummy` (457 examples), on every push via GitHub Actions — six legs: Ruby 3.3/4.0.6 × Rails 8.0/latest × PG 16/18 |
+| Tests | RSpec against `spec/dummy` (470 examples), on every push via GitHub Actions — six legs: Ruby 3.3/4.0.6 × Rails 8.0/latest × PG 16/18 |
 | Runtime deps | `rails`, `csv` (export). **`pg` and `pagy` deliberately are not** — the host app picks its own `pg` build, and its own pagination gem. `AuditLog::Pagination` is this library's own keyset pager precisely so a `pagy` constraint does not propagate into the host. |
 
 ```bash
@@ -429,6 +430,25 @@ Do not "fix" these without reading the linked reasoning first.
   state; the id is what the log recorded (DESIGN §11.8). A host building a pretty
   timeline will want to drop it, which is exactly why the pretty method is the
   one that keeps it.
+- **`TouchedRecord#field_changes` exists because the ENGINE could link and a host
+  cannot.** `columns` says a line item's `quantity` changed; this says it went
+  from 10 to 20. The engine can send the reader to `record_history_path` for the
+  rest, but `config.record_url` points at the host's *business* page — current
+  state, not history — and a line item usually has no page at all, so on a
+  host-rendered timeline the values are nowhere else. It costs no query: the
+  unit's whole change set is already hydrated and already warmed, and
+  `Timeline#touched` was discarding the rows after reading `operations` and
+  `changed_columns` off them. Lazy and memoised, so a screen rendering only the
+  count pays nothing; `timeline_spec` pins the count at zero. It is built through
+  **`FieldChange.from_changes`, the ONE construction path**, shared with
+  `Activity#field_changes` — the `side:` argument and the MISSING/FAILED collapse
+  are what a second hand-rolled copy gets subtly wrong. Rendered COLLAPSED inside
+  a disclosure that is itself collapsed, because forty line items × five values
+  expanded by default buries the card's own answer; `audit_ui_spec` asserts the
+  nested `<details>` is closed, not merely present. And that spec's
+  "redaction note is outside every `<details>`" assertion is now PARSED rather
+  than regexed — a non-greedy `<details>.*?</details>` scan stops at the inner
+  close tag and quietly stops checking the rest of the outer one. DESIGN §11.2b.
 - **The Timeline card renders `metadata` in the SAME three states as
   `shared/_event_payload`, and the redaction note is not inside the
   `<details>`.** The first version of the card had only
@@ -844,6 +864,33 @@ Do not "fix" these without reading the linked reasoning first.
   not enforced, consistent with the rest of the feature: dimensions are ids and
   scope labels, not values.
 
+### Documentation for coding agents (DESIGN §24)
+
+- **`llms.txt` is in `spec.files` and `CLAUDE.md` is deliberately not, and both
+  halves matter.** The whole mechanism is that an agent in a host app resolves
+  `bundle info audit_log --path` and reads what is there, so a document left out of
+  the gem is one no adopter can reach. `CLAUDE.md` stays out because it is the rule
+  list for somebody CHANGING the library — shipped into a host app it hands an agent
+  the rules for the wrong job. `readme_spec` pins both directions, plus every README
+  anchor `llms.txt` routes to and every `§n` it cites: it is the one document nobody
+  reads while working, so every way it can rot is invisible.
+- **The generated `.claude/skills/audit-log/SKILL.md` is a POINTER and must stay
+  one.** It lives in somebody else's repository, cannot be corrected by a gem
+  release, and would go stale silently while reading with full authority. It carries
+  the resolution command, the routing sentence, and only genuinely local facts (the
+  mount path, whether a coverage spec exists). Its four warnings are the deliberate
+  exception — a "why" that prevents a MISUSE, §22's rule — and each is an
+  architectural invariant that cannot change without a major version. Do not add a
+  fifth that is API detail, and do not let it grow a version-specific fact.
+- **Create-once, host-owned, no gem-side dependency, and no "your skill is out of
+  date" check** — §21.3's boundary exactly, applied to a second kind of generated
+  file. Nothing in the library may learn whether it exists.
+- **No `AGENTS.md` is written or appended, and no MCP server.** `AGENTS.md` is a
+  single root file the host owns entirely; appending to it is the
+  `config/locales/en.yml` case. The README prints the one line and leaves it to the
+  operator. An MCP server is a process and a transport for content already sitting in
+  the bundle — the gap was discovery of static files.
+
 Every browse screen is keyset-paginated through `AuditLog::Pagination`
 (DESIGN §11.0 Rule 2). **Do not add `.limit` to a screen's scope** — a limit
 baked below the controller is invisible to the page rendering it, which is
@@ -863,7 +910,9 @@ browsable results. `config.page_size` is the only knob.
 
 **`DESIGN.md` §21 is the authority on the three generators it covers**; §21.3 is
 this one. The fourth, `audit_log:dimensions`, is a retrofit path and its reasoning
-lives in §23 with the rest of that feature.
+lives in §23 with the rest of that feature. `audit_log:install`'s agent-skill step
+is §24's, not §21's — it is a documentation-distribution decision that happens to be
+implemented in a generator.
 Everything below is the terse copy.
 
 **It is `audit_log:views:activity`, under a `views:` namespace, and the namespace
@@ -1069,7 +1118,7 @@ one. Do not reintroduce it.
 ## Testing
 
 ```bash
-bundle exec rspec                         # 457 examples, against spec/dummy
+bundle exec rspec                         # 470 examples, against spec/dummy
 bundle exec rspec spec/audit_log          # the library proper
 bundle exec rspec spec/requests           # the auditor UI and the CSV export
 bundle exec rspec spec/preview.rb         # dev tool: renders 19 screens to spec/dummy/public/
@@ -1098,7 +1147,7 @@ property from different angles — **that nothing goes missing without saying so
 | `archive_spec` | a partition is dropped without a verified export |
 | `redaction_spec` | redaction removes structure, not just values |
 | `association_labels_spec` | a label replaces a stored id, or a failed lookup reads as an absent one |
-| `readme_spec` | the README's contents table drifts from its headings, an internal link dangles, or a rake task exists that the docs never mention |
+| `readme_spec` | the README's contents table drifts from its headings, an internal link dangles, a rake task exists that the docs never mention, or `llms.txt` routes into a heading that is gone, cites a dead `§n`, or falls out of `spec.files` |
 | `record_timeline_spec` | an unsubjected action vanishes from a record's narrative, or a capped section does not admit it is capped |
 | `timeline_spec` | the published host-facing contract changes shape, a unit of work is dropped or repeated across pages, an event that wrote no change row falls off the timeline, or `headline` starts inventing sentences |
 | `install_generator_spec` | the ControllerContext include lands ahead of authentication, or a skipped step reports success |
@@ -1165,7 +1214,7 @@ Three things about it are load-bearing rather than boilerplate:
   gemspec or consciously narrow the check — do not delete it.
 
 **Both Rails legs are exercised, and they take different code paths.** Verified
-2026-09-01 by running the whole suite on each: 457 examples pass on 8.0.5.1 and on
+2026-09-01 by running the whole suite on each: 470 examples pass on 8.0.5.1 and on
 8.1.3.1. `Rails.respond_to?(:event)` is FALSE on 8.0 and TRUE on 8.1, so
 `AuditLog.notify`'s fallback runs on one leg and `Rails.event` on the other —
 `event_transport_spec` asserts which branch it is on rather than assuming.

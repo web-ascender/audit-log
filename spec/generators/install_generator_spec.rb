@@ -123,6 +123,61 @@ RSpec.describe AuditLog::Generators::InstallGenerator do
     end
   end
 
+  # The pointer that makes the packaged docs reachable at all. An agent working in
+  # a host app has README.md, DESIGN.md and llms.txt resolved in the bundle and no
+  # reason to look at them -- nothing in Bundler surfaces a gem's documentation.
+  describe "the generated agent skill" do
+    let(:dir) { host_app }
+    after { FileUtils.remove_entry(dir) }
+
+    it "writes a skill that points at the gem rather than copying it" do
+      run_generator([], dir: dir)
+      body = read(dir, ".claude/skills/audit-log/SKILL.md")
+
+      expect(body).to include("bundle info audit_log --path")
+      expect(body).to include("llms.txt")
+    end
+
+    it "records where the engine was actually mounted" do
+      run_generator(["--mount-at=/internal/audit"], dir: dir)
+
+      expect(read(dir, ".claude/skills/audit-log/SKILL.md")).to include("/internal/audit")
+    end
+
+    # A skill is discovered by its frontmatter, so an unresolved ERB tag or a
+    # missing `description:` is not a cosmetic defect -- the file is simply never
+    # loaded, and nothing says so.
+    it "resolves its ERB and keeps the frontmatter a skill is discovered by" do
+      run_generator([], dir: dir)
+      body = read(dir, ".claude/skills/audit-log/SKILL.md")
+
+      expect(body).not_to include("<%")
+      expect(body).to start_with("---\n")
+      expect(body).to match(/^name: audit-log$/)
+      expect(body).to match(/^description: /)
+    end
+
+    # Create-once, for the same reason the activity generator's templates are
+    # (DESIGN §21.3): this is the host's file from the moment it is written, and a
+    # second install run meets a version they have edited.
+    it "leaves an edited skill alone on a second run" do
+      run_generator([], dir: dir)
+      path = File.join(dir, ".claude/skills/audit-log/SKILL.md")
+      File.write(path, "edited by the host\n")
+
+      output = run_generator([], dir: dir)
+
+      expect(File.read(path)).to eq("edited by the host\n")
+      expect(output).to include("already exists")
+    end
+
+    it "writes nothing under --skip-skill" do
+      run_generator(["--skip-skill"], dir: dir)
+
+      expect(File.exist?(File.join(dir, ".claude"))).to be(false)
+    end
+  end
+
   describe "an app that already has db/schema.rb" do
     let(:dir) { host_app(schema_rb: true) }
     after { FileUtils.remove_entry(dir) }

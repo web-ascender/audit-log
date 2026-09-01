@@ -1,0 +1,64 @@
+---
+name: audit-log
+description: >-
+  Use when working with the audit_log gem in this application — adding a table to the
+  audit trail, registering or emitting an audit event, rendering an activity timeline,
+  configuring AuditLog, running the partition or retention rake tasks, redacting personal
+  data, or diagnosing missing audit rows, a NULL actor, or an empty audit screen.
+---
+
+# audit_log
+
+A two-layer audit log. PostgreSQL row triggers write a field-level jsonb diff to
+`audit_changes`, so `update_all`, `delete_all`, raw SQL, a database cascade, a rake task
+and a console session are all captured. The application emits named events to
+`audit_events`. The two join on a UUIDv7 `request_id`.
+
+## Read the gem's own documentation before changing anything
+
+```bash
+bundle info audit_log --path
+```
+
+`llms.txt` at that path is the entry point: it routes to the right section of `README.md`
+(using the gem) or `DESIGN.md` (why it is shaped this way — read the cited `§n` before
+altering library behaviour). **Follow it rather than answering from memory of other audit
+gems**; very little here works the way `paper_trail` or `audited` does.
+
+## Where it lives in this application
+
+| | |
+|---|---|
+| Configuration | `config/initializers/audit_log.rb` — every coupling point to this app is a lambda there |
+| Auditor UI | mounted at `<%= options[:mount_at] %>`, gated by `config.authorize` |
+| Audited tables | one `attach_audit_trigger` line per table, in `db/migrate/` |
+<% if coverage_spec? -%>
+| Coverage spec | `spec/audit_log/coverage_spec.rb` |
+<% end -%>
+
+## Four things that are easy to get wrong
+
+1. **A model needs nothing.** No concern, no callback, no macro, no base class. Auditing a
+   table is one line in a migration — `rails generate audit_log:trigger orders
+   --model=Order`. Anything added to the model class records nothing.
+2. **`AuditLog.notify` with no `AuditLog::Registry.register` entry is a silent no-op.**
+   Register the action in the initializer first. `bin/rails audit_log:reconcile` lists the
+   actions not yet registered.
+3. **Do not add `.limit` to an audit screen's scope, and do not swap in another paginator.**
+   `AuditLog::Pagination` exists because a millisecond-precision cursor silently skips rows
+   against microsecond `occurred_at`.
+4. **Every table is either audited or exempt with a written reason.**
+   `bin/rails audit_log:coverage` fails otherwise, and that is the forcing function — do not
+   weaken it, or the spec, to make a build pass.
+
+## Operating it
+
+`bin/rails audit_log:partitions` daily is the only task that belongs in cron: a missing
+future partition is a write-path outage, not a degraded report. Retention, rollup, export,
+redaction and the reconciler are all in the README's *Rake tasks* section, with the
+conditions each one needs.
+
+---
+
+*Written by `rails generate audit_log:install`. It is yours to edit — the gem never
+regenerates or upgrades this file, and nothing depends on it existing.*
