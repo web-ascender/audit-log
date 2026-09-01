@@ -3,147 +3,77 @@
 Notable changes to `audit_log`. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.5.0 — 2026-09-01
+
+No breaking changes. An application that adds nothing sees no behaviour change,
+with one exception noted under Fixed.
 
 ### Added
 
-- **Disabling capture, and resuming it** — `rails generate audit_log:disable
+- **Disabling capture, and resuming it.** `rails generate audit_log:disable
   --reason="..."` writes one reversible migration that detaches every audit
-  trigger. The audit tables, every partition, every row and the auditor UI are
-  untouched; `db:migrate:down` re-attaches exactly what was there, and that one
-  migration is the whole cycle, indefinitely.
+  trigger, keeping the audit tables, every partition, every row and the auditor
+  UI. `db:migrate:down` re-attaches exactly what was there, and that one migration
+  is the whole cycle — `up` disables, `down` resumes, either can be re-run.
+  `audit_log:enable` is the recovery path for when the migration has been squashed
+  or deleted, rebuilding from a marker on `audit_changes`.
 
-  The re-attach is exact rather than approximate. Model name, merged exclusion
-  list and any declared `dimensions:` are read out of `pg_trigger.tgargs` at
-  generate time and written into the migration as reviewable literals;
-  `capture_spec` pins that `pg_get_triggerdef` comes back byte-identical across a
-  full cycle, on a table with facets and one without. `audit_log:enable` is the
-  recovery path for when that migration has been squashed or deleted — it rebuilds
-  the attach lines from a marker on `audit_changes` and refuses rather than
-  guessing model names from table names.
+  It detaches rather than setting a flag the trigger reads, because a flag would
+  satisfy `audit_log:coverage` while auditing nothing. So `AuditLog::Coverage`
+  gains `capture_disabled?` and reports that state instead of advising attach
+  migrations — and still fails, on purpose. Layer 2 keeps writing `audit_events`;
+  there is deliberately no `config.enabled = false`. Both directions emit
+  `audit.capture_disabled` / `audit.capture_resumed` and raise rather than emit
+  nothing if those are unregistered. New `AuditLog::Capture`. DESIGN §25.
 
-  **It detaches rather than setting a flag, and that is the whole design.** A
-  durable GUC read by the trigger function is cheaper in every way except the one
-  that matters: it would satisfy `rake audit_log:coverage` and the shared example
-  while auditing nothing. Detaching is loud, so `AuditLog::Coverage` learns a third
-  state — `capture_disabled?` — and reports *"capture is disabled, since this date,
-  for this reason"* instead of listing tables and advising attach migrations. `ok?`
-  is still false and the spec still fails, on purpose.
+- **`Timeline::TouchedRecord#field_changes`** — the other records a unit of work
+  touched now carry their own before-and-after, not only which columns moved.
+  Costs no query (the change set is already hydrated) and is lazy. Additive to the
+  published contract: `as_json` gains a nested `field_changes` array. The engine's
+  Timeline tab and the `audit_log:views:activity` templates both render it,
+  collapsed. DESIGN §11.2b.
 
-  Layer 2 is untouched: `AuditLog.notify` and `AuditLog.audited` go on writing
-  `audit_events`, so a paused app keeps its narrative and loses the field changes
-  beneath it. There is deliberately no `config.enabled = false`. Both directions
-  narrate themselves (`audit.capture_disabled` / `audit.capture_resumed`) and
-  **raise** rather than emit nothing if those actions are unregistered. DESIGN §25.
-
-- **`AuditLog::Timeline::TouchedRecord#field_changes`** — the other records a unit
-  of work touched now carry their own before-and-after, not only which columns
-  they touched. `columns` says a line item's `quantity` changed; this says it went
-  from 10 to 20.
-
-  It closes a gap that only existed on a HOST-rendered timeline: the auditor UI
-  can link a touched record to its own history screen, while `config.record_url`
-  points at the host's business page — current state, not history — and a line
-  item usually has no page at all. Same `FieldChange` objects as the anchor
-  record's list, through one shared construction path, with association labels
-  resolved the same way.
-
-  Free: the unit of work's whole change set is already hydrated for the page and
-  its labels already warmed, so this adds no query, and it is lazy so a screen
-  rendering only the count pays nothing. Additive to the published contract —
-  `as_json` gains a nested `field_changes` array.
-
-  The engine's Timeline tab and the `audit_log:views:activity` templates both
-  render it, collapsed inside the existing "other records changed in this action"
-  disclosure. An app that already generated those views is unaffected; the
-  generator never overwrites, so the snippet in the README is the way to add it to
-  views you own.
-
-- **Documentation for coding agents.** The gem now packages `llms.txt` — the
-  [llms.txt](https://llmstxt.org) convention in its packaged form, with links as
-  file paths inside the installed gem rather than URLs. It is a summary and a
-  routing table into `README.md` and `DESIGN.md`, reachable from any host app with
-  `bundle info audit_log --path`.
-
-  `audit_log:install` writes `.claude/skills/audit-log/SKILL.md` into the host so
-  Claude Code finds that entry point without being told, carrying the facts only
-  the installation knows (where the engine is mounted, whether a coverage spec was
-  written). `--skip-skill` declines it. It is a **pointer, not a copy**:
-  create-once, host-owned, never regenerated, and nothing in the library depends on
-  it existing.
-
-  The problem is discovery rather than content — an agent in a host app already has
-  these documents on disk and no reason to look, and the failure that follows is
-  quiet: it answers from what it knows about `paper_trail`, writes a concern into a
-  model class, and records nothing. `CLAUDE.md` is deliberately **not** packaged;
-  `readme_spec` guards both that and every link `llms.txt` makes. DESIGN §24.
+- **Documentation for coding agents.** The gem packages `llms.txt`, a summary and
+  a routing table into `README.md` and `DESIGN.md` as file paths inside the
+  installed gem. `audit_log:install` writes `.claude/skills/audit-log/SKILL.md`
+  into the host — a pointer, create-once, host-owned, never regenerated;
+  `--skip-skill` declines it. `CLAUDE.md` is deliberately not packaged. DESIGN §24.
 
 ### Fixed
 
-- **`readme_spec`'s undocumented-task guard was skipping the whole
-  `audit_log:partitions:` namespace.** It scanned `/^\s{2}task (\w+)/` — two
-  spaces, so top level only — and therefore checked 6 of the library's 13 tasks.
-  The 7 it missed are every retention and disposal task: the ones whose behaviour
-  an operator most needs written down. All 7 happened to be documented, so the
-  example never failed; it simply was not checking. It now walks the namespace
-  stack, asserts a floor on what it found so a broken walk cannot pass by finding
-  nothing, and was verified to fail when a nested task's mentions are removed.
-
 - **The library's own actions are now registered by `audit_log:install`.**
   `audit.bypass`, `audit.bypass_completed` and `audit.redaction` were registered
-  only by the dummy app — absent from the install generator's initializer template
-  and unmentioned in the README. Since an unregistered action is a silent no-op in
-  `EventSubscriber`, `AuditLog::Bypass`'s documented promise that *"the bypass logs
-  itself"* did not hold in any real adopting application, and a redaction wrote no
-  `audit.redaction` row. All five library actions now ship in the template.
+  only by the dummy app, and an unregistered action is a silent no-op in
+  `EventSubscriber` — so `AuditLog::Bypass`'s documented promise that *"the bypass
+  logs itself"* did not hold in any adopting application, and a redaction wrote no
+  `audit.redaction` row.
 
-  Existing apps are unaffected by upgrading and should add the entries; the raise
-  in `AuditLog::Capture` names them, and the block in the template is the copy to
-  paste.
+  **This is the one thing to do on upgrade.** A new install gets all five actions;
+  an existing app should copy the block from the generator's initializer template.
+  Without it the bypass and redaction go on working and go on not narrating
+  themselves, and `audit_log:disable` refuses to run.
+
+- **`readme_spec`'s undocumented-task guard was checking 6 of 13 tasks.** It
+  matched two spaces of indent, so the entire `audit_log:partitions:` namespace —
+  every retention and disposal task — was invisible to it. All seven were
+  documented, so it never failed; it was not checking. It now walks the namespace
+  stack, with a floor assertion so a broken walk cannot pass by finding nothing.
 
 ### Changed
 
-- **`README.md` documents the bypass and redaction**, the two operations that put
-  a deliberate hole in the log and had between them one row of a config table and
-  one row of the rake-task table. How to perform an erasure, what it reaches, what
-  deliberately survives it, the `FIELDS=` / `COLUMNS=` trap, and the whole of
-  `AuditLog.without_logging` were undocumented for the person doing them under time
-  pressure. New "Bypassing the log for a bulk load" and "Redacting values under an
-  erasure request" sections under Advanced, beside "Stopping auditing" — three
-  escalating scopes, cross-linked, so a reader lands on the smallest tool that
-  covers their case.
+- **`README.md` documents redaction and `AuditLog.without_logging`**, which had
+  between them one row of a config table and one row of the rake-task table. New
+  "Redacting values under an erasure request" and "Bypassing the log for a bulk
+  load" sections under Advanced, beside "Stopping auditing" — three escalating
+  scopes, cross-linked.
 
-- **Corrected stale claims in `DESIGN.md` that contradicted `README.md` and
-  `CLAUDE.md`.** §2.2 and §16 still said CI tested Rails 8.1 only, that the suite
-  ran on four legs, and that a Rails 8.0 leg "is still missing" — none true since
-  0.4.0 closed that gap, which this file already recorded and both other documents
-  already reflected. §2.2 also listed
+- **Corrected stale `DESIGN.md` claims that contradicted the other two documents.**
+  §2.2 and §16 said CI tested Rails 8.1 only and that the Rails 8.0 leg was
+  missing, both untrue since 0.4.0; §2.2 listed
   `config.active_job.enqueue_after_transaction_commit` as required of the host,
-  which §6.4 of the same document says **does nothing**: ActiveJob's railtie
-  filters that key out, and `JobContext` sets it on the job class instead.
-
-  Also: §21 said "three generators ship" when six do, the README's generator
-  options said "four", its Files table listed four and omitted `payload.rb`, and
-  three documents carried three different, all-stale line counts for each other.
-  Plus markdown defects in the README — an unclosed `<span>`, a malformed table
-  row, and `---` separators between `###` subsections where they mark `##` ones.
-
-- **An editorial pass over `README.md`.** *"Registering is optional"* was stated
-  five times in one section and is now stated twice — once at the top, where a
-  reader decides whether to continue, and once in the `[!NOTE]` that says what
-  happens if you skip it. A stale *"you do not have to write any of the above by
-  hand"* pointed forward at a section that comes after it. The migration
-  archaeology closing "Re-attaching" moved to DESIGN §5.2, per §22's test: it
-  explains why the collision is reachable and changes nothing the reader does.
-  The unexplained `72` in "Bounding it" now carries the 36-month horizon it was
-  measured against, so it no longer silently contradicts the documented 7-year
-  `retention` default. And the prose is rewrapped to 80 columns throughout — the
-  Dimensions section had drifted to ~95, which reads as a different document.
-
-  The `audited` two-slot caution said only that "a key set in both places will
-  raise", which is true and reads as wrong, because re-assigning a key **inside**
-  the block overwrites silently. `Payload#reject_eager_overwrite!` guards eager
-  keys only. Both halves are now stated.
+  which §6.4 of the same document says does nothing. Plus an editorial pass over
+  the README: repetition cut, one stale forward reference removed, rationale moved
+  to DESIGN §5.2, and the prose rewrapped to 80 columns throughout.
 
 ## 0.4.0 — 2026-09-01
 

@@ -219,7 +219,7 @@ command, and the reasoning for any of it is linked rather than inline.
 
 ```ruby
 # Gemfile
-gem "audit_log", git: "https://github.com/web-ascender/audit-log", tag: "v0.4.0"
+gem "audit_log", git: "https://github.com/web-ascender/audit-log", tag: "v0.5.0"
 ```
 
 A private repo, so `bundle` needs credentials for the company GitHub org. Pin to
