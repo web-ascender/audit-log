@@ -37,6 +37,7 @@ module AuditLog
     CsvExport:         "audit_log/csv_export",
     ControllerContext: "audit_log/controller_context",
     Current:           "audit_log/current",
+    DimensionIndex:    "audit_log/dimension_index",
     EventSubscriber:   "audit_log/event_subscriber",
     JobContext:        "audit_log/job_context",
     MigrationHelpers:  "audit_log/migration_helpers",

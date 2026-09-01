@@ -1,0 +1,71 @@
+# frozen_string_literal: true
+
+# Retrofits DESIGN §23 onto an audit log that predates it. A new install has all
+# of this already -- audit_tables.sql ships the column and the index.
+#
+# NOTHING IS RECORDED BY THIS MIGRATION. It adds storage; a facet only starts
+# being written when a table declares one (`attach_audit_trigger ...,
+# dimensions: %i[...]`) or a registry entry does. It is not retroactive either
+# way: rows already in the tables stay NULL and can never match a facet query,
+# which is exactly what the index's WHERE clause excludes them on.
+class AddAuditLogDimensions < ActiveRecord::Migration<%= migration_version %>
+  # MANDATORY: CREATE INDEX CONCURRENTLY cannot run inside a transaction, and
+  # CONCURRENTLY is the whole point -- `add_index` on a partitioned parent builds
+  # across every partition under a lock that blocks every audited write in the
+  # application. The cost of disabling it is that a failure leaves partial state,
+  # which is why the assertion at the bottom reads the catalog rather than
+  # trusting this migration's own arithmetic, and why it is safe to re-run.
+  disable_ddl_transaction!
+
+  def up
+    # Nullable with no default, so this is a catalog-only ADD COLUMN with no
+    # rewrite -- brief ACCESS EXCLUSIVE on the parent and each partition, taken
+    # under the same lock_timeout every other maintenance path in this library
+    # runs under. NULL also keeps "never recorded" distinguishable from
+    # "recorded, empty", which matters precisely because it is not retroactive.
+    AuditLog::DimensionIndex::TABLES.each do |table|
+      next if column_exists?(table, :dimensions)
+
+      add_column table, :dimensions, :jsonb
+      say "added #{table}.dimensions"
+    end
+
+    # THE HALF THAT IS EASY TO FORGET AND FAILS SILENTLY. The trigger function
+    # reads its facet list from TG_ARGV[2], which the version installed before
+    # this feature existed does not look at -- so a migration that declares
+    # `dimensions:` against the OLD function passes the list to something that
+    # ignores it and records nothing, forever, without an error anywhere. The
+    # column and the index would be in place and every facet query would return
+    # an empty screen.
+    #
+    # CREATE OR REPLACE, so this is idempotent. In a schema-per-tenant app it has
+    # to run once per schema, exactly as the install did (DESIGN §14).
+    AuditLog::Schema.install_function!
+    say "re-installed audit_row_change() with facet support"
+
+    AuditLog::DimensionIndex.install! do |table, partition, action|
+      say(partition ? "#{action}: #{partition}" : "#{action} index on #{table}")
+    end
+
+    # THE CATALOG'S OWN ANSWER. A partitioned index is indisvalid = false until
+    # the last partition attaches one, and Postgres is the only thing that knows
+    # that for certain -- counting partitions here would be this migration
+    # marking its own homework. DESIGN §21.1.
+    AuditLog::DimensionIndex::TABLES.each do |table|
+      next if AuditLog::DimensionIndex.complete?(table)
+
+      raise "#{AuditLog::DimensionIndex.parent_index(table)} is still INVALID: some " \
+            "partition has no facet index attached. Re-run this migration -- it skips " \
+            "what is done and retries what is not."
+    end
+  end
+
+  def down
+    # Dropping the column takes its indexes with it. This DISCARDS every facet
+    # recorded since the migration ran; there is no way to recover them but to
+    # re-record from that day forward.
+    AuditLog::DimensionIndex::TABLES.each do |table|
+      remove_column table, :dimensions if column_exists?(table, :dimensions)
+    end
+  end
+end

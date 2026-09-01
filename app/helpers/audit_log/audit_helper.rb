@@ -215,6 +215,21 @@ module AuditLog
     # swallows the extension -- so the path form silently serves HTML for an
     # action that does not exist. Rails reads :format out of the query string just
     # as happily, and it behaves the same on every screen.
+    # config.dimension_filters' `options:` lambda, normalised for
+    # options_for_select. It accepts either shape a host will naturally reach for:
+    # [[label, value], ...] pairs from a `pluck(:name, :id)`, or a flat list of
+    # scalars for a scope label like Order::STATUSES, where the value IS the label.
+    #
+    # Values are stringified because that is what is stored -- the trigger writes
+    # `->>`, which is text, and Record.where_dimensions normalises to match. An
+    # Integer here would render a select whose selected option never matches the
+    # String coming back off the query string.
+    def audit_dimension_options(spec)
+      Array(spec[:options].call).map do |option|
+        option.is_a?(Array) ? [option.first.to_s, option.last.to_s] : [option.to_s, option.to_s]
+      end
+    end
+
     def audit_csv_link
       query = request.query_parameters.merge(format: "csv").to_query
 

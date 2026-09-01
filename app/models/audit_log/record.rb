@@ -29,6 +29,53 @@ module AuditLog
       persisted?
     end
 
+    # HOST-DEFINED FACETS, one implementation for both tables. It lives on the
+    # shared base for the same reason grouped_by_request does: both tables carry a
+    # `dimensions` column, the two halves of the feature are written by different
+    # mechanisms (the trigger from the row, EventSubscriber from the app), and a
+    # faceted query has to ask both the same question. DESIGN §23.
+    #
+    # THE ONE NORMALISATION POINT ON THE READ SIDE, and that is the whole reason
+    # this is a method rather than a documented `where("dimensions @> ?")`. Values
+    # are stored as jsonb TEXT -- `{"customer_id": "5"}` -- because
+    # `{"customer_id": 5}` and `{"customer_id": "5"}` do not match under `@>` and
+    # the symptom is an empty screen rather than an error. A caller passing an
+    # Integer id, which is the natural thing to have in hand, gets the right query
+    # here and would have got silence writing the SQL by hand.
+    #
+    # `@>` IS STRICT, so it implies `dimensions IS NOT NULL` and the planner
+    # chooses the partial GIN index without the predicate being restated. Verified
+    # rather than assumed. Multi-key containment is jsonb_path_ops's best case:
+    # posting lists are intersected inside the index before the heap is touched,
+    # so more facets makes this narrower rather than slower, and no combination
+    # needs an index of its own.
+    #
+    # nil VALUES ARE DROPPED rather than matched. Absence in this column is
+    # already overloaded -- a key is missing either because the value was NULL or
+    # because the row predates the declaration -- so a "records with no
+    # department" query cannot be answered honestly here at all. That is a
+    # current-state question about business data; ask the business table.
+    #
+    # An empty set is a no-op returning `all`, so a screen with no filters applied
+    # composes with this without special-casing it.
+    def self.where_dimensions(dimensions)
+      facets = normalize_dimensions(dimensions)
+      return all if facets.empty?
+
+      where("dimensions @> ?::jsonb", facets.to_json)
+    end
+
+    # Public because the auditor UI and a host app both need to render the facets
+    # they are about to query by, and re-spelling this is how a screen comes to
+    # display "5" while querying "5 ".
+    def self.normalize_dimensions(dimensions)
+      (dimensions || {}).each_with_object({}) do |(key, value), out|
+        next if value.nil? || (value.respond_to?(:empty?) && value.empty?)
+
+        out[key.to_s] = value.to_s
+      end
+    end
+
     # The rows of THIS table produced by a page of audit rows from EITHER table,
     # grouped by request_id, in one query rather than N. Both tables carry
     # request_id and occurred_at, so this lives on the shared base: a page of

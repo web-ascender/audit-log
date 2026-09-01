@@ -25,8 +25,10 @@ class OrderFulfillmentJob < ApplicationJob
       )
       order.update!(status: "shipped")
 
+      # customer_id travels on the EVENT because the row this job mostly writes --
+      # the shipment -- carries no facet of its own. See the registry entry.
       AuditLog.notify("order.shipped",
-        order_id: order.id, reference: order.reference,
+        order_id: order.id, reference: order.reference, customer_id: order.customer_id,
         carrier: carrier, tracking_number: tracking, shipment_id: shipment.id)
     end
   end

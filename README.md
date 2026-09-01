@@ -30,7 +30,7 @@ the authority on *why* any of this is shaped the way it is.
   - [What the generator wrote](#what-the-generator-wrote)
   - [What a model needs](#what-a-model-needs)
 - [Registering and emitting events](#registering-and-emitting-events)
-  - [Registering actions](#registering-actions)
+  - [Registering actions (optional - recommended)](#registering-actions-optional---recommended)
   - [Emitting it: create, update, destroy](#emitting-it-create-update-destroy)
   - [An action that spans several writes](#an-action-that-spans-several-writes)
   - [Letting `audited` open the transaction](#letting-audited-open-the-transaction)
@@ -52,6 +52,14 @@ the authority on *why* any of this is shaped the way it is.
   - [The four things a cell can say](#the-four-things-a-cell-can-say)
   - [Configuring the label lookup](#configuring-the-label-lookup)
   - [Two things to know before turning it on](#two-things-to-know-before-turning-it-on)
+- [Dimensions: querying by your own associations (optional)](#dimensions-querying-by-your-own-associations-optional)
+  - [Declare them beside the trigger](#declare-them-beside-the-trigger)
+  - [Query them](#query-them)
+  - [Facets that are not columns](#facets-that-are-not-columns)
+  - [Three things that affect what a filter returns](#three-things-that-affect-what-a-filter-returns)
+  - [A filter in the auditor UI](#a-filter-in-the-auditor-ui)
+  - [Keep them low-cardinality, and keep values out of them](#keep-them-low-cardinality-and-keep-values-out-of-them)
+  - [Turning it on in an app that already has audit data](#turning-it-on-in-an-app-that-already-has-audit-data)
 - [Configuration](#configuration)
   - [The ones you should look at before deploying](#the-ones-you-should-look-at-before-deploying)
   - [Rendering and screens](#rendering-and-screens)
@@ -60,6 +68,7 @@ the authority on *why* any of this is shaped the way it is.
 - [Generator options](#generator-options)
   - [The generators](#the-generators)
   - [`audit_log:trigger` options](#audit_logtrigger-options)
+  - [`audit_log:dimensions` options](#audit_logdimensions-options)
   - [`audit_log:views:activity` options](#audit_logviewsactivity-options)
 - [Rake tasks](#rake-tasks)
   - [Schedule this one](#schedule-this-one)
@@ -80,7 +89,6 @@ the authority on *why* any of this is shaped the way it is.
   - [What reloads and what does not](#what-reloads-and-what-does-not)
   - [Before you change anything](#before-you-change-anything)
   - [Not implemented (deliberately)](#not-implemented-deliberately)
-
 ---
 
 ## Summary
@@ -106,6 +114,10 @@ attached — and no model has to opt in or even know.
 - **A finished auditor UI at `/audit`**, served by the gem — actor activity,
   record history, action reports, out-of-band review, drill-down, CSV export. It
   is not copied into your app and you do not maintain it; it upgrades with the gem.
+- **Filterable by your own facets.** Record a `customer_id` or a `department_id`
+  onto audit rows and ask "everything that happened for this customer" — including
+  the writes no callback ever saw. Optional, and an app that declares none pays
+  nothing.
 - **Optional starter views** for your own pages, generated into your app and
   yours to rewrite. Plain CSS, Tailwind or Bootstrap.
 - **Built for volume from day one.** Monthly range partitions, automatic
@@ -354,7 +366,7 @@ You never pass the actor, IP, source, timestamp or `request_id`. All five come
 from `AuditLog::Current`, which `ControllerContext` populated in a
 `before_action` — the payload is only the domain detail.
 
-### Registering actions
+### Registering actions (optional - recommended)
 
 Actions with business significance should be registered in
 `config/initializers/audit_log.rb`. Registering is how you customize action labels and define the primary model type and id, so it can be
@@ -1111,6 +1123,154 @@ application that has opted nothing in pays nothing.
 Why a label annotates a recorded id here while an actor label is *snapshotted* at
 write time: [`DESIGN.md`](DESIGN.md) §11.8.
 
+## Dimensions: querying by your own associations (optional)
+
+The audit log answers questions about actors, records and requests. It cannot answer
+*"everything that happened to invoices in department 5"* — `department_id` is yours,
+and this library never sees your models.
+
+Dimensions are facets you attach to audit rows so that it can.
+
+### Declare them beside the trigger
+
+The names are columns on the table being audited:
+
+```ruby
+attach_audit_trigger :invoices, model: "Invoice",
+  dimensions: %i[organization_id customer_id department_id
+                 shipping_location_id payment_provider_id]
+```
+
+Every write to `invoices` now records those five values beside the diff — including
+`update_all`, a database cascade, raw SQL and a console session, because they are read
+from the row by the same trigger that writes the diff.
+
+**Declare only what you will filter on.** Each facet costs index maintenance on every
+write to that table. A value you want to *read* on a screen belongs in the action's
+payload, which is free.
+
+A name that is not a column on that table raises in the migration. That is the only
+enforcement in this feature, and it is there because the alternative is a facet that
+records nothing forever and a filter that returns nothing without saying why.
+
+Changing the list is detach-then-attach, the same as changing a table's exclusions.
+
+### Query them
+
+```ruby
+timeline = AuditLog::DimensionTimeline.new(
+  dimensions: { department_id: 5, shipping_location_id: 12, payment_provider_id: 3 },
+  range:      30.days.ago..
+)
+
+page       = paginate(timeline.activity_keys)     # AuditLog::Pagination
+activities = timeline.activities(page.records)
+```
+
+Any combination of the declared facets, in one index scan — you do not add an index per
+combination. The result is the same `Activity` objects a record timeline yields, so
+anything you already render for one works here unchanged.
+
+Values are normalised for you, so `department_id: 5` and `department_id: "5"` are the
+same query. On the relations directly, `AuditLog::Change.where_dimensions(...)` and
+`AuditLog::Event.where_dimensions(...)` are the same normalisation.
+
+Unlike a record timeline, this one is **bounded by default** — 30 days, because an
+unfiltered facet scan across a long retention horizon is genuinely slow. Pass
+`range:` to widen it, or `range: nil` for all retained history. `scope_description`
+tells the reader which they are looking at.
+
+### Facets that are not columns
+
+A tenant, a deploy version, a tag — values your application has but no audited row
+carries. These attach to **events**, so they need a registered action.
+
+Per action, taken from the payload:
+
+```ruby
+AuditLog::Registry.register "invoice.approved",
+  dimensions: %i[department_id region],
+  requires:   %i[invoice_id],
+  subject:    ->(p) { ["Invoice", p[:invoice_id]] },
+  summary:    ->(p) { "Invoice #{p[:invoice_id]} approved" }
+```
+
+The key stays in the payload, where it renders as evidence, *and* is copied onto the
+event's facets, where it is an index. `dimensions:` does not imply `requires:` — an
+entry that wants a facet enforced lists it in both.
+
+Or on every event, taken from application state:
+
+```ruby
+config.default_dimensions = -> { { tenant_id: Current.tenant&.id, app_version: AppVersion.current } }
+```
+
+Applied to every event, so no call site repeats them; a registry entry declaring the same
+key wins. The lambda takes no arguments on purpose: it supplies what is true of the *unit
+of work*, never of the action. Anything that varies per action belongs in the registry entry, where
+it is visible beside the summary. It must not raise — if it does, the event is still
+written, without them.
+
+### Three things that affect what a filter returns
+
+- **It is not retroactive.** A facet declared today says nothing about yesterday. A filter
+  returns results from that migration forward; older rows do not match.
+- **A conjunction has to fit on one row.** Five facets on `invoices` combine freely.
+  `customer_id` from an order plus `product_id` from a line item matches nothing — no
+  single row carries both. Declare the facet on the table you will filter by.
+- **A record is filed under the value it held *after* the change.** An invoice moving from
+  department 5 to department 9 appears under 9, so department 5's feed shows it up to but
+  not including the move. The move itself is on the invoice's own timeline as an ordinary
+  field change.
+
+Between them, the two halves cover each other: the trigger's facets reach every write,
+including the ones no callback sees, and an action's facets reach a unit of work whose
+writes landed in a table that declares none. A unit qualifies if either matched.
+
+### A filter in the auditor UI
+
+Which facets a screen offers, at `/audit/dimensions`. Nothing here affects what is
+recorded — add it whenever, or never. `options:` reads from your own tables, never from
+the audit log, which cannot list them at volume:
+
+```ruby
+config.dimension_filters = {
+  department_id: { label: "Department",
+                   options: -> { Department.order(:name).pluck(:name, :id) } },
+  app_version:   { label: "App version" }   # no options -> free-text input
+}
+```
+
+With this unset, the screen's nav link is hidden: an application that declares no facets
+has a complete audit log and no question that screen could answer.
+
+### Keep them low-cardinality, and keep values out of them
+
+`app_version` (dozens), `tag` (hundreds), `department_id` (thousands) are all fine. A
+free-text note, a URL or an idempotency key drives the index toward one entry per row and
+belongs in the payload, which is already the right home for evidence somebody reads rather
+than filters on.
+
+Facets survive redaction by design, which is correct for `department_id` and wrong for
+anything that is itself personal data. Dimensions are ids and scope labels, not values.
+
+### Turning it on in an app that already has audit data
+
+New installs get the storage and the index automatically. An existing deployment runs:
+
+```bash
+bin/rails generate audit_log:dimensions
+bin/rails db:migrate
+```
+
+The generated migration adds the column, re-installs the trigger function so it reads
+your facet lists, and builds the facet index one partition at a time with
+`CONCURRENTLY`, so it never takes a lock that blocks audit writes. It reports each
+partition as it goes, and it is safe to re-run if it is interrupted.
+
+Applications that never declare a dimension pay nothing for this feature — the index
+excludes their rows by construction. The measurements are in [DESIGN §23](DESIGN.md).
+
 ---
 
 ## Configuration
@@ -1136,6 +1296,7 @@ knowing anything about any of them.
 | `actor_label_resolver` | `actor.to_label` | The string snapshotted onto every audit row. Rendered once per entry point, so a later rename never rewrites history. |
 | `unaudited_tables` | a few internals | Tables that legitimately have no trigger, **each with a written reason**. `audit_log:coverage` fails for anything neither audited nor listed here. |
 | `default_excluded_columns` | timestamps, `lock_version`, password and reset-token columns | Columns kept out of every diff. Per-table extras go on the trigger via `--exclude`. |
+| `default_dimensions` | `nil` | `-> { {tenant_id: …, app_version: …} }` — facets recorded onto **every** event, merged under whatever a registry entry declared. Takes no arguments on purpose: it supplies what is true of the unit of work, never of the action. It must not raise; if it does the event is still written without them. See [Dimensions](#dimensions-querying-by-your-own-associations-optional). |
 | `retention` | `7.years` | How long partitions are kept before `retention` will detach them. `nil` disables it. |
 
 ### Rendering and screens
@@ -1149,6 +1310,7 @@ knowing anything about any of them.
 | `actor_finder` | `type.constantize.find_by(id:)` | Looks up an actor for display when the log holds no snapshot. |
 | `record_label_resolver` | `RecordLabel.batch` | Turns ids in a diff into labels. `nil` disables labelling entirely. **Scope it in a multitenant app** — the default reads business tables unscoped. |
 | `association_targets` | `{}` | `{"LineItem" => {"product_id" => "Product"}}` for association columns `belongs_to` reflection cannot see. `false` suppresses one. |
+| `dimension_filters` | `{}` | Which facets `/audit/dimensions` offers as a filter, and where each one's options come from. **Inert** — it decides what a screen offers and never what is recorded, which is why it is `filters` and not `dimensions`. Empty hides the screen's nav link. See [Dimensions](#dimensions-querying-by-your-own-associations-optional). |
 | `drill_down_slack` | `24.hours` | How wide the date window around a `request_id` drill-down is. Generous on purpose, and disclosed on screen. |
 
 ### Storage lifecycle
@@ -1170,7 +1332,7 @@ knowing anything about any of them.
 
 ## Generator options
 
-Every flag the three generators take. `audit_log:install`'s are listed with the
+Every flag the four generators take. `audit_log:install`'s are listed with the
 step-by-step in [What the generator wrote](#what-the-generator-wrote); the two below
 are the ones with decisions in them.
 
@@ -1182,6 +1344,7 @@ are the ones with decisions in them.
 | `audit_log:trigger TABLE --model=Model` | a migration with one `attach_audit_trigger` line | once per audited table |
 | `audit_log:trigger TABLE --replace` | detach-then-attach, to change a table's model or exclusions | when those change |
 | `audit_log:views:activity Model [Model...]` | controller, concern, helper, views, route, locale, stylesheet — and wires each model's show page | once, then again per new model |
+| `audit_log:dimensions` | retrofits the `dimensions` column, re-installs the trigger function, and builds the facet index one partition at a time with `CONCURRENTLY` | only on an app installed before dimensions existed |
 
 ### `audit_log:trigger` options
 
@@ -1228,6 +1391,16 @@ Changing exclusions later means `--replace`, because attaching is deliberately
 not idempotent: a second attach on the same table fails with `42710` rather than
 letting two triggers coexist and write two rows per change under different
 exclusion sets.
+
+### `audit_log:dimensions` options
+
+None. It takes no arguments and makes no decisions — there is nothing to
+parameterise, because what gets *recorded* is declared per table in a migration and
+per action in the registry, not here. This only puts the storage in place.
+
+It is not needed on an app installed after dimensions shipped: `audit_tables.sql`
+creates the column and the index with the tables. See
+[Dimensions](#dimensions-querying-by-your-own-associations-optional).
 
 ### `audit_log:views:activity` options
 
@@ -1774,8 +1947,9 @@ who will not read a 2,600-line design document first.
 | `lib/audit_log/event_subscriber.rb` | `Rails.event` → `audit_events`. |
 | `lib/audit_log/actor_label.rb` | Renders the label snapshotted onto every row, and (`display`/`linkable?`) the one definition of how a stored actor reads on a screen. |
 | `lib/audit_log/record_label.rb` | The **opt-in** label chain (`to_audit_label` → `to_label` → overridden `to_s` → nothing) for the record an association id points at. Display-time only; nothing it returns is stored. |
-| `lib/audit_log/migration_helpers.rb` | `attach_audit_trigger` / `detach_audit_trigger`. |
+| `lib/audit_log/migration_helpers.rb` | `attach_audit_trigger` / `detach_audit_trigger`, and `add_audit_dimension_index` for a hot facet. |
 | `lib/audit_log/schema.rb` | `install!` / `uninstall!` for a migration. |
+| `lib/audit_log/dimension_index.rb` | The **retrofit** path for the facet index: parent index, then `CONCURRENTLY` per partition, with the catalog asserting completeness. Only for an app installed before dimensions existed. |
 | `lib/audit_log/partitions.rb` | Partition rotation, default-partition drain, yearly rollup, retention, freezing, UTC-boundary enforcement. |
 | `lib/audit_log/bypass.rb` | The one escape hatch, which logs itself. |
 | `lib/audit_log/redaction.rb` | The **only** thing allowed to modify audit rows. Values go, structure stays. |
@@ -1788,10 +1962,11 @@ who will not read a 2,600-line design document first.
 | `db/sql/audit_row_change.sql` | The trigger function. The heart of layer 1. |
 | `app/queries/` | One object per auditor question (`ActorActivity`, `RecordHistory`, `RecordTimeline`, `ActionReport`, `Reconciler`, `Coverage`), plus `LabelResolver` — the per-request association-label cache. |
 | `app/queries/audit_log/timeline.rb` | The **host-facing** contract: one record's history as units of work, for an activity history in your own app. |
+| `app/queries/audit_log/dimension_timeline.rb` | `Timeline` with the record predicate swapped for a facet containment test — same union, same value objects. Bounded by default. |
 | `app/queries/audit_log/timeline/` | Its value objects — `Activity` (one thing that happened, loaded), `ActivityKey` (its identity before loading), `FieldChange`, `TouchedRecord`, `Actor`. |
 | `app/controllers/`, `app/views/` | The auditor UI. `shared/_event_payload` and `records/_timeline_activities` both render `audit_events.metadata` in three states — present, absent, redacted. |
 | `lib/audit_log/rspec.rb` | Shared examples a host app uses instead of copying a spec. Not loaded by `lib/audit_log.rb` — rspec is the host's test dependency. |
-| `lib/generators/audit_log/` | `audit_log:install`, `audit_log:trigger` and `audit_log:views:activity`, with templates. |
+| `lib/generators/audit_log/` | `audit_log:install`, `audit_log:trigger`, `audit_log:dimensions` and `audit_log:views:activity`, with templates. |
 | `DESIGN.md` | Why every decision here is what it is. Cited by section number from source comments. |
 | `lib/audit_log/tasks/audit_log.rake` | `partitions` and the `partitions:` namespace, plus `redact`, `reconcile`, `coverage`, `benchmark`. Full list in [Rake tasks](#rake-tasks). |
 

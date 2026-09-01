@@ -1,0 +1,31 @@
+<%# The facet filter, built ENTIRELY from config.dimension_filters -- this library
+    knows no host model, so the labels, the keys and the option lists all come
+    from the host. Nothing here affects what is recorded; the form is inert.
+
+    `options:` is a lambda over the host's OWN tables and never a
+    SELECT DISTINCT dimensions->>'customer_id' over a partitioned audit table,
+    which is unusable at volume. No `options:` renders a text input, which is
+    honest for a facet the host has no list for. Same contract as
+    config.actor_picker. %>
+<%= form_with url: dimensions_path, method: :get, class: "date-filter dimension-filter" do |f| %>
+  <%= hidden_field_tag :from, date_range.from.to_date %>
+  <%= hidden_field_tag :to,   date_range.to.to_date %>
+
+  <% filters.each do |key, spec| %>
+    <label>
+      <%= spec[:label] || key.to_s.humanize %>
+      <% if spec[:options] %>
+        <%= select_tag "d[#{key}]",
+              options_for_select(audit_dimension_options(spec), selected[key.to_s]),
+              include_blank: "any" %>
+      <% else %>
+        <%= text_field_tag "d[#{key}]", selected[key.to_s], placeholder: "any" %>
+      <% end %>
+    </label>
+  <% end %>
+
+  <%= submit_tag "Filter", name: nil %>
+  <% if selected.any? %>
+    <%= link_to "Clear", dimensions_path(audit_range_params), class: "clear" %>
+  <% end %>
+<% end %>

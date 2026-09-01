@@ -26,6 +26,17 @@ CREATE TABLE audit_events (
   user_agent    text,
   summary       text        NOT NULL,   -- rendered human sentence     SNAPSHOT
   metadata      jsonb       NOT NULL DEFAULT '{}',
+  -- HOST-DEFINED FACETS. Nullable with no default, and both halves of that are
+  -- deliberate: NULL keeps "never recorded" distinguishable from "recorded,
+  -- empty", which matters precisely because the feature is not retroactive, and
+  -- it is what the partial index below excludes on. See DESIGN §23.
+  --
+  -- Not a metadata key, for the reason caused_by_request_id is not one either:
+  -- metadata belongs to the ACTION's payload, so a registered action carrying
+  -- its own customer_id would silently overwrite the framework's. It is also
+  -- emptied by AuditLog::Redaction, and a facet is structure rather than a
+  -- value -- it has to sit where an erasure does not reach.
+  dimensions    jsonb,
   PRIMARY KEY (id, occurred_at)         -- PG requires the partition key in the PK
 ) PARTITION BY RANGE (occurred_at);
 
@@ -41,6 +52,29 @@ CREATE INDEX audit_events_request_id_idx   ON audit_events (request_id);
 -- index alone.
 CREATE INDEX audit_events_caused_by_idx ON audit_events (caused_by_request_id, occurred_at DESC)
   WHERE caused_by_request_id IS NOT NULL;
+
+-- The facet index. jsonb_path_ops is endorsed HERE and rejected one column over
+-- on `diff`, and the difference is the operator each question needs: `diff` is
+-- asked `?` (key existence), which this opclass does not support at all, while a
+-- facet query only ever asks `@>` -- which it supports in its smaller and faster
+-- form, intersecting posting lists inside the index before touching the heap. Six
+-- declared facets are 63 non-empty subsets; covering arbitrary conjunctions with
+-- btree indexes would mean 63 indexes, while multi-key containment is this
+-- opclass's BEST case -- more facets makes the query narrower, not slower.
+--
+-- WHERE dimensions IS NOT NULL IS LOAD-BEARING, not tidiness. GIN does not
+-- simply store nothing for a NULL: PostgreSQL records a placeholder entry
+-- (GIN_CAT_NULL_ITEM), so an unqualified index would put every row of every
+-- non-adopting application into one enormous shared posting list serving a query
+-- nobody in that application can ask. Measured on 18.6 over 150k NULL-dimension
+-- rows: unqualified, +15% insert throughput and 4.3 MB of dead entries;
+-- qualified, 0.0% and 16 kB. A partial index does no work for a tuple that fails
+-- its predicate, which is why that reads zero rather than merely small.
+--
+-- The planner still chooses it, because `@>` is strict and therefore implies
+-- `dimensions IS NOT NULL`. Verified, not assumed. DESIGN §23.
+CREATE INDEX audit_events_dimensions_idx ON audit_events
+  USING gin (dimensions jsonb_path_ops) WHERE dimensions IS NOT NULL;
 
 -- ============================================================================
 -- LAYER 1: forensic detail. One row per row-level change.
@@ -58,6 +92,16 @@ CREATE TABLE audit_changes (
   actor_type      text,
   actor_id        bigint,
   actor_label     text,                  -- SNAPSHOT, same string layer 2 wrote
+  -- The row-derived half of DESIGN §23: values read straight off the changed
+  -- row by audit_row_change(), so they cover update_all, delete_all, raw SQL, a
+  -- database cascade and a console session -- every write the events table
+  -- cannot see. NULL on every table that declares no facets, which is what the
+  -- partial index below is built to exclude.
+  --
+  -- It costs a non-adopting application 8 bytes a row (+0.54% heap): a fully
+  -- correlated change row carries no null bitmap today, and an always-NULL
+  -- column forces one into existence. Measured, put to the decision, accepted.
+  dimensions      jsonb,
   PRIMARY KEY (id, occurred_at),
   CONSTRAINT audit_changes_operation_check CHECK (operation IN ('I', 'U', 'D'))
 ) PARTITION BY RANGE (occurred_at);
@@ -68,9 +112,21 @@ CREATE INDEX audit_changes_record_type_idx ON audit_changes (record_type, occurr
 CREATE INDEX audit_changes_request_id_idx  ON audit_changes (request_id);
 CREATE INDEX audit_changes_occurred_at_idx ON audit_changes (occurred_at DESC);
 
--- The ONLY GIN index on this table, and it is on text[] rather than on `diff`.
+-- GIN on text[] rather than on `diff`, which is the column the question looks
+-- like it is about.
 -- A jsonb_path_ops GIN index does not support the `?` key-existence operator at
 -- all -- only @>, @? and @@ -- so "which changes touched status" would silently
 -- fall back to a sequential scan. The default jsonb_ops opclass does support `?`
 -- but indexes every key AND every value, making it far larger than needed here.
+-- (`dimensions` below is the other GIN index here, and it is jsonb_path_ops
+-- precisely because its question is `@>` rather than `?`.)
 CREATE INDEX audit_changes_changed_columns_idx ON audit_changes USING gin (changed_columns);
+
+-- The facet index, partial for the reason spelled out over audit_events above:
+-- the predicate is what keeps this index proportional to ADOPTION rather than to
+-- table size, and it matters most here, on the high-volume table. It excludes
+-- every pre-adoption row -- all NULL, and by the non-retroactivity rule they can
+-- never match a facet query anyway -- and every row of every table that never
+-- declares a dimension, permanently. DESIGN §23.
+CREATE INDEX audit_changes_dimensions_idx ON audit_changes
+  USING gin (dimensions jsonb_path_ops) WHERE dimensions IS NOT NULL;

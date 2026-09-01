@@ -25,14 +25,20 @@ module AuditLog
 
     BATCH = 1_000
 
+    # `dimensions` ships on both, because it is RECORDED data rather than a
+    # display-time annotation -- the distinction that keeps association labels out
+    # of this export. A facet is what the trigger read off the row, or what the
+    # action declared; it is exactly the kind of thing an auditor needs in the
+    # evidence artifact to explain why a row appeared in a filtered view.
     CHANGE_COLUMNS = %w[
       occurred_at record_type record_id operation changed_columns diff
-      actor_type actor_id actor_label request_id
+      actor_type actor_id actor_label request_id dimensions
     ].freeze
 
     EVENT_COLUMNS = %w[
       occurred_at action summary actor_type actor_id actor_label
       subject_type subject_id source ip request_id caused_by_request_id metadata
+      dimensions
     ].freeze
 
     def self.for(scope)

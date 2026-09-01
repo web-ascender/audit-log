@@ -139,9 +139,7 @@ module AuditLog
     def older_than_window?
       return false unless bounded? && window.first
 
-      before = ...window.first
-      AuditLog::Change.for_record(record_type, record_id).where(occurred_at: before).exists? ||
-        AuditLog::Event.for_subject(record_type, record_id).where(occurred_at: before).exists?
+      history_before?(...window.first)
     end
 
     # An endless range is CLOSED at the current instant, and that loses nothing:
@@ -165,18 +163,47 @@ module AuditLog
     # into SQL.
     def activity_keys_sql
       prefix = ActivityKey::OUT_OF_BAND_PREFIX
-      AuditLog::Change.sanitize_sql_array([<<~SQL, record_type, record_id, record_type, record_id])
+      <<~SQL
         SELECT "key", max(occurred_at) AS occurred_at FROM (
           SELECT COALESCE(request_id::text, '#{prefix}' || id) AS "key", occurred_at
             FROM audit_changes
-           WHERE record_type = ?::text AND record_id = ?::bigint#{bound_sql}
+           WHERE #{changes_predicate}#{bound_sql}
           UNION ALL
           SELECT request_id::text AS "key", occurred_at
             FROM audit_events
-           WHERE subject_type = ?::text AND subject_id = ?::bigint#{bound_sql}
+           WHERE #{events_predicate}#{bound_sql}
         ) legs
         GROUP BY "key"
       SQL
+    end
+
+    # THE ONE THING A SUBCLASS SWAPS. AuditLog::DimensionTimeline is this class
+    # with these two predicates replaced by a containment test, and everything
+    # else -- the union, the unit-of-work key, the batched hydration, the
+    # bounding, the value objects -- is shared rather than reimplemented. A second
+    # copy of this query is how one of the two comes to lose the events leg, or
+    # the COALESCE that keeps every out-of-band write from collapsing into one
+    # NULL group.
+    def changes_predicate
+      AuditLog::Change.sanitize_sql_array(
+        ["record_type = ?::text AND record_id = ?::bigint", record_type, record_id]
+      )
+    end
+
+    def events_predicate
+      AuditLog::Change.sanitize_sql_array(
+        ["subject_type = ?::text AND subject_id = ?::bigint", record_type, record_id]
+      )
+    end
+
+    # The third predicate a subclass swaps, and it has to move with the other two
+    # or `older_than_window?` answers a DIFFERENT question from the one the page
+    # above it asked -- reporting "there is older history" about this record while
+    # the screen is filtered by facet, or the reverse. One indexed existence check
+    # per table, on the same two legs the union has.
+    def history_before?(before)
+      AuditLog::Change.for_record(record_type, record_id).where(occurred_at: before).exists? ||
+        AuditLog::Event.for_subject(record_type, record_id).where(occurred_at: before).exists?
     end
 
     # Applied INSIDE each leg. On the outer aggregate it would prune nothing --
@@ -207,12 +234,14 @@ module AuditLog
     end
 
     def build(activity_key, related, events)
+      type, id = anchor_for(related, events)
+
       mine = related.select do |change|
-        change.record_type == record_type && change.record_id.to_s == record_id.to_s
+        change.record_type == type && change.record_id.to_s == id.to_s
       end
 
       activity = Activity.new(
-        record_type: record_type, record_id: record_id,
+        record_type: type, record_id: id,
         request_id: activity_key.request_id,
         # From the KEY, not from `mine`: an activity can legitimately have no
         # change rows for this record at all -- that is the whole point of the
@@ -220,16 +249,23 @@ module AuditLog
         occurred_at: activity_key.occurred_at,
         events: events, changes: mine.sort_by(&:occurred_at), labels: labels
       )
-      activity.also_touched = touched(related)
+      activity.also_touched = touched(related, type, id)
       activity
     end
+
+    # WHICH RECORD AN ACTIVITY IS ABOUT. Fixed here: this timeline was asked for
+    # one record, and every activity on it is anchored on that record whether or
+    # not the unit of work wrote to it -- which is the whole point of the events
+    # leg. A faceted timeline has no such record and has to derive one; see
+    # DimensionTimeline#anchor_for.
+    def anchor_for(_related, _events) = [record_type, record_id]
 
     # The OTHER records the unit wrote, one per (type, id) rather than one per
     # change row: a save that writes the same row twice is still one record, and
     # an entry claiming otherwise inflates what happened.
-    def touched(related)
+    def touched(related, type, id)
       related
-        .reject { |c| c.record_type == record_type && c.record_id.to_s == record_id.to_s }
+        .reject { |c| c.record_type == type && c.record_id.to_s == id.to_s }
         .group_by { |c| [c.record_type, c.record_id] }
         .map do |(type, id), rows|
           label = labels.for(type, id)

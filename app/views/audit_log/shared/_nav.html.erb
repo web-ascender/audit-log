@@ -6,4 +6,14 @@
   <%= link_to "By action", actions_path(audit_range_params), class: ("on" if controller_name == "actions") %>
   <%= link_to "Out of band", out_of_band_index_path(audit_range_params),
         class: ("on" if controller_name == "out_of_band") %>
+  <%# HIDDEN, not disabled, when the host declares no facets. Dimensions are the
+      one optional screen here: an application that declares none has a complete
+      audit log and no question this screen could answer, so a nav item leading to
+      an empty filter is worse than no nav item. Same discipline as
+      config.record_url defaulting to nil rather than guessing a route. The route
+      still exists, so a bookmarked URL explains itself instead of 404ing. %>
+  <% if AuditLog.config.dimension_filters.any? %>
+    <%= link_to "By dimension", dimensions_path(audit_range_params),
+          class: ("on" if controller_name == "dimensions") %>
+  <% end %>
 </nav>

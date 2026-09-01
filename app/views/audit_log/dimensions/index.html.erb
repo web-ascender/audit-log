@@ -1,0 +1,70 @@
+<%= render "audit_log/shared/nav" %>
+<h1>By dimension</h1>
+
+<% if @filters.empty? %>
+  <%# Not an error and not an empty form. Dimensions are a convenience layer:
+      declaring none costs nothing and leaves every other screen complete, so the
+      honest thing here is to say what the screen would need. %>
+  <p class="note">
+    This application declares no dimension filters, so there is nothing to filter by.
+  </p>
+  <p class="note small">
+    Dimensions are <strong>your own</strong> facets — a <code>customer_id</code>, a
+    <code>department_id</code>, an <code>app_version</code> — recorded onto audit rows so
+    that "everything that happened to invoices in department 5" is one indexed query.
+    Nothing else in the audit log depends on them: every write is already captured, and
+    a facet only adds what is <em>findable</em>. Set
+    <code>config.dimension_filters</code> to offer them here, and declare what gets
+    recorded with <code>attach_audit_trigger ..., dimensions: %i[...]</code> or a
+    registry entry's <code>dimensions:</code>. See <code>README.md</code>.
+  </p>
+<% else %>
+  <p class="note">
+    The fourth auditor question, and the only one this library cannot pose on its own:
+    the facets are <strong>yours</strong>. Both audit tables carry a
+    <code>dimensions</code> column and both legs of this feed filter their own, so a unit
+    of work qualifies if <em>either</em> matched — the trigger's facets reach every
+    <code>update_all</code>, cascade and console write, and an action's facets reach a
+    unit whose writes landed in a table that declares none.
+  </p>
+
+  <%= render "audit_log/shared/date_filter", url: dimensions_path,
+        hidden: @selected.to_h { |k, v| ["d[#{k}]", v] } %>
+  <%= render "audit_log/shared/dimension_filter", filters: @filters, selected: @selected %>
+
+  <% if @timeline.unfiltered? %>
+    <p class="empty">
+      Pick a facet above. Nothing is filtered yet, and this screen deliberately does not
+      default to the whole log — an unfiltered facet scan is the slow query the bound
+      below exists to avoid.
+    </p>
+  <% else %>
+    <%# THREE THINGS A FACETED FEED RETURNS LESS OF, and every one of them is a
+        screen that renders perfectly while answering a narrower question than a
+        reader assumes. Disclosed truncation is not invisible truncation, which is
+        the rule that lets this screen be bounded by default at all. %>
+    <p class="note small">
+      Searched <strong><%= @timeline.scope_description %></strong>.
+      Three things affect what this returns, and none of them is an error:
+      a facet is <strong>not retroactive</strong>, so rows written before it was declared
+      never match; a <strong>conjunction has to fit on one row</strong>, so two facets
+      recorded on different tables match nothing together; and a record is filed under
+      the value it held <strong>after</strong> the change, so a move out of a facet is the
+      last entry that facet shows.
+    </p>
+
+    <%= render "audit_log/records/timeline_activities", activities: @activities,
+          empty: "Nothing recorded for these facets in this range." %>
+    <%= render "audit_log/shared/pagination", page: @page, rows: @page.records %>
+
+    <p class="export">
+      <%= audit_csv_link %>
+      <span class="hint">
+        the matching <strong>change rows</strong>, unpaginated, for these facets and this
+        date range — not the units of work above, which are a grouping this library
+        derived rather than something the database recorded. A unit that qualified only
+        through its action has no matching change row to export.
+      </span>
+    </p>
+  <% end %>
+<% end %>

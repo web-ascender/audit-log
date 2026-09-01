@@ -51,5 +51,12 @@ module Dummy
 
     config.logger = ActiveSupport::Logger.new(File::NULL)
     config.log_level = :fatal
+
+    # Stands in for whatever a real app reads a deploy version out of -- a
+    # Capistrano REVISION file, an env var, a build constant. It exists so
+    # config.default_dimensions has something ambient to supply that is genuinely
+    # NOT derivable from any audited row and not part of any action's payload,
+    # which is the case that option exists for. See config/initializers/audit_log.rb.
+    config.x.app_version = "2026.09.1"
   end
 end

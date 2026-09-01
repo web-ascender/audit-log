@@ -66,8 +66,66 @@ module AuditLog
         # ACTION's payload, and merging framework plumbing into it means a
         # registered action carrying its own :caused_by_request_id silently wins.
         caused_by_request_id: AuditLog::Current.caused_by_request_id,
-        metadata:     payload.compact
+        metadata:     payload.compact,
+        # COPIED out of the payload, never moved: the key stays in `metadata`
+        # where it is evidence, and lands here where it is an index. Redaction
+        # empties `metadata` and does not reach this column, which is the whole
+        # reason the column exists rather than a jsonb key. DESIGN §23.
+        dimensions:   dimensions_for(entry, payload)
       )
+    end
+
+    private
+
+    # The app-supplied half of a facet set: the registry entry's declared keys
+    # lifted out of the COMPLETED payload, merged OVER the ambient lambda's, so a
+    # call site wins on any overlap.
+    #
+    # Lifting after assembly is what makes a facet computed inside an `audited`
+    # block -- on a record the block just created -- behave exactly like an
+    # eagerly-passed one, with no second block-slot mechanism.
+    #
+    # Values are normalised to TEXT and nils dropped, matching what the trigger
+    # writes on the other half: {"customer_id": 5} and {"customer_id": "5"} do not
+    # match under @>, and the symptom of getting that wrong is an empty screen.
+    # An empty result stores NULL rather than '{}', which is what the partial GIN
+    # index excludes on and what keeps "never recorded" distinguishable from
+    # "recorded, empty".
+    def dimensions_for(entry, payload)
+      declared = {}
+      Array(entry.dimensions).each do |key|
+        declared[key.to_s] = payload[key] if payload.key?(key)
+      end
+
+      merged = ambient_dimensions.merge(declared)
+      merged.each_with_object({}) { |(key, value), out|
+        out[key.to_s] = value.to_s unless value.nil?
+      }.presence
+    end
+
+    # config.default_dimensions, ONCE PER UNIT OF WORK rather than once per
+    # event. That memoisation is available precisely because the lambda takes no
+    # arguments -- nothing about it can vary with the event -- and it is also the
+    # guarantee that two events in one unit of work cannot disagree about the
+    # tenant. `Current` is reset by the executor like everything else on it.
+    #
+    # IT NEVER RE-RAISES. `requires:` and raise_on_subscriber_error roll the
+    # caller's transaction back because they protect the TRAIL; this is a
+    # convenience, so it follows LabelResolver -- log it and carry on with
+    # whatever was gathered. Rolling back an approved invoice because an
+    # app-version lookup raised would be indefensible.
+    def ambient_dimensions
+      return {} unless AuditLog.config.default_dimensions
+
+      AuditLog::Current.default_dimensions ||= begin
+        (AuditLog.config.default_dimensions.call || {}).transform_keys(&:to_s)
+      rescue StandardError => e
+        Rails.logger&.error(
+          "[AuditLog] config.default_dimensions raised #{e.class}: #{e.message}. The event is " \
+          "still being written, without ambient dimensions. Fix the lambda -- it must not raise."
+        )
+        {}
+      end
     end
   end
 end

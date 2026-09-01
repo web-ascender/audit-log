@@ -100,7 +100,13 @@ RSpec.describe "preview", type: :request do
       "redaction" => audit.action_path("audit.redaction"),
       "redacted"  => audit.action_path("customer.updated"),
       "outofband" => audit.out_of_band_index_path,
-      "request"   => audit.request_path(event.request_id)
+      "request"   => audit.request_path(event.request_id),
+      # Q4, both states. The UNFILTERED state is a screen somebody has to look
+      # at too -- it is the one that has to say "pick a facet" rather than
+      # rendering the whole log -- and a state that never renders is a state
+      # nobody has tested.
+      "dimensions"  => audit.dimensions_path,
+      "dimensionsf" => audit.dimensions_path(d: { customer_id: customers[0].id })
       # The ENGINE's screens only. The reference app keeps its own copy of this
       # file that also renders its order/product/customer pages, because those
       # consume the library's query objects and are what a query-object signature

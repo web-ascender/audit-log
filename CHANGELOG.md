@@ -7,6 +7,53 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Dimensions — host-defined facets, so an app can ask "everything that happened
+  to invoices in department 5".** A `dimensions jsonb` column on both audit
+  tables, filled from two sources that mirror the two layers: the trigger reads
+  declared COLUMNS off the row that changed, so facets reach `update_all`,
+  `delete_all`, raw SQL, a database cascade and a console session; and
+  `EventSubscriber` lifts declared KEYS out of a completed payload, so facets
+  reach a unit of work whose writes landed in a table that declares none. A unit
+  qualifies if either matched.
+
+  ```ruby
+  attach_audit_trigger :invoices, model: "Invoice", dimensions: %i[department_id]
+
+  AuditLog::Registry.register "invoice.approved", dimensions: %i[region], ...
+  config.default_dimensions = -> { { app_version: AppVersion.current } }
+  ```
+
+  Query with `AuditLog::DimensionTimeline`, which is `Timeline` with the record
+  predicate swapped and yields the same `Activity` value objects, or with
+  `where_dimensions` on either relation. `config.dimension_filters` adds a filter
+  to the auditor UI at `/audit/dimensions`.
+
+  **Entirely optional, and an application that declares no facet pays nothing.**
+  The GIN index is partial on `dimensions IS NOT NULL`, so it excludes every row
+  of every non-adopting table permanently and at write time; the trigger's
+  extraction sits behind `TG_ARGV[2] IS NOT NULL`. The column itself costs
+  `audit_events` nothing and `audit_changes` 8 bytes a row (+0.54% heap),
+  measured and accepted so that there is one trigger function rather than two.
+
+  **Three limits are documented rather than discovered**, because each is a screen
+  that renders fine while answering a narrower question: it is not retroactive, a
+  conjunction has to fit on one row, and a row is filed under the value it held
+  *after* the change. `DimensionTimeline` is consequently the one query object
+  bounded by default (30 days), and it discloses the bound.
+
+  See the README's "Dimensions" section and DESIGN §23, which keeps the
+  measurements and the rejected alternatives — an `OLD ∪ NEW` array encoding, an
+  ambient GUC on the trigger, `dimensions: :auto`, and gating the column behind
+  the opt-in migration.
+
+- **`rails generate audit_log:dimensions`** — the retrofit path, for an
+  application installed before the above. It adds the column, **re-installs the
+  trigger function** so it reads facet lists, and builds the facet index one
+  partition at a time with `CREATE INDEX CONCURRENTLY` (refused outright on a
+  partitioned table), asserting the catalog's own `indisvalid` rather than
+  counting partitions. Safe to re-run after an interruption. A new install needs
+  none of it.
+
 - **`AuditLog.audited(action, on:, **identity) { |audit| … }`** — sugar for the
   canonical layer-2 call site, `transaction do ... AuditLog.notify ... end`. It
   opens the transaction, runs the block, and emits as the last statement inside

@@ -84,8 +84,24 @@ class CreateDummyTables < ActiveRecord::Migration[8.0]
     attach_audit_trigger :users,      model: "User"
     attach_audit_trigger :customers,  model: "Customer"
     attach_audit_trigger :products,   model: "Product"
-    attach_audit_trigger :orders,     model: "Order"
     attach_audit_trigger :line_items, model: "LineItem"
     attach_audit_trigger :shipments,  model: "Shipment"
+
+    # `orders` is the ONE table here that declares facets, and it is one table on
+    # purpose: the claim this library makes is that a table declaring none pays
+    # nothing, and an app where every table declares some leaves that untested.
+    # Every row written to line_items, shipments, products, customers and users
+    # therefore carries dimensions IS NULL, which is what the partial GIN index
+    # excludes -- and what schema/query specs assert against.
+    #
+    # All three names are columns on `orders`, which is the only kind of facet the
+    # trigger half can record: it reads the changed ROW, so a conjunction has to
+    # fit on one row. `status` is here rather than only the two foreign keys
+    # because a facet is not required to be an association -- a scope label is
+    # exactly what this half is for, and it is low-cardinality, which is the
+    # guidance. `created_by_id` is also the column belongs_to reflection sees as
+    # User rather than "CreatedBy", so it keeps the naming-convention trap in view.
+    attach_audit_trigger :orders, model: "Order",
+      dimensions: %i[customer_id created_by_id status]
   end
 end

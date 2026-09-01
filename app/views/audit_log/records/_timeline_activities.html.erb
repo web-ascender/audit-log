@@ -112,6 +112,12 @@
     </li>
   <% end %>
   <% if activities.empty? %>
-    <li class="empty">Nothing recorded for this record.</li>
+    <%# The empty message is a local because this partial serves TWO screens now
+        -- a record's Timeline tab and the faceted feed -- and "nothing recorded
+        for this record" is a false statement on the second. Rendering the value
+        objects from both is the dogfooding: DimensionTimeline yields the same
+        Activity a record timeline does, and sharing the view is what proves it
+        rather than asserting it. %>
+    <li class="empty"><%= local_assigns.fetch(:empty, "Nothing recorded for this record.") %></li>
   <% end %>
 </ol>

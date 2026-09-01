@@ -34,6 +34,41 @@ AuditLog.configure do |config|
   config.retention        = 7.years
   config.rollup_after     = 2.years
 
+  # ------------------------------------------------------------------ dimensions
+  # Host-defined facets. The row-derived half is declared beside the trigger, in
+  # the migration -- `orders` alone, on customer_id, created_by_id and status.
+  # This is the APP-SUPPLIED half.
+  #
+  # AMBIENT: applied to every audit_events row, merged UNDER anything a registry
+  # entry declared. `app_version` is the honest example of what belongs here and
+  # nowhere else -- no audited row carries it, and no action's payload should have
+  # to. It takes NO ARGUMENTS, which is what makes it a different mechanism from a
+  # registry `dimensions:` rather than a second spelling of one: it reads
+  # application state, so its value is identical for every event in a unit of
+  # work, and is therefore computed once per unit of work and memoised on Current.
+  #
+  # Note what a lambda applied to EVERY event does, because it is the one cost
+  # worth seeing in a working example: every audit_events row now has a non-NULL
+  # `dimensions`, so the partial index's predicate excludes nothing on that table.
+  # That is self-selecting rather than a problem to fix -- a lambda for a facet
+  # wanted on everything, a registry declaration for one wanted only where it will
+  # be queried.
+  config.default_dimensions = -> { { app_version: Rails.application.config.x.app_version } }
+
+  # Which facets the auditor UI offers as a filter. INERT -- nothing here affects
+  # what is recorded, and it can be added or dropped at any time with no effect on
+  # a single stored row. `options:` reads from the app's OWN tables, never from
+  # SELECT DISTINCT over a partitioned audit table; no `options:` means a free-text
+  # input, which is right for app_version, where there is no list to offer.
+  config.dimension_filters = {
+    customer_id:   { label: "Customer",
+                     options: -> { Customer.order(:name).limit(200).pluck(:name, :id) } },
+    status:        { label: "Order status", options: -> { Order::STATUSES } },
+    created_by_id: { label: "Drafted by",
+                     options: -> { User.order(:name).limit(200).pluck(:name, :id) } },
+    app_version:   { label: "App version" }
+  }
+
   # Association labels are left entirely at their defaults, which is the point:
   # LineItem opts in with to_audit_label, Order/Product/Customer through an
   # overridden to_s, User through to_label, and Shipment not at all.
@@ -71,7 +106,8 @@ Rails.application.config.to_prepare do
     summary: ->(p) { "Edited order #{p[:reference]} (#{p[:line_count]} line items)" }
 
   AuditLog::Registry.register "order.submitted",
-    requires: %i[order_id reference customer_name line_count total_cents],
+    requires:   %i[order_id reference customer_name line_count total_cents],
+    dimensions: %i[customer_id],
     description: "An order was submitted for fulfillment.",
     subject: ->(p) { ["Order", p[:order_id]] },
     summary: lambda { |p|
@@ -103,19 +139,43 @@ Rails.application.config.to_prepare do
     subject: ->(p) { ["Order", p[:order_id]] },
     summary: ->(p) { "Deleted order #{p[:reference]} and everything under it" }
 
+  # THE ENTRY THAT DEMONSTRATES WHY THE EVENTS HALF EXISTS. This job's writes land
+  # in `shipments`, which declares no facets, and in `orders`, which does -- but
+  # the SHIPMENT rows would carry nothing, so a changes-only facet query would
+  # report the order's status flip and not the shipment beside it. The event
+  # carries customer_id for the whole unit of work, so the customer's feed picks
+  # the activity up entire. Layer 1 catching what layer 2 cannot see and layer 2
+  # saying what layer 1 cannot express, one level down.
+  #
+  # `dimensions:` DOES NOT IMPLY `requires:`, and this entry is where the dummy app
+  # demonstrates it: customer_id is declared as a facet and is NOT required. An
+  # emit that omits it writes the event with no customer_id facet and raises
+  # nothing -- loose by default, which is what the whole feature is. An entry that
+  # wants a facet enforced lists it in both, which customer.created below does.
   AuditLog::Registry.register "order.shipped",
-    requires: %i[order_id reference carrier tracking_number],
+    requires:   %i[order_id reference carrier tracking_number],
+    dimensions: %i[customer_id],
     description: "A shipment was recorded against an order by a background job.",
     subject: ->(p) { ["Order", p[:order_id]] },
     summary: ->(p) { "Shipped order #{p[:reference]} via #{p[:carrier]} (#{p[:tracking_number]})" }
 
+  # `customers` declares no facets on its trigger, so these two are reachable by a
+  # customer_id filter ONLY through the events half. Between them and the `orders`
+  # trigger, the dummy app exercises both directions of DESIGN §23's table.
+  #
+  # These are also the entries that carry a facet in BOTH `dimensions:` and
+  # `requires:` -- the other shape, against order.shipped's. customer_id was
+  # already required here because the summary cannot render without it, and
+  # declaring it a facet as well changes nothing about that.
   AuditLog::Registry.register "customer.created",
-    requires: %i[customer_id name],
+    requires:   %i[customer_id name],
+    dimensions: %i[customer_id],
     subject: ->(p) { ["Customer", p[:customer_id]] },
     summary: ->(p) { "Added customer #{p[:name]}" }
 
   AuditLog::Registry.register "customer.updated",
-    requires: %i[customer_id name],
+    requires:   %i[customer_id name],
+    dimensions: %i[customer_id],
     subject: ->(p) { ["Customer", p[:customer_id]] },
     summary: ->(p) { "Updated customer #{p[:name]} (#{Array(p[:fields]).join(', ')})" }
 

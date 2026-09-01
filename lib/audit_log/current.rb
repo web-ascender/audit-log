@@ -22,6 +22,14 @@ module AuditLog
     attribute :actor, :actor_type, :actor_id, :actor_label
     attribute :ip, :user_agent, :source
 
+    # config.default_dimensions, memoised for the unit of work. It is safe to
+    # cache here for the same reason the lambda takes no arguments: nothing about
+    # its value can vary with the event, so computing it once per unit of work
+    # rather than once per event is a pure saving -- and it is also what
+    # GUARANTEES two events in one unit of work cannot disagree about the tenant.
+    # DESIGN §23.
+    attribute :default_dimensions
+
     # Convenience writer for entry points that have the record in hand. Calling
     # this is the only place ActorLabel runs -- never from the transaction hook,
     # which is far too hot to query from.

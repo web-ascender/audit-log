@@ -98,7 +98,7 @@ Update it when you change behaviour.
 | Ruby | **>= 3.3** — the floor is `SecureRandom.uuid_v7` (DESIGN §2.1), not a preference. 3.3.0 exactly also cannot run Rails 8.1, for a reason of Rails' own. Developed on 4.0.6. |
 | Rails | **`~> 8.0`** — floor 8.0 (DESIGN §2.2), and a real ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. Developed on 8.1.3.1. |
 | PostgreSQL | **>= 16.** Developed on 18.6, port 5438 — not the workspace default 5437. CI runs 16 and 18; DESIGN §20 is the authority and says the design "targets PG 16 and requires nothing newer". Verified: the whole suite passes on 16.13. |
-| Tests | RSpec against `spec/dummy` (405 examples), on every push via GitHub Actions — six legs: Ruby 3.3/4.0.6 × Rails 8.0/latest × PG 16/18 |
+| Tests | RSpec against `spec/dummy` (457 examples), on every push via GitHub Actions — six legs: Ruby 3.3/4.0.6 × Rails 8.0/latest × PG 16/18 |
 | Runtime deps | `rails`, `csv` (export). **`pg` and `pagy` deliberately are not** — the host app picks its own `pg` build, and its own pagination gem. `AuditLog::Pagination` is this library's own keyset pager precisely so a `pagy` constraint does not propagate into the host. |
 
 ```bash
@@ -106,7 +106,7 @@ bundle install
 cd spec/dummy && RAILS_ENV=test bundle exec bin/rails db:create db:migrate
 bundle exec rspec                       # from the gem root
 RAILS_VERSION="~> 8.0.0" bundle install && bundle exec rspec   # the Rails floor, as CI runs it
-bundle exec rspec spec/preview.rb       # renders all 17 engine screens to spec/dummy/public/
+bundle exec rspec spec/preview.rb       # renders all 19 engine screens to spec/dummy/public/
 ```
 
 `spec/dummy/db/structure.sql` is **git-ignored on purpose**. For a disposable app
@@ -686,6 +686,164 @@ Do not "fix" these without reading the linked reasoning first.
   retired whole, so up to eleven extra months are kept past the horizon. That is
   the trade `rollup_after` (2 years) exists to bound; do not roll up warm years.
 
+### Dimensions (DESIGN §23)
+
+- **A dimension value is a SCALAR read from `NEW` (`OLD` on delete), never an
+  `OLD ∪ NEW` array, and the cost of that is real and accepted.** A row is filed
+  under the value it held AFTER the change, so departures are not captured: an
+  invoice moving from department 5 to 9 shows in 5's feed up to but not including
+  the move. The array encoding was designed in full and works — jsonb containment
+  has array semantics — and it breaks the guessable query:
+  `dimensions @> '{"department_id":"5"}'` returns NOTHING against an array-valued
+  column, silently, in a feature whose entire premise is convenient ad-hoc
+  querying by hosts who will not always go through our query objects. Nothing is
+  lost from the RECORD either way — the move writes an ordinary change row whose
+  `diff` holds `[old, new]` as a real jsonb array, so a host that ever needs the
+  departure query can add the `jsonb_path_ops` index on `diff` §4 anticipated
+  without changing a stored byte.
+- **Values are TEXT and NULLs are skipped.** `{"customer_id": 5}` and
+  `{"customer_id": "5"}` do not match under `@>` and the symptom is an empty
+  screen, so `AuditLog::Record.where_dimensions` is the ONE normalisation point
+  on the read side — do not hand-roll `where("dimensions @> ?")` anywhere. A
+  skipped NULL yields `NULL` rather than `'{}'`, which is what the partial index
+  excludes on. Storing an explicit JSON null looks like it buys the negative
+  query and does not: absence is already overloaded between "the FK was null" and
+  "the row predates the declaration", so that query carries a permanent asterisk
+  either way. "Which invoices have no department" is a current-state question;
+  ask `invoices`.
+- **Explicit only. There is no `dimensions: :auto`.** Sweeping in every `%_id`
+  column is genuinely tempting and its failure mode is invisible: it takes
+  `stripe_charge_id` and `external_uuid` along with the real associations, and a
+  high-cardinality text id in a GIN index produces one entry per row — that
+  index's worst case, arrived at silently, on the largest table in the database.
+  An opt-in feature whose cost curve depends on columns nobody chose is not
+  opt-in.
+- **The GIN index carries `WHERE dimensions IS NOT NULL`, and that predicate is
+  load-bearing rather than tidy.** GIN does not simply store nothing for a NULL —
+  PostgreSQL records a placeholder (`GIN_CAT_NULL_ITEM`) — so an unqualified index
+  puts every row of every non-adopting application into one enormous shared
+  posting list serving a query nobody in that app can ask. Measured: unqualified,
+  +15% insert and 4.3 MB of dead entries; qualified, 0.0% and 16 kB. The planner
+  still chooses it because `@>` is strict and therefore implies the predicate —
+  verified on 18.6, not assumed. `jsonb_path_ops` is endorsed HERE and rejected
+  one column over on `diff` for one reason: `diff`'s question needs `?`, which
+  that opclass does not support at all; a facet query only ever needs `@>`.
+- **There is no GUC and no ambient dimension on CHANGE rows.** The obvious
+  symmetry — a fifth `set_config` in `Context::STAMP_SQL` carrying a jsonb blob
+  the trigger merges — would parse and merge per audited row on the hottest write
+  path, and would give EVERY audited row in the database a non-NULL `dimensions`,
+  so the partial index's predicate would exclude nothing and the index would be
+  back to what the unqualified version was rejected for. Ambient dimensions do not
+  merely cost more; they dismantle the mechanism that makes the feature free for
+  the tables that opt out. An app that needs the tenant on the rows themselves
+  wants §14's real `tenant_id` column instead.
+- **`config.default_dimensions` takes NO ARGUMENTS, and that is what makes it a
+  different mechanism from a registry `dimensions:` rather than a second spelling
+  of one.** Nothing downstream can distinguish a key it supplied from a key the
+  registry lifted, and nothing should. The distinction is entirely in what the
+  value can VARY WITH: the registry reads the payload, so its facets differ
+  between two events of one action; this reads application state, so they are
+  identical for every event in a unit of work. Hand it the payload and it collapses
+  into a registry declaration applied globally with worse discoverability. Two
+  things follow and neither is available otherwise — it is a GUARANTEE that two
+  events in one unit of work cannot disagree about the tenant, and it is memoised
+  once per unit of work on `Current`. Widening the arity later is two lines, so
+  this is not a one-way door.
+- **`default_dimensions` NEVER re-raises**, and the precedent split is principled:
+  `requires:` and `raise_on_subscriber_error` roll the transaction back because
+  they protect the TRAIL; `LabelResolver` logs and renders FAILED because it is
+  display. A facet is a convenience, so it follows `LabelResolver`. Rolling back
+  an approved invoice because an app-version lookup raised would be indefensible.
+- **`dimensions:` does not imply `requires:`**, and `spec/dummy` demonstrates BOTH
+  shapes on purpose — `order.shipped` declares `customer_id` as a facet and does
+  not require it, `customer.created` declares it in both. Do not "finish the job"
+  by requiring the first: an entry that emits without a declared facet writes the
+  event with no facet and raises nothing, which is the loose-by-default the whole
+  feature is.
+- **It is `config.dimension_filters`, not `config.dimensions`.** That spelling
+  reads like the gem's DECLARATIVE options (`unaudited_tables`,
+  `association_targets`) — plural nouns stating a fact the library acts on. This
+  one is inert: it decides which filters a screen offers, and forgetting it costs
+  a missing filter. Meanwhile `default_dimensions` one line above WRITES DATA onto
+  every event permanently and non-retroactively, and would have read like the
+  junior of the two. Consequence and appearance inverted — the `correlated_databases`
+  mistake. Three settings in this feature are named `dimensions` and all three
+  record data; one is named `filters` and does not.
+- **The column list is checked against `information_schema.columns` at migration
+  time, and it is the ONLY enforcement in the entire feature.** No coverage rule,
+  no `required_dimensions`, no backfill, no raise anywhere else — a facet adds
+  nothing to what is RECORDED, only to what is findable in one query, so a missing
+  one is a question nobody asked rather than a hole in the log, and §16's forcing
+  functions belong on the first kind. The typo check earns its exception because
+  `deparment_id` otherwise records nothing forever and the symptom is a filter
+  that returns nothing and never says why.
+- **`AuditLog::DimensionTimeline` SUBCLASSES `Timeline` and swaps three private
+  predicates (`changes_predicate`, `events_predicate`, `history_before?`) plus
+  `anchor_for`.** Do not copy the union query. It has already gone wrong twice in
+  this library's history in exactly the two ways a second copy invites: losing the
+  events leg, and losing the `COALESCE` that stops every uncorrelated write
+  collapsing into one NULL group. `history_before?` has to move with the other two
+  or `older_than_window?` answers a different question from the page above it.
+- **Both tables carry `dimensions` and BOTH LEGS filter their own column.** With
+  the column on `audit_changes` alone the events leg would need
+  `request_id IN (SELECT … FROM audit_changes …)` — a semi-join, evaluated twice,
+  on the one query in the library that is already a union over two partitioned
+  tables. A unit qualifies if EITHER matched.
+- **An unfiltered `DimensionTimeline` compiles to `1 = 0`, never to `all`.** A
+  cleared filter must not silently become a scan of the entire audit log dressed
+  up as a result. `unfiltered?` is the discriminator and the screen renders a
+  prompt.
+- **`DimensionTimeline` is bounded by default (30 days) — the ONE place that
+  diverges from `Timeline`'s "unbounded on purpose".** An unfiltered facet scan
+  across 84 partitions where a facet matches a third of the table is genuinely
+  slow, and the resolution is `RequestDrillDown`'s: bound generously, DISCLOSE the
+  bound on the screen, offer the escape. Disclosed truncation is not invisible
+  truncation. `range: nil` passed EXPLICITLY is unbounded, which is why the default
+  lives in the method signature and not behind a `||=` — the same rule the
+  retention and rollup keywords follow.
+- **`anchor_for` derives which record an activity is "about" when the question was
+  about a facet.** Event subject first, then the first change row that matched the
+  facet, then the first change row. Anchoring on nothing was the alternative and is
+  strictly worse: `mine` would be empty, so every entry would render with no field
+  changes at all — "nothing changed" on a screen whose job is saying what did.
+  Whatever is not the anchor becomes `also_touched`, so nothing is dropped.
+- **The auditor UI's dimension screen HIDES its nav link when
+  `dimension_filters` is empty, and the ROUTE still answers.** An app that declares
+  no facets has a complete audit log and no question that screen could answer, so a
+  nav item leading to an empty filter is worse than none — same discipline as
+  `record_url` defaulting to nil. The route stays so a bookmarked URL explains
+  itself instead of 404ing.
+- **The dimension screen renders `records/_timeline_activities`, the same partial
+  the record Timeline tab uses.** That sharing IS the proof of DESIGN §23's claim
+  that a `DimensionTimeline` yields the same `Activity` a record timeline does. Its
+  empty message is a local because "nothing recorded for this record" is a false
+  statement on a faceted feed.
+- **The retrofit migration re-installs the trigger function, and that half fails
+  SILENTLY without it.** The function reads its facet list from `TG_ARGV[2]`, which
+  the version installed before this feature does not look at — so declaring
+  `dimensions:` against the old function passes the list to something that ignores
+  it and records nothing, forever, with the column and index both in place and no
+  error anywhere. `audit_log:dimensions` is therefore the complete upgrade path,
+  not just an index build.
+- **`DimensionIndex` gates its `DROP INDEX CONCURRENTLY` on `attached?`, and the
+  reason is a Postgres property rather than care.** An ATTACHED child index cannot
+  be dropped at all while its parent exists (`cannot drop index … because index …
+  requires it`), so the INVALID-debris state is reachable only BEFORE the attach —
+  verified on 18.6. Without the gate that line would try to drop working indexes on
+  every re-run. Completeness is read from the catalog's `indisvalid` on the parent,
+  never by counting partitions: §21.1's "never report success for work it did not
+  do", enforced by Postgres instead of by arithmetic.
+- **Retention, rollup, drain and freeze know nothing about this feature, and that
+  is verified rather than hoped.** A partition created after the parent index
+  exists inherits it, `rollup_year!`'s `LIKE … INCLUDING ALL` gives a yearly
+  partition the facet index for free, a retired partition takes its indexes with
+  it, and the drain's temp table needs none.
+- **`Redaction` deliberately does NOT clear `dimensions`.** Facets are structure,
+  like `changed_columns`, and structure survives an erasure — which is correct for
+  `department_id` and wrong for anything that is itself personal data. Documented,
+  not enforced, consistent with the rest of the feature: dimensions are ids and
+  scope labels, not values.
+
 Every browse screen is keyset-paginated through `AuditLog::Pagination`
 (DESIGN §11.0 Rule 2). **Do not add `.limit` to a screen's scope** — a limit
 baked below the controller is invisible to the page rendering it, which is
@@ -703,7 +861,9 @@ browsable results. `config.page_size` is the only knob.
 
 ## The activity generator
 
-**`DESIGN.md` §21 is the authority on all three generators**; §21.3 is this one.
+**`DESIGN.md` §21 is the authority on the three generators it covers**; §21.3 is
+this one. The fourth, `audit_log:dimensions`, is a retrofit path and its reasoning
+lives in §23 with the rest of that feature.
 Everything below is the terse copy.
 
 **It is `audit_log:views:activity`, under a `views:` namespace, and the namespace
@@ -787,6 +947,8 @@ purpose, so do not re-run the audit and delete them.
 | `Redaction.redact_actor!` | a documented capability (DESIGN §13), reachable from a console rather than a rake task |
 | `RecordLabel.labelable?` / `.overridden_to_s?` | called inside `record_label.rb` itself |
 | `Timeline::FieldChange#association?`, `TouchedRecord#label_failed?`, `Actor#system?` | the published host-facing contract — a host renders these, this gem does not have to |
+| `add_audit_dimension_index` / `remove_audit_dimension_index` | published migration API, for the tuning step when one facet turns out to be on every screen (DESIGN §23) |
+| `DimensionIndex.status` | for an operator asking "did that retrofit finish?" without re-running the migration |
 
 **Two are kept for symmetry and that is a real reason.** `Change#updated?` and
 `Timeline::Activity#change_only?` are each the unused third of a set whose other
@@ -810,6 +972,9 @@ per-model cost is one line in the migration:
 create_table :widgets { |t| ... }
 attach_audit_trigger :widgets, model: "Widget"
 ```
+
+`dimensions:` is optional on that same line and records host-defined facets from
+the row — see "Dimensions" above. Declaring none costs the table nothing.
 
 That is the pattern for a *new* table. An **existing** table can be attached from
 a standalone migration just as well, and changing a table's exclusions is
@@ -904,10 +1069,10 @@ one. Do not reintroduce it.
 ## Testing
 
 ```bash
-bundle exec rspec                         # 405 examples, against spec/dummy
+bundle exec rspec                         # 457 examples, against spec/dummy
 bundle exec rspec spec/audit_log          # the library proper
 bundle exec rspec spec/requests           # the auditor UI and the CSV export
-bundle exec rspec spec/preview.rb         # dev tool: renders 17 screens to spec/dummy/public/
+bundle exec rspec spec/preview.rb         # dev tool: renders 19 screens to spec/dummy/public/
 ```
 
 `spec/preview.rb` is deliberately not `_spec.rb`, so it is not auto-collected.
@@ -939,6 +1104,7 @@ property from different angles — **that nothing goes missing without saying so
 | `install_generator_spec` | the ControllerContext include lands ahead of authentication, or a skipped step reports success |
 | `event_transport_spec` | layer 2 silently stops emitting on one end of `rails ~> 8.0`, or takes the wrong branch for the Rails it is on |
 | `schema_isolation_spec` | the library reverts to assuming `public` — rows filed in the wrong schema's table, or a provisioning check answered from another schema's state |
+| `dimensions_spec` | a facet stops reaching the writes no callback sees, a faceted feed silently answers a narrower question than its screen claims, or a cleared filter turns into a scan of the whole log |
 
 A change that makes any of those pass *more easily* is a regression.
 
@@ -999,7 +1165,7 @@ Three things about it are load-bearing rather than boilerplate:
   gemspec or consciously narrow the check — do not delete it.
 
 **Both Rails legs are exercised, and they take different code paths.** Verified
-2026-08-31 by running the whole suite on each: 404 examples pass on 8.0.5.1 and on
+2026-09-01 by running the whole suite on each: 457 examples pass on 8.0.5.1 and on
 8.1.3.1. `Rails.respond_to?(:event)` is FALSE on 8.0 and TRUE on 8.1, so
 `AuditLog.notify`'s fallback runs on one leg and `Rails.event` on the other —
 `event_transport_spec` asserts which branch it is on rather than assuming.
@@ -1009,27 +1175,22 @@ Three things about it are load-bearing rather than boilerplate:
 
 ## Designed but not yet built
 
-**`DESIGN.md` §23 — dimensions.** Host-defined facets (`customer_id`,
-`department_id`, `app_version`) recorded onto audit rows so a host app can ask
-"all activity for invoices in department 5". Fully designed, costed and named;
-no code written.
+Nothing. **§23 (dimensions) shipped 2026-09-01** — its terse entries are in
+"Things that look like bugs but are deliberate" above, under "Dimensions", and its
+staged README appendix is now the README's "Dimensions" section. §23 keeps the
+reasoning and its rejected alternatives; read those before changing anything in
+the feature, because several were designed completely before being rejected — an
+`OLD ∪ NEW` array encoding, an ambient GUC on the trigger, `dimensions: :auto`,
+gating the column behind the opt-in migration — and each reads like an obvious
+improvement without the reason it lost. The costs in it are measured, not
+estimated.
 
-**Read §23 in full before touching it, including its rejected alternatives.**
-Several were designed completely before being rejected — an `OLD ∪ NEW` array
-encoding, an ambient GUC on the trigger, `dimensions: :auto`, gating the column
-behind the opt-in migration — and each reads like an obvious improvement without
-the reason it lost. The costs in it are measured, not estimated.
-
-Two things move when it ships, and the second is enforced:
-
-- Its terse entries belong **here**, in "Things that look like bugs but are
-  deliberate". The decisions most likely to be "fixed" are scalar-`NEW` over
-  arrays, explicit-only over `:auto`, the zero-argument `default_dimensions`
-  lambda, the partial index predicate, and the absence of a GUC.
-- Its staged README appendix (the last block of §23) moves into `README.md`.
-  `readme_spec` fails the moment `README.md` carries the heading that block's
-  marker names while the block is still in `DESIGN.md`, because two copies of the
-  same user documentation drift.
+When something else reaches the same stage, this section is where it goes, and the
+two rules that governed §23 apply to it: the terse entries move into the
+deliberate-decisions list, and a staged README appendix moves into `README.md`
+with the `<!-- README-DRAFT heading="..." -->` marker deleted from `DESIGN.md` —
+`readme_spec` fails while both copies exist, because two copies of the same user
+documentation drift.
 
 ## Deliberately not implemented
 

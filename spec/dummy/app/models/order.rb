@@ -37,8 +37,13 @@ class Order < ApplicationRecord
       update!(status: "submitted", submitted_at: Time.current)
       line_items.each { |item| item.update!(unit_price_cents: item.product.price_cents) }
 
+      # customer_id is here as a FACET as well as evidence: order.submitted
+      # declares it in `dimensions:`, so it is copied onto the event's own
+      # dimensions column and stays in metadata besides. Copied, never moved --
+      # Redaction empties metadata and does not reach the facet.
       AuditLog.notify("order.submitted",
         order_id: id, reference: reference, customer_name: customer.name,
+        customer_id: customer_id,
         line_count: line_items.size, total_cents: total_cents)
     end
   end

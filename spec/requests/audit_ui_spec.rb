@@ -29,6 +29,77 @@ RSpec.describe "the auditor UI", type: :request do
       expect(response.body).to include("row changes (layer 1)")
     end
 
+    # Q4, the faceted feed. The screen knows no host model: which facets it offers
+    # and what they are called are entirely config.dimension_filters.
+    describe "the dimension feed" do
+      it "renders the filter from config and nothing from a host model" do
+        get audit.dimensions_path
+        expect(response).to have_http_status(:ok)
+        expect(response.body).to include("By dimension")
+        # Labels and the option list both come from the host's config, and the
+        # options from the host's OWN table rather than from the audit log.
+        expect(response.body).to include("Order status").and include("Customer")
+        expect(response.body).to include(@order.customer.name)
+      end
+
+      it "does not default to the whole log when nothing is filtered" do
+        get audit.dimensions_path
+        expect(response.body).to include("Pick a facet above")
+        expect(response.body).not_to include("Submitted order")
+      end
+
+      it "feeds a facet from both halves at once" do
+        get audit.dimensions_path, params: { d: { customer_id: @order.customer_id } }
+
+        expect(response).to have_http_status(:ok)
+        expect(response.body).to include("Submitted order")
+        expect(response.body).to include("customer_id = #{@order.customer_id}")
+      end
+
+      # A URL anybody can type must not set the screen's vocabulary. Same
+      # discipline as checking VIEWABLE before constantize.
+      it "ignores a facet key the host never declared" do
+        get audit.dimensions_path, params: { d: { made_up_key: "x" } }
+
+        expect(response).to have_http_status(:ok)
+        expect(response.body).to include("Pick a facet above")
+        expect(response.body).not_to include("made_up_key")
+      end
+
+      # A narrowed feed must never look like a complete one. This screen is the
+      # one place in the library bounded by default, which is only acceptable
+      # because it says so on the page.
+      it "discloses its window and the three limits on what it returns" do
+        get audit.dimensions_path, params: { d: { customer_id: @order.customer_id } }
+
+        expect(response.body).to include("Searched")
+        expect(response.body).to include("not retroactive")
+        expect(response.body).to include("conjunction has to fit on one row")
+      end
+
+      it "exports the matching change rows, and says that is what they are" do
+        get audit.dimensions_path(format: :csv), params: { d: { status: "submitted" } }
+
+        expect(response).to have_http_status(:ok)
+        rows = CSV.parse(response.body, headers: true)
+        expect(rows.headers).to include("dimensions")
+        expect(rows.map { |r| r["record_type"] }.uniq).to eq(["Order"])
+      end
+
+      it "hides its nav link entirely when the host declares no filters" do
+        allow(AuditLog.config).to receive(:dimension_filters).and_return({})
+
+        get audit.root_path
+        expect(response.body).not_to include("By dimension")
+
+        # The ROUTE still answers, so a bookmarked URL explains itself rather
+        # than 404ing.
+        get audit.dimensions_path
+        expect(response).to have_http_status(:ok)
+        expect(response.body).to include("declares no dimension filters")
+      end
+    end
+
     it "renders an actor's activity, with the drill-down to the records touched" do
       get audit.actor_path(staff.id, actor_type: "User")
       expect(response).to have_http_status(:ok)

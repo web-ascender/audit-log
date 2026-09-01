@@ -145,6 +145,86 @@ module AuditLog
     # migration; this is the floor that applies everywhere.
     attr_accessor :default_excluded_columns
 
+    # -> { { tenant_id: Current.tenant&.id, app_version: AppVersion.current } }
+    #
+    # AMBIENT FACETS: recorded onto EVERY audit_events row, merged UNDER whatever
+    # a registry entry declared, so a call site wins on any overlap. For the
+    # constants that have no business being repeated at a thousand call sites --
+    # the current tenant, the deployed version, a region. DESIGN §23.
+    #
+    # IT TAKES NO ARGUMENTS AT ALL, and that is what makes this and a registry
+    # entry's `dimensions:` two different things rather than two spellings of
+    # one. Nothing downstream can distinguish a key this lambda supplied from one
+    # the registry lifted -- identical jsonb, same column, same table -- and
+    # nothing should be able to. The distinction is entirely in where the value
+    # is READ FROM, and therefore in what it can vary with: the registry reads the
+    # PAYLOAD, so its facets differ between two events of the same action; this
+    # reads APPLICATION STATE, so its facets are identical for every event in a
+    # unit of work. Hand it the payload and that collapses into a registry
+    # declaration applied globally with worse discoverability.
+    #
+    # Two things follow from taking nothing and neither is available otherwise.
+    # It is a GUARANTEE that two events in one unit of work cannot disagree about
+    # the tenant. And a value that cannot depend on the event is computed ONCE
+    # PER UNIT OF WORK and memoised on Current, rather than once per event.
+    #
+    # An action name would let the ambient set vary per action -- but per-action
+    # facets already have a home, in the registry entry beside that action's
+    # `summary` and `requires:`, where anybody reviewing the finite list of
+    # auditable actions can see them. A `case action when ...` in this lambda is
+    # the same information moved somewhere strictly worse.
+    #
+    # NAMED FOR `default_excluded_columns` one feature over, whose own comment
+    # calls it "the floor that applies everywhere". This is that shape exactly,
+    # and `default` is literally accurate rather than approximate, because the
+    # merge really does let a declared key win. `ambient` names the property more
+    # precisely and is a term a reader would have to learn first.
+    #
+    # IT MUST NOT RAISE, and if it does the event is still written with whatever
+    # was gathered -- logged, never re-raised. The precedent split is principled:
+    # `requires:` and raise_on_subscriber_error roll the transaction back because
+    # they protect the TRAIL; LabelResolver logs and renders FAILED because it is
+    # display. A dimension is a convenience, so it follows LabelResolver. Rolling
+    # back an approved invoice because an app-version lookup raised would be
+    # indefensible.
+    #
+    # WHAT IT COSTS, measured: three ambient keys on every event is +32.5% on
+    # audit_events insert and +23% heap -- roughly half the jsonb value, half the
+    # GIN entry. audit_events is the low-volume table, so at a typical 1:5
+    # event-to-change ratio that lands near +5% of total audit write cost.
+    # Declare only what will be FILTERED on; a value merely read on a screen
+    # belongs in the payload, which is free.
+    attr_accessor :default_dimensions
+
+    # { customer_id: { label: "Customer", options: -> { [[name, id], ...] } } }
+    #
+    # Which facets the auditor UI offers as a filter. INERT: nothing here affects
+    # what is recorded, and forgetting it costs a missing filter that can be added
+    # later with no effect on a single stored row.
+    #
+    # IT IS `dimension_filters` AND IT WAS NEARLY `dimensions`. That spelling
+    # reads like this library's DECLARATIVE options -- unaudited_tables,
+    # association_targets, bypass_allowlist -- plural nouns stating a fact the
+    # library then acts on. This one states nothing and acts on nothing, while the
+    # option directly above it writes data onto every event permanently and
+    # non-retroactively. Consequence and appearance inverted, which is the mistake
+    # correlated_databases made before it became correlated_connections. `filters`
+    # carries the distinction with no prefix: three settings in this feature are
+    # named `dimensions` and all three record data; one is named `filters` and
+    # does not.
+    #
+    # `options:` follows actor_picker exactly, and for the reason that option's
+    # own comment gives: populate a picker from the HOST's own table, never from
+    # SELECT DISTINCT dimensions->>'customer_id' over a partitioned audit table,
+    # which is unusable at volume. No `options:` means a free-text input --
+    # honest, zero coupling, and correct for something like app_version where the
+    # host may have no list to offer.
+    #
+    # Empty by default, and the auditor UI hides the screen entirely when it is:
+    # a nav item leading to a filter with nothing to filter by is worse than no
+    # nav item. Same discipline as record_url defaulting to nil.
+    attr_accessor :dimension_filters
+
     # Tables that legitimately have no audit trigger. The coverage spec fails the
     # build for any table in the primary database that is neither audited nor
     # listed here, so every exemption carries a written reason.
@@ -272,6 +352,8 @@ module AuditLog
       @bypass_allowlist         = []
       @default_excluded_columns = DEFAULT_EXCLUDED_COLUMNS.dup
       @record_url               = nil
+      @default_dimensions       = nil
+      @dimension_filters        = {}
       @page_size                = 50
       @partition_months_ahead   = 3
       @drill_down_slack         = 24.hours

@@ -177,6 +177,47 @@ RSpec.describe "installing into a schema other than public" do
     end
   end
 
+  # Dimensions add catalog queries and a facet extraction, so both directions of
+  # the old `public` assumption are re-checkable here. DESIGN §14 + §23.
+  describe "dimensions" do
+    it "extracts facets from the copy of the function in its own schema" do
+      in_schema(probe) do
+        AuditLog::Schema.install!(conn)
+        conn.create_table(:widgets) { |t| t.string(:name) && t.integer(:tenant_id) }
+        migration.attach_audit_trigger(:widgets, model: "Widget", dimensions: %i[tenant_id])
+        conn.execute("INSERT INTO widgets (name, tenant_id) VALUES ('w', 7)")
+
+        expect(conn.select_value("SELECT dimensions FROM audit_changes"))
+          .to eq(%({"tenant_id": "7"}))
+      end
+
+      # And nothing landed in public's table, which is the failure a function
+      # pinned to `public` produced while every write still succeeded.
+      expect(count_in("public")).to be_zero
+    end
+
+    # `DimensionIndex.complete?` answers "did the retrofit finish?", so one
+    # schema's healthy state must never answer that question for another's --
+    # exactly the over-match that made `attached?` and both Coverage queries wrong.
+    it "reports index completeness per schema, not per relname" do
+      install_into_probe!
+
+      in_schema(probe) do
+        expect(AuditLog::DimensionIndex.complete?("audit_changes", connection: conn)).to be true
+      end
+
+      # public in this test database has the index too, so a relname-only query
+      # would agree by accident. Drop the probe's parent index and the two answers
+      # must diverge.
+      in_schema(probe) { conn.execute("DROP INDEX audit_changes_dimensions_idx") }
+
+      in_schema(probe) do
+        expect(AuditLog::DimensionIndex.complete?("audit_changes", connection: conn)).to be false
+      end
+      expect(AuditLog::DimensionIndex.complete?("audit_changes", connection: conn)).to be true
+    end
+  end
+
   describe "AuditLog::Partitions inventory" do
     it "reports only the current schema's partitions" do
       install_into_probe!
