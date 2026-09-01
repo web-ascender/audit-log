@@ -98,7 +98,7 @@ Update it when you change behaviour.
 | Ruby | **>= 3.3** — the floor is `SecureRandom.uuid_v7` (DESIGN §2.1), not a preference. 3.3.0 exactly also cannot run Rails 8.1, for a reason of Rails' own. Developed on 4.0.6. |
 | Rails | **`~> 8.0`** — floor 8.0 (DESIGN §2.2), and a real ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. Developed on 8.1.3.1. |
 | PostgreSQL | **>= 16.** Developed on 18.6, port 5438 — not the workspace default 5437. CI runs 16 and 18; DESIGN §20 is the authority and says the design "targets PG 16 and requires nothing newer". Verified: the whole suite passes on 16.13. |
-| Tests | RSpec against `spec/dummy` (404 examples), on every push via GitHub Actions — six legs: Ruby 3.3/4.0.6 × Rails 8.0/latest × PG 16/18 |
+| Tests | RSpec against `spec/dummy` (405 examples), on every push via GitHub Actions — six legs: Ruby 3.3/4.0.6 × Rails 8.0/latest × PG 16/18 |
 | Runtime deps | `rails`, `csv` (export). **`pg` and `pagy` deliberately are not** — the host app picks its own `pg` build, and its own pagination gem. `AuditLog::Pagination` is this library's own keyset pager precisely so a `pagy` constraint does not propagate into the host. |
 
 ```bash
@@ -904,7 +904,7 @@ one. Do not reintroduce it.
 ## Testing
 
 ```bash
-bundle exec rspec                         # 404 examples, against spec/dummy
+bundle exec rspec                         # 405 examples, against spec/dummy
 bundle exec rspec spec/audit_log          # the library proper
 bundle exec rspec spec/requests           # the auditor UI and the CSV export
 bundle exec rspec spec/preview.rb         # dev tool: renders 17 screens to spec/dummy/public/
@@ -1006,6 +1006,30 @@ Three things about it are load-bearing rather than boilerplate:
 `ActiveRecord::Transaction`'s public API is identical on both
 (`after_commit`, `after_rollback`, `closed?`, `open?`, `uuid`), which is why
 `audited` promises exactly those.
+
+## Designed but not yet built
+
+**`DESIGN.md` §23 — dimensions.** Host-defined facets (`customer_id`,
+`department_id`, `app_version`) recorded onto audit rows so a host app can ask
+"all activity for invoices in department 5". Fully designed, costed and named;
+no code written.
+
+**Read §23 in full before touching it, including its rejected alternatives.**
+Several were designed completely before being rejected — an `OLD ∪ NEW` array
+encoding, an ambient GUC on the trigger, `dimensions: :auto`, gating the column
+behind the opt-in migration — and each reads like an obvious improvement without
+the reason it lost. The costs in it are measured, not estimated.
+
+Two things move when it ships, and the second is enforced:
+
+- Its terse entries belong **here**, in "Things that look like bugs but are
+  deliberate". The decisions most likely to be "fixed" are scalar-`NEW` over
+  arrays, explicit-only over `:auto`, the zero-argument `default_dimensions`
+  lambda, the partial index predicate, and the absence of a GUC.
+- Its staged README appendix (the last block of §23) moves into `README.md`.
+  `readme_spec` fails the moment `README.md` carries the heading that block's
+  marker names while the block is still in `DESIGN.md`, because two copies of the
+  same user documentation drift.
 
 ## Deliberately not implemented
 
