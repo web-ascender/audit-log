@@ -63,6 +63,35 @@
                 <%%= activity_touched(touched) %>
                 <%% if touched.label_failed? %><span class="<%= css(:muted) %>">(label unavailable)</span><%% end %>
                 <%%= safe_join(touched.columns.map { |c| tag.code(c, class: "<%= css(:chip) %>") }, " ") %>
+                <%%# The other record's own before-and-after, at the same fidelity
+                    as the card's own field list and rendered by the same helper.
+                    This is the end of the road for a reader on THIS page: a line
+                    item has no show page of its own and this app does not route
+                    /activity/LineItem, so "quantity changed" with no values is
+                    the whole answer unless it is here.
+
+                    Collapsed, and nested inside a disclosure that is itself
+                    collapsed: one submit can touch forty line items, and this
+                    answers a follow-up question rather than the one the card
+                    asks. It costs no query -- the rows and their labels were
+                    loaded with the page. %>
+                <%% if touched.field_changes.any? %>
+                  <details>
+                    <summary><%%= pluralize(touched.field_changes.size, "value") %></summary>
+                    <ul class="<%= css(:fields) %>">
+                      <%% touched_model = touched.type.safe_constantize %>
+                      <%% touched.field_changes.each do |change| %>
+                        <li>
+                          <span class="<%= css(:fname) %>"><%%= human_field(touched_model, change.column) %></span>
+                          <%%= activity_value(change.from, side: :old, label: change.from_label) %>
+                          <span class="<%= css(:arrow) %>">→</span>
+                          <%%= activity_value(change.to, side: :new, cleared: change.cleared?,
+                                             label: change.to_label) %>
+                        </li>
+                      <%% end %>
+                    </ul>
+                  </details>
+                <%% end %>
               </li>
             <%% end %>
           </ul>

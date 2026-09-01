@@ -92,6 +92,28 @@
                   <span class="assoc-failed">(label unavailable)</span>
                 <% end %>
                 <%= safe_join(touched.columns.map { |c| tag.code(c, class: "col-chip") }, " ") %>
+                <%# The other record's own before-and-after, one more click down.
+                    Rendered here for the same reason this whole tab is rendered
+                    from the value objects: TouchedRecord#field_changes that no
+                    screen in the gem consumes is a contract nothing keeps honest.
+                    Collapsed because one unit of work can touch forty line items
+                    and this is the answer to a follow-up question, not to the
+                    one the entry itself answers. %>
+                <% if touched.field_changes.any? %>
+                  <details class="touched-fields">
+                    <summary><%= pluralize(touched.field_changes.size, "value") %></summary>
+                    <ul class="fields">
+                      <% touched.field_changes.each do |fc| %>
+                        <li>
+                          <code class="fname"><%= fc.column %></code>
+                          <span class="old"><%= audit_value(fc.from, label: fc.from_label) %></span>
+                          <span class="arrow">→</span>
+                          <span class="new"><%= audit_value(fc.to, cleared: fc.cleared?, label: fc.to_label) %></span>
+                        </li>
+                      <% end %>
+                    </ul>
+                  </details>
+                <% end %>
               </li>
             <% end %>
           </ul>

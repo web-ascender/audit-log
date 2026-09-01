@@ -20,6 +20,7 @@ RSpec.configure do |config|
   config.filter_rails_from_backtrace!
 
   config.include AuditContextHelpers
+  config.include QueryCounting
   config.include ActiveJob::TestHelper
 
   # No :job around-hook here, unlike the reference app. That hook exists there to

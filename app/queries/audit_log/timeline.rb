@@ -274,7 +274,13 @@ module AuditLog
             operations: rows.map(&:operation).uniq,
             columns: rows.flat_map(&:changed_columns).uniq.sort,
             label: (label if label.is_a?(String)),
-            label_failed: label == AuditLog::LabelResolver::FAILED
+            label_failed: label == AuditLog::LabelResolver::FAILED,
+            # The rows themselves, so the entry can render the other record's
+            # own before-and-after and not only its column names. Already
+            # loaded and already warmed -- the same hydrated change set and the
+            # same LabelResolver this activity's own field changes come from --
+            # so it adds no query. Sorted for the same reason `mine` is.
+            changes: rows.sort_by(&:occurred_at), labels: labels
           )
         end
     end

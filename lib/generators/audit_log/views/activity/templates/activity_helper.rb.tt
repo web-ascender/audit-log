@@ -105,8 +105,14 @@ module ActivityHelper
     # The id stays visible beside the label. DESIGN §11.8: the label is current
     # state, the id is what the log recorded, and dropping it would let a rename
     # rewrite what this page says happened.
+    #
+    # Spelled `(id: 35)`, the same as the auditor UI's own diff cells. A bare
+    # `(35)` reads as part of the label -- a quantity, a code, a price -- on a
+    # page whose whole claim is that the annotation never displaces the recorded
+    # fact, and the two screens disagreeing about it is worse still: a reader
+    # comparing them cannot tell which parenthesis is the id.
     tag.span(class: side) do
-      safe_join([label.to_s, tag.small("(#{value})", class: "assoc-id")], " ")
+      safe_join([label.to_s, tag.small("(id: #{value})", class: "assoc-id")], " ")
     end
   end
 end

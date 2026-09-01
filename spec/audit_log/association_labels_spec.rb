@@ -10,21 +10,6 @@ require "rails_helper"
 # ones where the decoration eats the fact, invents a fact, or hides its own
 # failure -- not whether the string is pretty.
 RSpec.describe "association labels" do
-  # Independent of the ActiveRecord query cache: every count here is of
-  # primary-key lookups that the cache would collapse identically. See the note in
-  # CLAUDE.md about RSpec running with the cache OFF and requests running with it
-  # ON -- an assertion that only holds in one of the two is not an assertion.
-  def count_queries
-    count = 0
-    sub = ActiveSupport::Notifications.subscribe("sql.active_record") do |_, _, _, _, payload|
-      count += 1 unless payload[:name].to_s.match?(/SCHEMA|TRANSACTION/)
-    end
-    yield
-    count
-  ensure
-    ActiveSupport::Notifications.unsubscribe(sub)
-  end
-
   def change_double(record_type:, diff:, record_id: 1)
     instance_double(AuditLog::Change, record_type: record_type, record_id: record_id, diff: diff)
   end

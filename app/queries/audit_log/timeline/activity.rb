@@ -94,18 +94,11 @@ module AuditLog
       def changed_columns = changes.flat_map(&:changed_columns).uniq.sort
 
       # [FieldChange] for this record, newest write last so a column written
-      # twice in one unit of work reads in the order it happened.
+      # twice in one unit of work reads in the order it happened. Through
+      # FieldChange.from_changes, which TouchedRecord uses too -- the label
+      # resolution in there is the half that is easy to get subtly wrong.
       def field_changes
-        @field_changes ||= changes.flat_map { |change|
-          change.field_changes.map do |column, from, to|
-            FieldChange.new(column: column, from: from, to: to).tap do |fc|
-              next unless @labels
-
-              fc.from_label = association_label(change, column, from, :old)
-              fc.to_label   = association_label(change, column, to, :new)
-            end
-          end
-        }
+        @field_changes ||= FieldChange.from_changes(changes, labels: @labels)
       end
 
       # [TouchedRecord] -- the OTHER records this unit of work wrote, one per
@@ -133,27 +126,6 @@ module AuditLog
         @primary_event ||= events.find { |e|
           e.subject_type == record_type && e.subject_id.to_s == record_id.to_s
         } || events.first
-      end
-
-      # Through LabelResolver#for_value, never a hand-rolled lookup: `side`
-      # matters on a polymorphic column, where the type to resolve against is
-      # whichever value the sibling _type column held on the SAME side of the
-      # change. Resolving an old id against a new type captions the cell with the
-      # wrong record entirely.
-      #
-      # MISSING and FAILED both collapse to nil here, and the two are NOT the
-      # same thing -- one says the row was deleted, the other says the labeller
-      # broke. A host app that wants to distinguish them has the id and can ask
-      # the resolver directly; the timeline's contract is "a label, or none",
-      # because a FieldChange carrying a sentinel would be a value object leaking
-      # a lookup's internals into every host view. DESIGN §11.8.
-      def association_label(change, column, value, side)
-        label = @labels.for_value(change, column, value, side: side)
-        return nil if label.nil?
-        return nil if label == AuditLog::LabelResolver::MISSING
-        return nil if label == AuditLog::LabelResolver::FAILED
-
-        label
       end
     end
   end

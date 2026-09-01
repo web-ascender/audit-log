@@ -317,6 +317,48 @@ RSpec.describe AuditLog::Timeline do
         AuditLog.config.record_url = nil
       end
     end
+
+    # `columns` says a line item's quantity changed. This says it went from 3 to
+    # 9 -- and on a host-rendered page there is nowhere else to find that: a line
+    # item has no history screen of its own, so a count and a column name were
+    # the whole answer. Same FieldChange the anchor record's own list is built
+    # from, through FieldChange.from_changes, because a second construction path
+    # is how one of the two comes to resolve a label against the wrong side.
+    it "carries the other record's own before-and-after, not only its column names" do
+      order = as_actor(staff) do
+        o = Order.create!(customer: create_customer, created_by: staff,
+                          line_items_attributes: [{ product_id: create_product.id, quantity: 3 }])
+        o.line_items.first.update!(quantity: 9)
+        o
+      end
+
+      touched = page_of(order).first.also_touched.find { |t| t.type == "LineItem" }
+
+      expect(touched.columns).to include("quantity")
+      # Both writes, oldest first: a column written twice in one unit of work
+      # reads in the order it happened, exactly as Activity#field_changes does.
+      expect(touched.field_changes.select { |fc| fc.column == "quantity" }
+                    .map { |fc| [fc.from, fc.to] }).to eq([[nil, 3], [3, 9]])
+    end
+
+    # The labels are warmed off the whole unit of work, not off the anchor
+    # record's rows, so this is free -- and the never-drop-the-id rule is the
+    # same one it is everywhere else. DESIGN §11.8.
+    it "labels an association id in the other record's diff without dropping it, and without a query" do
+      product = create_product
+      order = as_actor(staff) do
+        Order.create!(customer: create_customer, created_by: staff,
+                      line_items_attributes: [{ product_id: product.id, quantity: 1 }])
+      end
+
+      touched = page_of(order).first.also_touched.find { |t| t.type == "LineItem" }
+      changes = count_queries { touched.field_changes }
+      product_fc = touched.field_changes.find { |fc| fc.column == "product_id" }
+
+      expect(changes).to eq(0)
+      expect(product_fc.to).to eq(product.id)           # the recorded id survives
+      expect(product_fc.to_label).to eq(product.to_s)
+    end
   end
 
   describe "AuditLog::Timeline::Actor" do
@@ -389,6 +431,7 @@ RSpec.describe AuditLog::Timeline do
       expect(json["actor"]).to include("display")
       expect(json["field_changes"]).to be_an(Array)
       expect(json["also_touched"].first).to include("identifier")
+      expect(json["also_touched"].first["field_changes"]).to be_an(Array)
       # Microseconds, for the same reason the keyset cursor needs them: a
       # millisecond-truncated timestamp names an instant just before its own row.
       expect(json["occurred_at"]).to match(/\.\d{6}/)

@@ -211,6 +211,28 @@ RSpec.describe "the auditor UI", type: :request do
         .to eq(AuditLog::Change.for_record("Order", @order.id).distinct.count(:request_id))
     end
 
+    # `columns` says which of a line item's fields changed; only this says what
+    # they changed TO. The engine renders it for the same reason it renders the
+    # rest of this tab from the value objects -- a TouchedRecord#field_changes no
+    # screen here consumes is a contract nothing keeps honest -- and a host has
+    # no alternative at all: a line item has no history page of its own.
+    #
+    # Collapsed, and asserted to be collapsed: one submit can touch forty line
+    # items, so this answers a follow-up question rather than the card's own.
+    it "carries the other records' own values, collapsed, into the timeline card" do
+      get audit.record_history_path(record_type: "Order", record_id: @order.id, view: "timeline")
+
+      touched = response.parsed_body.css("ul.record-list li")
+                        .find { |li| li.text.include?("LineItem #") }
+      expect(touched).not_to be_nil
+
+      values = touched.at_css("details.touched-fields")
+      expect(values).not_to be_nil
+      expect(values[:open]).to be_nil                        # collapsed by default
+      expect(values.css("ul.fields li").size).to be_positive
+      expect(values.text).to include("unit_price_cents")
+    end
+
     # The rule shared/_event_payload encodes, applied to the timeline card: an
     # emptied payload and an action that carried none are the SAME empty jsonb,
     # so the notice must not be collapsed behind a <details>. Getting this wrong
@@ -227,9 +249,13 @@ RSpec.describe "the auditor UI", type: :request do
       expect(response.body).to include("Values redacted")
       expect(response.body).to include("redaction-note")
 
-      # Outside every <details> on the page, not merely present somewhere.
-      collapsed = response.body.scan(/<details.*?<\/details>/m).join
-      expect(collapsed).not_to include("Values redacted")
+      # Outside every <details> on the page, not merely present somewhere --
+      # and parsed rather than regexed, because the touched-records disclosure
+      # now NESTS one. A non-greedy scan stops at the inner </details> and stops
+      # seeing the rest of the outer one, so the regex that used to say this
+      # would quietly have stopped saying it.
+      expect(response.parsed_body.css("details").map(&:text).join)
+        .not_to include("Values redacted")
     end
 
     it "exports whichever tab of a record's history is open" do

@@ -81,6 +81,25 @@
 .activity-feed .record-list li:last-child { border-bottom: none; }
 .activity-feed .record-list .col-chip { font-size: 11.5px; }
 
+/* THIRD LEVEL: the touched record's own values, one more click down. The row is
+   a flex line, so the disclosure claims a whole line of its own rather than
+   being squeezed in beside the column chips -- and it is indented under that
+   row, WITHOUT the -7px hanging summary the outer two levels use. Left at that
+   default the deepest disclosure's triangle hangs further LEFT than the record
+   row it belongs to, so the nesting reads inside out. `flex: 1 1` rather than
+   `0 0` so the indent shrinks the line instead of overflowing it, which does
+   not depend on the host having a border-box reset. */
+.activity-feed .record-list details { flex: 1 1 100%; min-width: 0;
+  margin: 2px 0 4px 18px; }
+.activity-feed .record-list details > summary { margin-left: 0; }
+/* And the field list inside it is still the grid, so its LI must stay
+   `display: contents`. The .record-list rule above matches these too and has the
+   SAME specificity as `.activity-feed .fields li`, so source order alone decided
+   it -- every cell re-flowed into one flex line and the grid vanished. Valid
+   markup, correct values, scrambled page, exactly as the note at the top of this
+   file warns. */
+.activity-feed .record-list .fields li { display: contents; }
+
 .activity-feed dl.payload { display: grid; grid-template-columns: minmax(90px, 170px) 1fr;
   gap: 3px 12px; font-size: 12.5px; }
 .activity-feed dl.payload dt { color: var(--muted, #6b6b64); }

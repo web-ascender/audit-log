@@ -104,6 +104,18 @@ RSpec.describe AuditLog::Generators::Views::ActivityGenerator do
       expect(feed).not_to include("<%%")          # nothing left double-escaped
     end
 
+    # The generated helper and the engine's own audit_value must spell the id the
+    # SAME way -- `(id: 35)`, asserted on the engine side by association_labels_spec.
+    # This drifted to a bare `(35)`, which reads as part of the label on the one
+    # screen whose claim is that the label never displaces the recorded id.
+    it "spells the id beside a label the way the auditor UI does" do
+      @dir, = generate(%w[Order])
+      helper = read(@dir, "app/helpers/activity_helper.rb")
+
+      expect(helper).to include('tag.small("(id: #{value})"')
+      expect(helper).not_to include('tag.small("(#{value})"')
+    end
+
     it "names the models it was given as the allowlist" do
       @dir, = generate(%w[Order Product Customer])
       expect(read(@dir, "app/controllers/activity_controller.rb"))

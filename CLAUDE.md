@@ -99,7 +99,7 @@ Update it when you change behaviour.
 | Ruby | **>= 3.3** — the floor is `SecureRandom.uuid_v7` (DESIGN §2.1), not a preference. 3.3.0 exactly also cannot run Rails 8.1, for a reason of Rails' own. Developed on 4.0.6. |
 | Rails | **`~> 8.0`** — floor 8.0 (DESIGN §2.2), and a real ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. Developed on 8.1.3.1. |
 | PostgreSQL | **>= 16.** Developed on 18.6, port 5438 — not the workspace default 5437. CI runs 16 and 18; DESIGN §20 is the authority and says the design "targets PG 16 and requires nothing newer". Verified: the whole suite passes on 16.13. |
-| Tests | RSpec against `spec/dummy` (470 examples), on every push via GitHub Actions — six legs: Ruby 3.3/4.0.6 × Rails 8.0/latest × PG 16/18 |
+| Tests | RSpec against `spec/dummy` (471 examples), on every push via GitHub Actions — six legs: Ruby 3.3/4.0.6 × Rails 8.0/latest × PG 16/18 |
 | Runtime deps | `rails`, `csv` (export). **`pg` and `pagy` deliberately are not** — the host app picks its own `pg` build, and its own pagination gem. `AuditLog::Pagination` is this library's own keyset pager precisely so a `pagy` constraint does not propagate into the host. |
 
 ```bash
@@ -301,6 +301,14 @@ Do not "fix" these without reading the linked reasoning first.
   an audit screen into a report of current state. Nothing the label chain returns
   is ever stored: storing an honest as-of-then label means looking it up in the
   trigger, which is N `SELECT`s on every audited write. DESIGN §11.8.
+  **The SPELLING is `(id: 51)`, and BOTH renderers owe it** — the engine's
+  `audit_value` and the generated `ActivityHelper#activity_value`. The template
+  had drifted to a bare `(51)`, which reads as part of the label (a quantity, a
+  code, a price) on the one screen whose claim is that the annotation never
+  displaces the recorded fact, and left the two screens disagreeing about which
+  parenthesis is the id. Pinned on both sides now:
+  `association_labels_spec` on the engine's, `activity_generator_spec` on the
+  template's.
 - **`AuditLog::RecordLabel`'s chain ends in `nil`, not in `"Product #51"`** — the
   other place it deliberately differs from `ActorLabel`, whose chain must end in
   something because its column would otherwise be blank. Here the id renders
@@ -1118,7 +1126,7 @@ one. Do not reintroduce it.
 ## Testing
 
 ```bash
-bundle exec rspec                         # 470 examples, against spec/dummy
+bundle exec rspec                         # 471 examples, against spec/dummy
 bundle exec rspec spec/audit_log          # the library proper
 bundle exec rspec spec/requests           # the auditor UI and the CSV export
 bundle exec rspec spec/preview.rb         # dev tool: renders 19 screens to spec/dummy/public/
@@ -1214,7 +1222,7 @@ Three things about it are load-bearing rather than boilerplate:
   gemspec or consciously narrow the check — do not delete it.
 
 **Both Rails legs are exercised, and they take different code paths.** Verified
-2026-09-01 by running the whole suite on each: 470 examples pass on 8.0.5.1 and on
+2026-09-01 by running the whole suite on each: 471 examples pass on 8.0.5.1 and on
 8.1.3.1. `Rails.respond_to?(:event)` is FALSE on 8.0 and TRUE on 8.1, so
 `AuditLog.notify`'s fallback runs on one leg and `Rails.event` on the other —
 `event_transport_spec` asserts which branch it is on rather than assuming.
