@@ -1281,6 +1281,26 @@ Two testing traps already hit here:
 
 ## CI
 
+Two workflows. `release.yml` turns a pushed `v*` tag into a GitHub Release with
+that version's CHANGELOG section as the body, and exists because a tag and a
+Release are different objects: pushing a tag creates the first and never the
+second. This repository had five tags and two Releases, so GitHub labelled 0.2.0
+"Latest" for three releases and `/releases/latest` answered with it — nothing
+broken, nothing saying so. Three things about it are load-bearing:
+
+- **It refuses when the tag and `version.rb` disagree.** The README pins by tag,
+  so `v0.5.0` on a tree still saying `0.4.0` hands an adopter 0.4.0's code under
+  0.5.0's notes. This is the only place that can notice.
+- **`.github/scripts/changelog-section` is ONE extractor, used by the workflow and
+  by a human backfilling by hand.** Two spellings of "the body of a release" drift,
+  and the drift is a release note that does not match its changelog. It exits
+  non-zero on a missing or empty section rather than printing nothing — an empty
+  release note looks deliberate and says nothing.
+- **It does not publish the gem, and must not.** `allowed_push_host` is a
+  deliberate non-host so `gem push` fails; this is release NOTES only. It does
+  repeat the warning-free `gem build` gate, because a tag can be pushed to a
+  commit CI never ran.
+
 `.github/workflows/ci.yml`, on every push and pull request. It exists because the
 forcing functions above force nothing if they only run when someone remembers.
 

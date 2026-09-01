@@ -2266,6 +2266,7 @@ who will not read the whole design document first.
 | `lib/audit_log/engine.rb` | Initializers: the adapter prepend, the event subscriber, `PGTZ`. |
 | `lib/audit_log/console.rb` | Narrates console sessions. |
 | `llms.txt` | The packaged entry point for coding agents: a summary, then a routing table into this file and `DESIGN.md`. Guarded by `readme_spec`. |
+| `.github/workflows/release.yml` | Turns a pushed `v*` tag into a GitHub Release from the CHANGELOG section, refusing when the tag and `version.rb` disagree. Release notes only — it never runs `gem push`. |
 | `db/sql/audit_tables.sql` | The two partitioned tables and their indexes. |
 | `db/sql/audit_row_change.sql` | The trigger function. The heart of layer 1. |
 | `app/queries/` | One object per auditor question (`ActorActivity`, `RecordHistory`, `RecordTimeline`, `ActionReport`, `Reconciler`, `Coverage`), plus `LabelResolver` — the per-request association-label cache. |

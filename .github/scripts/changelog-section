@@ -1,0 +1,42 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Print the CHANGELOG.md body for one version, for use as a GitHub Release note.
+#
+#   .github/scripts/changelog-section 0.5.0
+#   .github/scripts/changelog-section v0.5.0     # a leading v is accepted
+#
+# ONE extractor, used by the release workflow AND by a human backfilling a
+# release by hand. The alternative is a `sed` range in the workflow and a
+# different one in somebody's shell history, which is the same argument that
+# keeps `AuditLog::Coverage` backing both the rake task and the shared example:
+# two spellings of one rule eventually disagree, and here the disagreement is a
+# release note that does not match the changelog it was taken from.
+#
+# It EXITS NON-ZERO on a version it cannot find, rather than printing nothing.
+# An empty release note is the failure mode worth engineering against -- the
+# release still gets created, looks deliberate, and says nothing.
+
+version = ARGV[0].to_s.sub(/\Av/, "")
+abort "usage: #{File.basename($PROGRAM_NAME)} <version>" if version.empty?
+
+path = File.expand_path("../../CHANGELOG.md", __dir__)
+body = File.read(path)
+
+# `## 0.5.0 — 2026-09-01` through the next `## ` at the same level, or the
+# trailing `---` footer, whichever comes first.
+heading = /^\#\#\s+#{Regexp.escape(version)}\s+—.*$/
+match   = body.match(heading)
+
+unless match
+  abort "CHANGELOG.md has no `## #{version} — ...` heading. " \
+        "Headings present: #{body.scan(/^\#\# (\S+)/).flatten.join(", ")}"
+end
+
+rest    = body[match.end(0)..]
+stop    = rest.index(/^\#\# /) || rest.index(/^---$/) || rest.length
+section = rest[0, stop].strip
+
+abort "CHANGELOG.md's `## #{version}` section is empty." if section.empty?
+
+puts section

@@ -1,0 +1,87 @@
+# Turn a pushed `v*` tag into a GitHub Release, with the CHANGELOG section for
+# that version as the body.
+#
+# WHY THIS EXISTS. A git tag and a GitHub Release are different objects: pushing
+# a tag creates the first and never the second. This repository had five tags and
+# two Releases, because the Release was a manual step somebody stopped taking
+# after 0.2.0 -- which left GitHub labelling 0.2.0 "Latest" for three releases,
+# and `/releases/latest` answering with it. Nothing was broken and nothing said
+# so, which is the failure mode the rest of this project is built against; the
+# fix is the same one CI already is, per DESIGN §16: a step that runs only when
+# someone remembers is not a step.
+#
+# IT DOES NOT PUBLISH THE GEM, and must not. `allowed_push_host` in the gemspec
+# is set to a deliberate non-host so `gem push` fails rather than depending on
+# nobody running it (§16). This workflow is release NOTES only.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+# Least privilege: this needs to write releases and nothing else. `contents:
+# write` is what `gh release create` requires; every other scope stays read-only
+# by virtue of being unlisted.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: GitHub Release from the CHANGELOG
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: false
+
+      # THE TAG AND THE GEMSPEC MUST AGREE, and this is the only place that can
+      # notice they do not. `v0.5.0` tagged on a tree whose version.rb still says
+      # 0.4.0 produces a Release nobody can install from -- the README pins by
+      # tag, so an adopter would get 0.4.0's code under 0.5.0's release notes.
+      # Fail here rather than publish that.
+      - name: Tag matches lib/audit_log/version.rb
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          gem_version="$(ruby -r./lib/audit_log/version -e 'print AuditLog::VERSION')"
+          echo "tag=$tag  version.rb=$gem_version"
+          if [ "$tag" != "$gem_version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match VERSION $gem_version"
+            exit 1
+          fi
+
+      # The SAME extractor a human uses to backfill one by hand, so a release
+      # note and the changelog it came from cannot drift. It exits non-zero on a
+      # missing or empty section rather than printing nothing, because an empty
+      # release note looks deliberate and says nothing.
+      - name: Extract the CHANGELOG section
+        run: .github/scripts/changelog-section "$GITHUB_REF_NAME" > /tmp/notes.md
+
+      # `gem build` must be warning-free before a release exists that points at
+      # this tree -- the same gate CI applies on every push (§16), repeated here
+      # because a tag can be pushed to a commit CI never ran.
+      - name: Build the gem, warning-free
+        run: |
+          out="$(gem build audit_log.gemspec 2>&1)"
+          echo "$out"
+          if echo "$out" | grep -qiE "^WARNING:|warning:"; then
+            echo "::error::gem build emitted warnings"
+            exit 1
+          fi
+
+      # --latest explicitly: GitHub's default picks by semver, which is right
+      # today and wrong the first time a patch is backported to an older line.
+      # Whichever tag is being pushed now is the one being released.
+      - name: Create the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            --title "audit_log $version" \
+            --notes-file /tmp/notes.md \
+            --verify-tag \
+            --latest

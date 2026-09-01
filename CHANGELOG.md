@@ -3,6 +3,23 @@
 Notable changes to `audit_log`. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- **`.github/workflows/release.yml`** — a pushed `v*` tag now becomes a GitHub
+  Release, with that version's CHANGELOG section as the body. A tag and a Release
+  are different objects and pushing the first never creates the second, which is
+  why this repository reached five tags with two Releases and GitHub labelling
+  0.2.0 "Latest" for three releases. Releases for v0.3.0, v0.4.0 and v0.5.0 were
+  backfilled by hand from the same extractor the workflow uses.
+
+  It refuses when the tag and `version.rb` disagree — the README pins by tag, so
+  `v0.5.0` on a tree still saying `0.4.0` would hand an adopter the wrong code
+  under the right notes — and it repeats CI's warning-free `gem build` gate,
+  because a tag can be pushed to a commit CI never ran. It does **not** run
+  `gem push`, and must not: `allowed_push_host` is a deliberate non-host.
+
 ## 0.5.0 — 2026-09-01
 
 No breaking changes. An application that adds nothing sees no behaviour change,
