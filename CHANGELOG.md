@@ -3,7 +3,7 @@
 Notable changes to `audit_log`. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.4.0 — 2026-09-01
 
 ### Added
 
