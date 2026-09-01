@@ -218,4 +218,29 @@ Rails.application.config.to_prepare do
       "Redacted #{scope} for #{p[:target_type]} ##{p[:target_id]} " \
         "(#{p[:reason]}), by #{p[:redacted_by] || "System"}"
     }
+
+  # The pair that narrates a deliberate hole in the change record (DESIGN §25).
+  # AuditLog::Capture RAISES if either is missing rather than emitting nothing,
+  # which is why these are the only two library actions whose absence is an error
+  # instead of a silence.
+  AuditLog::Registry.register "audit.capture_disabled",
+    requires: %i[reason],
+    description: "Layer 1 trigger capture was disabled. Field-level diffs stop " \
+                 "being recorded from this point until capture is resumed.",
+    summary: lambda { |p|
+      "Audit capture disabled for #{Array(p[:tables]).size} tables: #{p[:reason]}"
+    }
+
+  # DELIBERATELY UNDECLARED, and the second of the dummy app's two. `requires:`
+  # lists what an entry cannot RENDER without, and this one renders from nothing:
+  # `disabled_at` is absent whenever the marker was unreadable, and the sentence
+  # is complete without it. Declaring it here would contradict the entry, which is
+  # the same argument that keeps `columns` out of `audit.redaction`'s list.
+  AuditLog::Registry.register "audit.capture_resumed",
+    description: "Layer 1 trigger capture was resumed. The window in between is a " \
+                 "gap in the change record, and there is no backfill for it.",
+    summary: lambda { |p|
+      since = p[:disabled_at].presence
+      "Audit capture resumed#{" (disabled since #{since})" if since}"
+    }
 end

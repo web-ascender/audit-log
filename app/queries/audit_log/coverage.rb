@@ -61,6 +61,29 @@ module AuditLog
 
     def exempt_tables = AuditLog.config.unaudited_tables.keys
 
+    # THE THIRD STATE: capture deliberately disabled, per the marker
+    # AuditLog::Capture stamps. DESIGN §25.
+    #
+    # Without this, a disabled audit log fails coverage with "Untracked tables:
+    # orders, products, ... Add attach_audit_trigger to a migration" -- which is
+    # true, useless, and actively misleading. It sends somebody to re-attach one
+    # table at a time, and `rails generate audit_log:trigger orders` SUCCEEDS
+    # while it is disabled (attach only collides with an existing trigger, and
+    # there is none), so the repair half-works and the marker is left standing
+    # over a schema that no longer matches it.
+    #
+    # It does NOT make the report pass. A disabled audit log must never come back
+    # OK, for the reason `retention_action` was removed: an option that lets a
+    # forcing function be satisfied while the thing it forces is switched off is
+    # weaker than no option. What this changes is only what the failure SAYS.
+    def capture_disabled? = !capture_marker.nil?
+
+    def capture_marker
+      return @capture_marker if defined?(@capture_marker)
+
+      @capture_marker = AuditLog::Capture.status(connection: @connection)
+    end
+
     # The finding: a table that is neither audited nor exempted.
     def missing
       @connection.tables - audited_tables - exempt_tables - partition_tables
@@ -82,8 +105,8 @@ module AuditLog
     end
 
     def ok?
-      missing.empty? && stale_exemptions.empty? && unreasoned_exemptions.empty? &&
-        !audits_the_audit_tables?
+      !capture_disabled? && missing.empty? && stale_exemptions.empty? &&
+        unreasoned_exemptions.empty? && !audits_the_audit_tables?
     end
 
     # For the rake task and for a spec failure message.
@@ -91,7 +114,23 @@ module AuditLog
       return "OK: every table is either audited or explicitly exempted." if ok?
 
       lines = []
-      if missing.any?
+
+      if capture_disabled?
+        lines << "CAPTURE IS DISABLED. Layer 1 is writing nothing."
+        lines << "  disabled at: #{capture_marker["disabled_at"] || "(unrecorded)"}"
+        lines << "  reason:      #{capture_marker["reason"] || "(unrecorded)"}"
+        lines << "  tables:      #{Array(capture_marker["triggers"]).size} detached"
+        lines << "  now untracked: #{missing.join(", ")}" if missing.any?
+        lines << ""
+        lines << "  This is a deliberate state, not a missing migration, so those tables"
+        lines << "  need no attach_audit_trigger -- they need capture resumed:"
+        lines << "    rails db:migrate:down VERSION=<the audit_log:disable migration>"
+        lines << "  or `rails generate audit_log:enable` if that migration is gone."
+        lines << ""
+        lines << "  It fails anyway, on purpose. A disabled audit log is not OK, and"
+        lines << "  the honest options are to resume capture or to accept a red check"
+        lines << "  for as long as the pause lasts. Do not skip the spec."
+      elsif missing.any?
         lines << "Untracked tables: #{missing.join(", ")}"
         lines << "  Add attach_audit_trigger to a migration, or add the table to"
         lines << "  AuditLog.config.unaudited_tables with a written reason."

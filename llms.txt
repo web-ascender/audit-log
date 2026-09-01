@@ -13,8 +13,8 @@ This is the packaged form of the [llms.txt](https://llmstxt.org) convention: the
 are file paths relative to this file, inside the installed gem rather than on a website.
 Resolve the gem root with `bundle info audit_log --path`.
 
-**Read this file, then follow one link.** The three documents below total ~6,000 lines and
-are not meant to be read end to end.
+**Read this file, then follow one link.** The three documents below run to several thousand
+lines and are not meant to be read end to end.
 
 ## The documents
 
@@ -54,8 +54,23 @@ are not meant to be read end to end.
 - **Operate it** — [Rake tasks](README.md#rake-tasks). `audit_log:partitions` daily is the
   only task that belongs in cron: a missing future partition is a **write-path outage**, not
   a degraded report.
-- **Erase personal data from the log** — `audit_log:redact` under
-  [Run when something needs it](README.md#run-when-something-needs-it).
+- **Erase personal data from the log** —
+  [Redacting values under an erasure request](README.md#redacting-values-under-an-erasure-request).
+  Values go, structure stays: `changed_columns` is never touched, so *"the email changed at
+  14:02, by Jane"* stays provable. It is `FIELDS=`, never `COLUMNS=` — that is a reserved
+  shell variable and it **redacts nothing while reporting success**. DESIGN §13.
+- **Skip the log for one bulk operation** —
+  [Bypassing the log for a bulk load](README.md#bypassing-the-log-for-a-bulk-load).
+  `AuditLog.without_logging(reason:, by:)`, gated by `config.bypass_allowlist`, which is
+  **empty by default**. It narrates itself with an `audit.bypass` event, and it suppresses
+  layer 1 only. DESIGN §10.
+- **Stop auditing, or pause and resume it** —
+  [Stopping auditing, and starting again](README.md#stopping-auditing-and-starting-again).
+  `audit_log:disable` writes one reversible migration that detaches the triggers and keeps
+  every table, partition and row; `db:migrate:down` is the way back, and the cycle is that
+  one migration. Do **not** add a flag the trigger reads instead — it would pass
+  `audit_log:coverage` while auditing nothing, which is why coverage FAILS on purpose while
+  capture is off. DESIGN §25.
 - **Attach to an existing table, install outside `public`, control the transaction, or run
   multiple databases** — [Advanced](README.md#advanced).
 - **Decide whether to use this instead of paper_trail or audited** —

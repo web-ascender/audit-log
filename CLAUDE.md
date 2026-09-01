@@ -22,8 +22,8 @@ it is, and the section numbers cited from source comments (`plan §6.1`,
 | `llms.txt` | an agent in a HOST APP using the gem | a summary and a routing table into README/DESIGN. **Packaged** (`spec.files`); `CLAUDE.md` deliberately is not. DESIGN §24 |
 
 The list of deliberate decisions below is deliberately terse and deliberately
-duplicated from `DESIGN.md` — it exists so an agent that will not read a
-2,000-line document still does not "fix" a decision. **When the two disagree,
+duplicated from `DESIGN.md` — it exists so an agent that will not read that
+whole document still does not "fix" a decision. **When the two disagree,
 `DESIGN.md` is right; fix this file.**
 
 Two layers, joined by a `request_id` (UUIDv7):
@@ -99,7 +99,7 @@ Update it when you change behaviour.
 | Ruby | **>= 3.3** — the floor is `SecureRandom.uuid_v7` (DESIGN §2.1), not a preference. 3.3.0 exactly also cannot run Rails 8.1, for a reason of Rails' own. Developed on 4.0.6. |
 | Rails | **`~> 8.0`** — floor 8.0 (DESIGN §2.2), and a real ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. Developed on 8.1.3.1. |
 | PostgreSQL | **>= 16.** Developed on 18.6, port 5438 — not the workspace default 5437. CI runs 16 and 18; DESIGN §20 is the authority and says the design "targets PG 16 and requires nothing newer". Verified: the whole suite passes on 16.13. |
-| Tests | RSpec against `spec/dummy` (471 examples), on every push via GitHub Actions — six legs: Ruby 3.3/4.0.6 × Rails 8.0/latest × PG 16/18 |
+| Tests | RSpec against `spec/dummy` (508 examples), on every push via GitHub Actions — six legs: Ruby 3.3/4.0.6 × Rails 8.0/latest × PG 16/18 |
 | Runtime deps | `rails`, `csv` (export). **`pg` and `pagy` deliberately are not** — the host app picks its own `pg` build, and its own pagination gem. `AuditLog::Pagination` is this library's own keyset pager precisely so a `pagy` constraint does not propagate into the host. |
 
 ```bash
@@ -872,6 +872,98 @@ Do not "fix" these without reading the linked reasoning first.
   not enforced, consistent with the rest of the feature: dimensions are ids and
   scope labels, not values.
 
+### Disabling capture (DESIGN §25)
+
+- **Capture is disabled by DETACHING the triggers, never by a flag the trigger
+  function reads, and the loudness IS the feature.** A fifth early exit beside
+  `audit.bypass` reading `ALTER DATABASE ... SET audit.disabled` is cheaper, needs
+  no locks and survives a restart — and it would pass `rake audit_log:coverage`
+  and the shared example while auditing nothing, because every trigger would still
+  be attached and `structure.sql` byte-identical. `Bypass` gets away with a GUC
+  because it is bounded by a block and narrates itself before opening; a durable
+  flag is neither. Do not add one, and do not add `config.enabled = false` either
+  — `retention_action`'s argument.
+- **It is a GENERATOR, not a rake task, and that is not a style choice.** A rake
+  task that drops triggers leaves capture off with `db/structure.sql` still
+  claiming it is on: the schema dump becomes a lie and the one artifact that would
+  have disclosed the change is the one that does not. A migration makes the six
+  deleted `CREATE TRIGGER` lines and the marker comment one reviewable diff, and
+  `schema_migrations` answers "when did capture stop".
+- **The cycle is ONE reversible migration, indefinitely.** `db:migrate:up`
+  disables, `db:migrate:down` resumes, either can be re-run. There is deliberately
+  no re-disable generator — a ping-pong accumulating one migration per flip makes
+  `db/migrate` a log of somebody's indecision.
+- **The snapshot is READ from `pg_trigger.tgargs`, never reconstructed, and three
+  details in the decode are load-bearing.** (1) `encode(tgargs, 'escape')` plus a
+  split, not a regex over `pg_get_triggerdef` — the model name is an arbitrary
+  string this library never validated, so parsing the rendered DDL has a quoting
+  hole. (2) `tgnargs >= 3`, because the bytea's null terminator leaves a trailing
+  empty string and without the guard every table looks as though it declared a
+  facet. (3) The MERGED exclusion list is handed back whole as `exclude:` — it
+  looks redundant with `default_excluded_columns` and is not, since
+  `attach_audit_trigger` computes `(defaults + exclude).uniq`, so the merged list
+  reproduces the original exactly AND still reproduces every exclusion if a
+  default is later removed. Subtracting today's defaults reads better and puts
+  `password_digest` back in the diffs the day somebody edits that config.
+  `capture_spec` pins byte-identical `pg_get_triggerdef` across a full cycle.
+- **The snapshot is written TWICE and neither copy is redundant.** In the
+  migration as reviewable literals (the `bypass_allowlist` argument: reviewable in
+  a diff before it runs), and in the marker because the migration can be squashed
+  or absent from the checkout somebody is holding while capture is off — and by
+  then the triggers are gone and the catalog cannot say what they were.
+  `audit_log:enable` reads the marker and REFUSES on an empty snapshot rather than
+  guessing model names from table names, which is `RecordLabel`'s sniffing refusal
+  applied where it would mislabel `record_type` forever.
+- **The marker is a table comment on the `audit_changes` PARENT**, in the
+  `RETIRED_MARKER`/`ROLLUP_MARKER`/`FROZEN_MARKER` idiom. The parent is safe
+  because `frozen_partitions` joins through `pg_inherits` and cannot see it. A
+  corrupt payload reports "present, no detail" rather than raising — the
+  unparseable-`RETIRED_MARKER` posture — and `snapshot` then returns empty, which
+  is what makes the enable generator refuse.
+- **Layer 2 keeps working, and that is what makes the gap legible rather than
+  blank.** A paused app still writes `audit_events`, so the timeline keeps its
+  narrative and loses the field changes beneath it. Do not "finish the job" by
+  silencing layer 2 from the library side.
+- **`Capture.disable!`/`enable!` RAISE when their registry entry is missing** —
+  the one place here where an unregistered action is an error rather than a
+  silence, because an unnarrated audit gap leaves the hole as the only evidence.
+  That guard exposed a real pre-existing bug: `audit.bypass`,
+  `audit.bypass_completed` and `audit.redaction` were registered ONLY by
+  `spec/dummy`, so `Bypass`'s "the bypass logs itself" promise did not hold in any
+  adopting app. All five library actions are now in the install template.
+- **`audit.capture_resumed` declares no `requires:` on purpose**, so `spec/dummy`
+  now has TWO deliberately-undeclared entries. `requires:` lists what an entry
+  cannot RENDER without, and this one renders from nothing — `disabled_at` is
+  absent whenever the marker was unreadable. `payload_contract_spec` pins both with
+  a reason for each; do not "finish the job" on either.
+- **`Coverage` gains a third state and STILL fails.** `capture_disabled?` exists
+  so the report says "capture is disabled, since, because" instead of listing
+  tables and advising attach migrations — which is the wrong repair, and
+  `audit_log:trigger` SUCCEEDS while disabled, half-fixing it and leaving the
+  marker over a schema that no longer matches. `ok?` is false and the shared
+  example fails, checked FIRST because it changes what the next example means. Do
+  not soften either.
+- **`SET LOCAL lock_timeout`, `quote`d, and no advisory lock.** `DROP TRIGGER`
+  takes ACCESS EXCLUSIVE (reads and writes) and `CREATE TRIGGER` SHARE ROW
+  EXCLUSIVE (writes) — measured on 18.6 from `pg_locks`. `SET LOCAL` reverts with
+  the migration's transaction and needs no restore; `maintenance_lock_timeout` is
+  a PG interval string (`"5s"`), NOT a Duration, so `.in_milliseconds` raises.
+  `Partitions::MAINTENANCE_LOCK_KEY` is deliberately not taken — it serialises
+  three operations that corrupt each other, and this shares no state with them.
+- **The DDL stays in the migration, using the published helpers.** `Capture` owns
+  the marker and the narration only. A second copy of attach/detach inside
+  `Capture` would be the `operation_name` mistake, and would lose
+  `validate_identifiers!` and the `information_schema` facet check.
+- **One genuinely lossy case, and it must stay stated.** A record created AND
+  deleted inside the window leaves no trace it ever existed; everything else is a
+  hole with visible edges (the next change still yields a full `[old, new]` pair
+  off the live row, and a later DELETE still snapshots it). The generator prints
+  it and the README states it, because a gap somebody accepted knowingly is a
+  control and this is the part they need to accept it knowingly.
+- **`Schema.uninstall!` is the OTHER thing** — it `DROP TABLE ... CASCADE`s both
+  audit tables. The README names the asymmetry so nobody discovers which one they
+  ran.
+
 ### Documentation for coding agents (DESIGN §24)
 
 - **`llms.txt` is in `spec.files` and `CLAUDE.md` is deliberately not, and both
@@ -918,7 +1010,8 @@ browsable results. `config.page_size` is the only knob.
 
 **`DESIGN.md` §21 is the authority on the three generators it covers**; §21.3 is
 this one. The fourth, `audit_log:dimensions`, is a retrofit path and its reasoning
-lives in §23 with the rest of that feature. `audit_log:install`'s agent-skill step
+lives in §23 with the rest of that feature; the fifth and sixth,
+`audit_log:disable` and `audit_log:enable`, live in §25 with theirs. `audit_log:install`'s agent-skill step
 is §24's, not §21's — it is a documentation-distribution decision that happens to be
 implemented in a generator.
 Everything below is the terse copy.
@@ -1126,7 +1219,7 @@ one. Do not reintroduce it.
 ## Testing
 
 ```bash
-bundle exec rspec                         # 471 examples, against spec/dummy
+bundle exec rspec                         # 508 examples, against spec/dummy
 bundle exec rspec spec/audit_log          # the library proper
 bundle exec rspec spec/requests           # the auditor UI and the CSV export
 bundle exec rspec spec/preview.rb         # dev tool: renders 19 screens to spec/dummy/public/
@@ -1155,13 +1248,14 @@ property from different angles — **that nothing goes missing without saying so
 | `archive_spec` | a partition is dropped without a verified export |
 | `redaction_spec` | redaction removes structure, not just values |
 | `association_labels_spec` | a label replaces a stored id, or a failed lookup reads as an absent one |
-| `readme_spec` | the README's contents table drifts from its headings, an internal link dangles, a rake task exists that the docs never mention, or `llms.txt` routes into a heading that is gone, cites a dead `§n`, or falls out of `spec.files` |
+| `readme_spec` | the README's contents table drifts from its headings, an internal link dangles, a rake task exists that the docs never mention — **nested ones included; the old two-space regex checked 6 of 13 and skipped every retention task** — or `llms.txt` routes into a heading that is gone, cites a dead `§n`, or falls out of `spec.files` |
 | `record_timeline_spec` | an unsubjected action vanishes from a record's narrative, or a capped section does not admit it is capped |
 | `timeline_spec` | the published host-facing contract changes shape, a unit of work is dropped or repeated across pages, an event that wrote no change row falls off the timeline, or `headline` starts inventing sentences |
 | `install_generator_spec` | the ControllerContext include lands ahead of authentication, or a skipped step reports success |
 | `event_transport_spec` | layer 2 silently stops emitting on one end of `rails ~> 8.0`, or takes the wrong branch for the Rails it is on |
 | `schema_isolation_spec` | the library reverts to assuming `public` — rows filed in the wrong schema's table, or a provisioning check answered from another schema's state |
 | `dimensions_spec` | a facet stops reaching the writes no callback sees, a faceted feed silently answers a narrower question than its screen claims, or a cleared filter turns into a scan of the whole log |
+| `capture_spec` | capture stops without saying so, or resumes under different arguments than it had — a `record_type` naming the wrong model, an exclusion silently dropped so a password column re-enters the diffs |
 
 A change that makes any of those pass *more easily* is a regression.
 
@@ -1222,7 +1316,7 @@ Three things about it are load-bearing rather than boilerplate:
   gemspec or consciously narrow the check — do not delete it.
 
 **Both Rails legs are exercised, and they take different code paths.** Verified
-2026-09-01 by running the whole suite on each: 471 examples pass on 8.0.5.1 and on
+2026-09-01 by running the whole suite on each: 508 examples pass on 8.0.5.1 and on
 8.1.3.1. `Rails.respond_to?(:event)` is FALSE on 8.0 and TRUE on 8.1, so
 `AuditLog.notify`'s fallback runs on one leg and `Rails.event` on the other —
 `event_transport_spec` asserts which branch it is on rather than assuming.
@@ -1232,7 +1326,8 @@ Three things about it are load-bearing rather than boilerplate:
 
 ## Designed but not yet built
 
-Nothing. **§23 (dimensions) shipped 2026-09-01** — its terse entries are in
+Nothing. **§25 (disabling capture) shipped 2026-09-01** — its terse entries are
+under "Disabling capture" above. **§23 (dimensions) shipped 2026-09-01** — its terse entries are in
 "Things that look like bugs but are deliberate" above, under "Dimensions", and its
 staged README appendix is now the README's "Dimensions" section. §23 keeps the
 reasoning and its rejected alternatives; read those before changing anything in

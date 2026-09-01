@@ -31,6 +31,7 @@ module AuditLog
     ActorLabel:        "audit_log/actor_label",
     Archive:           "audit_log/archive",
     Bypass:            "audit_log/bypass",
+    Capture:           "audit_log/capture",
     Configuration:     "audit_log/configuration",
     Console:           "audit_log/console",
     Context:           "audit_log/context",

@@ -103,14 +103,22 @@ the host app. What is lost is the fan-out — the ability to register a second s
 the same event to observability without touching domain code. That is a real convenience and not a
 load-bearing dependency, which is the whole reason the floor is 8.0 rather than 8.1.
 
-**What is not settled is whether that branch runs.**  **[added 2026-08-29]** CI tests 8.1 only
-(§16), so the single path that distinguishes an 8.0 host from an 8.1 one is the single path nothing
-executes. Treat 8.0 as *claimed and unverified* — the standing the Ruby floor had right up until a
-leg ran there and failed.
+**That branch is now verified rather than claimed.**  **[revised 2026-09-01]** This section used to
+say CI tested 8.1 only, and that the single path distinguishing an 8.0 host from an 8.1 one was the
+single path nothing executed — *"treat 8.0 as claimed and unverified"*. A `rails: ["8.0", "latest"]`
+axis has since been added (§16), and `event_transport_spec` asserts **which branch is taken**, in
+both directions, so the leg proves the fallback works rather than merely that nothing raised. It
+found one real breakage on the way in: `spec/dummy` pinned `config.load_defaults 8.1`, which raises
+`Unknown version "8.1"` on 8.0 before a single example loads.
 
-Also required, and available in the 8.x line: `config.active_job.enqueue_after_transaction_commit`,
-which keeps a rolled-back transaction from leaving an enqueued job behind (§6.4). Confirm the
-setting is honored by the adapter in use before relying on it.
+**`enqueue_after_transaction_commit` goes on the JOB CLASS, not in `application.rb`.**
+**[corrected 2026-09-01]** This section used to list
+`config.active_job.enqueue_after_transaction_commit` as "also required" of the host. It is not
+merely optional — it **does nothing**: ActiveJob's railtie explicitly filters that key out, so the
+setting reads as applied and has no effect, and a rolled-back transaction goes on leaving an
+enqueued job behind. `AuditLog::JobContext` sets `self.enqueue_after_transaction_commit = true` on
+the class instead (§6.4), which is the spelling that is honoured, and the host has nothing to
+configure. Measured, not read: see the warning in §6.4.
 
 **There is also a ceiling: `~> 8.0`, i.e. below 9.0.**  **[added 2026-08-28]** Not a formality.
 `TransactionStamp` prepends `raw_execute`, which is a *private* adapter method — §6.1 calls it the
@@ -575,6 +583,17 @@ Changing a table's exclusions or model name is **detach-then-attach**
 the trigger name derives from the table alone, so a second attach collides with `42710` instead of
 letting two triggers coexist on one table and write two rows per change under different exclusion
 sets. It is not retroactive — rows already written keep the diffs they were written with.
+
+*Which paths actually reach the collision*, since the obvious one does not:  **[added 2026-09-01]**
+re-running a migration is prevented by `schema_migrations`, so the reachable cases are two branches
+each attaching the same table, a later "fix" migration attaching a trigger the table already has,
+and a migration attaching to a table whose trigger already arrived via `db/structure.sql` — which
+carries every trigger, since `schema_format = :sql` is required. Postgres DDL is transactional and
+Rails wraps each migration, so the duplicate fails with nothing half-applied. What makes the
+collision worth having rather than merely tolerable is the shape of the alternative: a name
+incorporating the model or the exclusion list would let the second attach **succeed**, and
+double-counted audit rows are invisible until somebody counts and wrong in every rollup and
+reconciliation downstream.
 
 **The real constraint is the table's shape, and it fails late.** The trigger function assigns
 `rec_id bigint := NEW.id`, and `audit_changes.record_id` is `bigint NOT NULL`. An `id: false` join
@@ -2918,10 +2937,10 @@ The failure mode to design against is **silent under-auditing**, so tests assert
 behavior.
 
 > **They run on every push.**  **[added 2026-08-28]** A forcing function that runs when someone
-> remembers is not one. CI executes the suite against `spec/dummy` across four legs — two Ruby, two
-> PostgreSQL — each dimension being the floor the project claims and the version it is developed on.
-> The
-> floor leg is not ceremony — it was added claiming 3.2, failed on `SecureRandom.uuid_v7` being
+> remembers is not one. CI executes the suite against `spec/dummy` across **six legs** — two Ruby,
+> two Rails, two PostgreSQL, less the two combinations that would only re-test a middle — each
+> dimension being the floor the project claims and the version it is developed on. The floor legs
+> are not ceremony: the Ruby one was added claiming 3.2, failed on `SecureRandom.uuid_v7` being
 > 3.3+, and so caught a gemspec that would have broken every correlated write in an adopting app.
 >
 > Three CI findings are recorded here because each was invisible on a developer machine and each
@@ -2943,9 +2962,16 @@ behavior.
 > reference that file is the only statement of what may be done with the code that travels with the
 > code.
 >
-> **A `Rails 8.0` leg is still missing**, and the gap is exactly the one the Ruby matrix closed:
-> `Rails.event` does not exist there, so `AuditLog.notify`'s documented fallback path (§7) is
-> untested at the floor the gemspec claims.
+> **The `Rails 8.0` leg closed the last gap of that kind.**  **[revised 2026-09-01]** This entry
+> used to say the leg was missing, on the argument the Ruby matrix had already made: `Rails.event`
+> does not exist on 8.0, so `AuditLog.notify` takes a **different branch** there (§2.2, §7) — the
+> one every adopter at the floor would use, and the only one nothing ran. It exists now, and
+> `event_transport_spec` asserts which branch is taken in both directions, so the leg proves the
+> fallback works rather than merely that nothing raised.
+>
+> `latest` is deliberately **unpinned** and is not a synonym for 8.1: it is the newest Rails the
+> gemspec admits, so the ceiling leg follows 8.2 the day it ships without anybody editing the
+> workflow. Pinning both ends would quietly stop testing the ceiling at the moment it moved.
 
 - **Coverage guard:** a spec that enumerates every table in the schema, subtracts an explicit
   opt-out list, and fails if any remaining table lacks an `_audit` trigger. Adding a table without
@@ -3157,14 +3183,16 @@ longer the retention window in Q2 turns out to be.
 > Numbered last because these section numbers are stable (see the note at the top), not because
 > generators are an afterthought. Referenced from §5.1, §5.2 and §11.2b.
 
-Three generators ship: `audit_log:install`, `audit_log:trigger` (§5.1) and
-`audit_log:views:activity`. They are in this document rather than only in `README.md` because two
+**Three of the six generators are covered here**: `audit_log:install`, `audit_log:trigger` (§5.1)
+and `audit_log:views:activity`. The other three are documented with the features they belong to —
+`audit_log:dimensions` in §23, and `audit_log:disable` / `audit_log:enable` in §25 — but §21.1's
+rule governs all six. They are in this document rather than only in `README.md` because two
 of the decisions below were *defects first* — an installed app whose every audit row carried a NULL
 actor, and a re-run that silently reverted an authorization rule — and both are the same failure
 this library exists to prevent, arriving through the one code path that runs before anybody is
 watching.
 
-### 21.1 The rule both generators follow: never report success for work they did not do
+### 21.1 The rule every generator follows: never report success for work they did not do
 
 An installer that cannot find `app/controllers/application_controller.rb`, prints a cheerful green
 line, and exits has produced an application that audits everything faithfully and attributes none
@@ -3918,7 +3946,8 @@ It is adopted here anyway, with links as **file paths relative to the gem root**
 because the shape is right even though the transport is not: a short summary plus a routing table
 is what a reader with no context needs, and the alternative spellings would each have been worse.
 A fourth prose document would be a fourth thing to keep in step. A single concatenated
-`llms-full.txt` of README and DESIGN is 6,000 lines of the two documents that already exist. This
+`llms-full.txt` of README and DESIGN is several thousand lines of the two documents that already
+exist. This
 gem is proprietary (`allowed_push_host` is deliberately unusable, §22's header), so there is no
 public documentation site to serve a real one from, and there will not be.
 
@@ -3970,3 +3999,212 @@ the bundle. The gap here was discovery of static files, and a static file closed
 **No generated content that varies with the gem version.** Everything in the skill would still be
 true at 0.1.0 and at 2.0. The moment a generated pointer needs to know which version it points at,
 it has stopped being a pointer.
+
+---
+
+## 25. Disabling capture, and resuming it  **[added 2026-09-01; built 2026-09-01]**
+
+Two questions, and only the second is a cycle. *"I am removing the gem and do not want triggers
+left behind writing to tables nothing reads."* And *"I want capture to stop for a window — a bulk
+migration too large for `AuditLog::Bypass`, a staging database, a cost decision — and to resume
+afterwards with the audit log intact and a gap in it I have accounted for."*
+
+Both are one mechanism: **DROP the triggers, keep everything else.** The tables, the partitions,
+the rows and the auditor UI are untouched. `AuditLog::Schema.uninstall!` is the other thing
+entirely — it `DROP TABLE ... CASCADE`s both audit tables — and the asymmetry between the two is
+worth naming in the README rather than leaving somebody to discover which one they ran.
+
+### Why detaching, and not a flag the trigger reads
+
+The cheaper design is a fifth early exit in `audit_row_change()` beside `audit.bypass`, reading a
+setting made durable with `ALTER DATABASE … SET audit.disabled`. It needs no locks, keeps every
+trigger attached, survives a restart, and is a one-line toggle in both directions. It was designed
+in full before being rejected.
+
+It is also the one thing this library must not build: **it would pass `rake audit_log:coverage` and
+the shared example while auditing nothing.** Every table would still carry its trigger, `pg_trigger`
+would still vouch for it, `db/structure.sql` would be byte-identical, and capture would be off —
+invisible to the forcing function whose entire job is noticing exactly that. §16's argument about
+forcing functions is that they force nothing if they can be satisfied while the thing they force is
+switched off; a durable GUC is that hole, installed deliberately.
+
+`Bypass` gets away with a GUC for two reasons that do not transfer. It is scoped to a block, so the
+window closes whether or not anybody remembers to close it, and it narrates itself before it opens.
+A durable flag is neither bounded nor narrated.
+
+So detaching is the honest disable **because** it is loud. Coverage fails; `Coverage#report` reads
+the marker below so that it fails saying *"capture is disabled, since this date, for this reason"*
+rather than listing six tables and telling somebody to write attach migrations.
+
+### Why a migration and not a rake task
+
+Every other operational verb in this library is a rake task, and this one is deliberately not.
+
+A rake task that drops triggers in production leaves capture off and `db/structure.sql` still
+claiming it is on. The schema dump becomes a lie, and the one artifact that would have disclosed
+the change is the one that does not. Because `schema_format = :sql` is required of the host anyway
+(§2), a migration gets three things for free: the deleted `CREATE TRIGGER` lines are a reviewable
+diff, the marker comment appears beside them in the same diff, and `schema_migrations` answers
+"when did capture stop".
+
+It also puts the snapshot somewhere it can be read before it is run. `down` carries literal
+`attach_audit_trigger` arguments rather than a lookup, so what comes back is reviewable rather than
+trusted — the same argument `bypass_allowlist` makes for being a config file rather than a runtime
+grant.
+
+**The cycle is one migration, reversible, indefinitely.** `db:migrate:up` disables, `db:migrate:down`
+resumes, and either can be run again. There is deliberately no second "re-disable" generator: a
+ping-pong that accumulates one migration per flip would make the migration directory a log of
+somebody's indecision, and Rails already has the verb.
+
+### The round trip is exact, and that is a catalog property rather than care
+
+`pg_trigger.tgargs` holds the arguments the trigger was created with — the merged exclusion list,
+the model name, and the facet list if there is one. So the snapshot is *read*, never reconstructed:
+`AuditLog::Capture.attached` decodes `tgargs` and `MigrationHelpers#attach_audit_trigger` replays
+it. Measured rather than assumed — `capture_spec` asserts that `pg_get_triggerdef` is byte-identical
+across a full detach and re-attach, on both shapes (a table with facets and one without).
+
+Three details in that decode are load-bearing:
+
+- **`encode(tgargs, 'escape')` and a split, not a regex over `pg_get_triggerdef`.** The model name
+  is an arbitrary string this library never validated, so parsing the rendered DDL has a quoting
+  hole that reading the bytea does not.
+- **`tgnargs >= 3`.** The bytea ends with a null terminator, so the split runs off the end and
+  leaves an empty string. Without the guard every table looks as though it declared a facet, and
+  re-attaching would pass `TG_ARGV[2]` where the original had none.
+- **The merged exclusion list is handed back whole as `exclude:`.** It looks redundant with
+  `config.default_excluded_columns` and is not: `attach_audit_trigger` computes
+  `(defaults + exclude).uniq`, so the merged list reproduces the original argument exactly, and
+  still reproduces every exclusion the table had if a default is removed from the config in
+  between. Recovering the original `exclude:` by subtracting today's defaults reads better and
+  drops an exclusion the day somebody edits that list — a `password_digest` quietly re-entering
+  the diffs.
+
+### The snapshot is written twice, and neither copy is redundant
+
+**In the migration**, as reviewable literals — the copy that resumes capture in the ordinary case.
+
+**In the marker**, which is a table comment on `audit_changes`, in the idiom `AuditLog::Partitions`
+already uses three times (`RETIRED_MARKER`, `ROLLUP_MARKER`, `FROZEN_MARKER`). It carries the
+reason, the timestamp and the full snapshot.
+
+The second copy exists because the migration can be squashed, deleted, or simply absent from the
+checkout somebody is holding while capture is off in the database in front of them — and at that
+moment the triggers are gone and the catalog can no longer say what they were. Without it the
+recovery is guessing model names from table names, which is the sniffing §11.8 refuses to do,
+applied where it would silently mislabel `record_type` on every row written afterwards
+(`orders.created_by_id` points at `User`; de-suffixing gives `CreatedBy`). `audit_log:enable` reads
+the marker, and **refuses on an empty snapshot rather than inventing one.**
+
+It goes on the PARENT table, which no partition path ever comments on: `frozen_partitions` joins
+through `pg_inherits`, so it cannot see the parent and cannot clear this. A corrupt payload is
+reported as *present with no detail* rather than raising — the same posture as an unparseable
+`RETIRED_MARKER`, which is skipped rather than guessed at — and `snapshot` then comes back empty,
+which is what makes the enable generator refuse.
+
+### What this does not stop: layer 2
+
+`AuditLog.notify` and `AuditLog.audited` go on working. A paused application keeps writing
+`audit_events` rows, so the timeline keeps its narrative activities and loses the field changes
+beneath them.
+
+That is deliberate and it is not a half-measure — it is what makes the gap **legible** rather than
+blank. A screen that says *"Jane submitted order 4821"* with no diffs under it is reporting exactly
+what happened: the action was recorded, the field-level detail was not.
+
+**There is no `config.enabled = false`**, for the reason `retention_action` is gone (§8): a flag
+that silently no-ops the audit trail is a flag somebody flips, and a safe default is weaker than an
+absent option. An application that wants layer 2 off too stops calling it, or clears the registry —
+both of which are visible in its own code.
+
+### The narration is not optional, so its absence is a raise
+
+`EventSubscriber#emit` is `Registry[name] or return`, so an unregistered action writes nothing and
+reports nothing. For a deliberate gap in an audit log that is the worst outcome available: the hole
+would be the only evidence anything was turned off. So `Capture.disable!` and `Capture.enable!`
+**raise** when `audit.capture_disabled` / `audit.capture_resumed` are not registered — the one place
+in this library where a missing registry entry is an error rather than a silence.
+
+That guard exposed a pre-existing hole worth recording, because the fix is part of this feature.
+`audit.bypass`, `audit.bypass_completed` and `audit.redaction` were registered **only by
+`spec/dummy`** — not by the install generator's initializer template, and not mentioned in the
+README. So in every real adopting application, `Bypass.call`'s documented promise that *"the bypass
+logs itself"* silently did not hold, and a redaction wrote no `audit.redaction` row. All five
+library actions are now in the template, under a comment saying that deleting one does not disable
+a feature, it makes that feature stop narrating itself while going on working.
+
+`audit.capture_resumed` declares no `requires:`, and that is the correct reading of the rule rather
+than an omission: `requires:` lists what an entry cannot RENDER without, and this one renders from
+nothing. Its only payload key, `disabled_at`, is absent whenever the marker was unreadable. It is
+therefore the second deliberately-undeclared entry in `spec/dummy`, alongside `order.deleted`, and
+`payload_contract_spec` pins both with the reason for each.
+
+### Locks, measured
+
+Both directions are catalog-only and instant, and neither is free:
+
+| | Lock on the business table | Blocks |
+|---|---|---|
+| `DROP TRIGGER` | `ACCESS EXCLUSIVE` | reads and writes |
+| `CREATE TRIGGER` | `SHARE ROW EXCLUSIVE` | writes |
+
+Verified on 18.6 by reading `pg_locks` inside a transaction holding each. The risk is not duration
+but queueing: a pending `ACCESS EXCLUSIVE` blocks every lock request behind it, so an unbounded wait
+behind one long reader stalls the table for the whole wait. Both migrations therefore run under
+`SET LOCAL lock_timeout = config.maintenance_lock_timeout` — `SET LOCAL`, so it reverts with the
+migration's own transaction and needs no save-and-restore, and `quote`d rather than converted,
+because that setting is a PostgreSQL interval string (`"5s"`) and not a `Duration`.
+
+No advisory lock. `Partitions::MAINTENANCE_LOCK_KEY` serialises three operations that corrupt each
+other by interleaving (§8); this one shares no state with them, and taking their lock would couple
+two features that have nothing to say to each other.
+
+### The gap, stated rather than discovered
+
+Everything in the window is a hole with visible edges, except one thing.
+
+- Rows changed during the window have no `audit_changes` rows for those changes. The next change
+  after capture resumes still yields a complete `[old, new]` pair, because the diff reads
+  `to_jsonb(OLD)` off the live row — the same property §21's "attaching to an existing table"
+  section relies on.
+- A `DELETE` after capture resumes snapshots the whole final row, so a record that changed during
+  the window still leaves a full record behind when it goes.
+- **A record created AND deleted inside the window leaves no trace that it ever existed.** This is
+  the one genuinely lossy case, and it is the reason the generator prints it and the README states
+  it: a gap somebody accepted knowingly is a control, and this is the part they have to know to
+  accept it knowingly.
+
+There is no backfill and there could not be one. The rows that would describe the window were never
+written.
+
+### Coverage learns a third state
+
+Without it, a disabled audit log fails coverage with *"Untracked tables: orders, products, … Add
+`attach_audit_trigger` to a migration"* — true, useless, and the wrong repair. It sends somebody to
+re-attach table by table, and `rails generate audit_log:trigger orders` **succeeds** while capture is
+disabled (attach only collides with an existing trigger, and there is none), so the repair
+half-works and leaves the marker standing over a schema that no longer matches it.
+
+So `Coverage#capture_disabled?` reads the marker, and `report` leads with it instead of naming
+migrations. **`ok?` still returns false**, and the shared example still fails, checked *first*
+because it changes what the next example means. A disabled audit log must never come back green,
+for `retention_action`'s reason: an escape hatch that satisfies the forcing function while the thing
+it forces is off is weaker than no hatch. The honest options are to resume capture or to run red for
+as long as the pause lasts, and the failure message says so.
+
+### Alternatives considered and rejected
+
+- **A durable GUC read by the trigger.** Above. Passes the forcing function while auditing nothing.
+- **A `config.enabled = false`.** Above. `retention_action`'s argument.
+- **A rake task instead of a migration.** Above. Makes `structure.sql` lie.
+- **The snapshot in a new table.** It would appear in `structure.sql` as a table, need a
+  `unaudited_tables` entry of its own, and be one more thing for retention and coverage to know
+  about — all to hold a row that exists only while capture is off. A table comment is the idiom
+  this library already uses for exactly this shape of fact.
+- **`Capture` owning the DDL.** `attach_audit_trigger` / `detach_audit_trigger` are published
+  migration API that already validate identifiers and check declared facet columns against
+  `information_schema`. A second copy inside `Capture` would be the `operation_name` mistake —
+  encapsulating something that had been copied rather than shared.
+- **Emitting the events on `after_commit`.** §7's argument, unchanged: a failed narration must roll
+  the detach back, and `after_commit` cannot.

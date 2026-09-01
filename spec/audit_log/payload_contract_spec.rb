@@ -105,14 +105,25 @@ RSpec.describe "the registry payload contract" do
     }.to change(AuditLog::Event, :count).by(1)
   end
 
-  # The dummy app declares a contract for fourteen of its fifteen actions and
-  # leaves one undeclared on purpose, so both paths are exercised by an app
-  # rather than only by the examples above.
+  # The dummy app declares a contract for most of its actions and leaves exactly
+  # two undeclared on purpose, so both paths are exercised by an app rather than
+  # only by the examples above. Neither is an oversight and neither is to be
+  # "finished":
+  #
+  #   order.deleted        -- the only action that can be emitted with an EMPTY
+  #                           payload, which is the state shared/_event_payload
+  #                           renders as nothing and audit_ui_spec asserts on.
+  #   audit.capture_resumed -- renders from nothing by design (DESIGN §25). Its
+  #                           only payload key, disabled_at, is absent whenever the
+  #                           marker was unreadable, so requiring it would
+  #                           contradict a summary that is complete without it --
+  #                           the same reason `columns` is not required by
+  #                           audit.redaction.
   describe "the dummy app's own entries" do
-    it "declares a payload contract for all but the one deliberate exception" do
+    it "declares a payload contract for all but the two deliberate exceptions" do
       declared, undeclared = AuditLog::Registry.entries.values.partition(&:requires)
 
-      expect(undeclared.map(&:action)).to eq(%w[order.deleted])
+      expect(undeclared.map(&:action)).to contain_exactly("order.deleted", "audit.capture_resumed")
       expect(declared.size).to be >= 14
     end
 

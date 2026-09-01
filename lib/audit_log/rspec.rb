@@ -22,6 +22,27 @@ RSpec.shared_examples "an app with complete audit coverage" do
   # than the primary one.
   let(:audit_coverage) { AuditLog::Coverage.new }
 
+  # CHECKED FIRST, because it changes what the next example MEANS. With capture
+  # disabled every audited table is untracked, and the example below would report
+  # a wall of missing tables and tell somebody to write attach migrations for
+  # them -- true, useless, and the wrong repair. DESIGN §25.
+  #
+  # It is a failure and not a skip. A disabled audit log must not come back green,
+  # for the reason `retention_action` was removed: an escape hatch that lets the
+  # forcing function pass while the thing it forces is switched off is weaker than
+  # no hatch. The honest options are to resume capture or to run red for as long
+  # as the pause lasts.
+  it "is capturing at all" do
+    expect(audit_coverage.capture_disabled?).to be(false), <<~MSG
+      #{audit_coverage.report}
+
+      Layer 1 is detached, so no field-level diff is being recorded for any table.
+      Everything already recorded is intact -- the tables, the partitions, the rows
+      and the auditor UI are untouched, and resuming leaves a gap rather than a
+      corruption.
+    MSG
+  end
+
   it "audits every table that has not been explicitly exempted" do
     expect(audit_coverage.missing).to be_empty, <<~MSG
       Untracked tables: #{audit_coverage.missing.join(", ")}

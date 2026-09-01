@@ -30,7 +30,7 @@ the authority on *why* any of this is shaped the way it is.
   - [What the generator wrote](#what-the-generator-wrote)
   - [What a model needs](#what-a-model-needs)
 - [Registering and emitting events](#registering-and-emitting-events)
-  - [Registering actions (optional - recommended)](#registering-actions-optional---recommended)
+  - [Registering actions](#registering-actions)
   - [Emitting it: create, update, destroy](#emitting-it-create-update-destroy)
   - [An action that spans several writes](#an-action-that-spans-several-writes)
   - [Letting `audited` open the transaction](#letting-audited-open-the-transaction)
@@ -78,6 +78,9 @@ the authority on *why* any of this is shaped the way it is.
 - [Advanced](#advanced)
   - [Attaching to a table that already exists](#attaching-to-a-table-that-already-exists)
   - [Re-attaching, and changing a table's exclusions](#re-attaching-and-changing-a-tables-exclusions)
+  - [Redacting values under an erasure request](#redacting-values-under-an-erasure-request)
+  - [Bypassing the log for a bulk load](#bypassing-the-log-for-a-bulk-load)
+  - [Stopping auditing, and starting again](#stopping-auditing-and-starting-again)
   - [Installing into a schema other than `public`](#installing-into-a-schema-other-than-public)
   - [Transaction control in `audited`](#transaction-control-in-audited)
   - [Multi-database apps](#multi-database-apps)
@@ -105,20 +108,23 @@ attached — and no model has to opt in or even know.
 - **A callback-based gem cannot see `update_all`.** This one has no callbacks to
   bypass.
 - **One `request_id` per unit of work.** A form submit that writes a parent and
-  forty children reads as *one action with forty children*, not forty unrelated rows.
-- **The actor comes along for free** — including into background jobs, which also
-  record the request that enqueued them.
+  forty children reads as *one action with forty children*, not forty unrelated
+  rows.
+- **The actor comes along for free** — including into background jobs, which
+  also record the request that enqueued them.
 - **Coverage is a forcing function.** The build fails for any table that is
-  neither audited nor exempted *with a written reason*. You cannot forget a table.
+  neither audited nor exempted *with a written reason*. You cannot forget a
+  table.
 - **Two layers.** Field-level diffs (complete by construction) *plus* named
   business events with human sentences, joined by the same correlation id.
 - **A finished auditor UI at `/audit`**, served by the gem — actor activity,
   record history, action reports, out-of-band review, drill-down, CSV export. It
-  is not copied into your app and you do not maintain it; it upgrades with the gem.
+  is not copied into your app and you do not maintain it; it upgrades with the
+  gem.
 - **Filterable by your own facets.** Record a `customer_id` or a `department_id`
-  onto audit rows and ask "everything that happened for this customer" — including
-  the writes no callback ever saw. Optional, and an app that declares none pays
-  nothing.
+  onto audit rows and ask "everything that happened for this customer" —
+  including the writes no callback ever saw. Optional, and an app that declares
+  none pays nothing.
 - **Optional starter views** for your own pages, generated into your app and
   yours to rewrite. Plain CSS, Tailwind or Bootstrap.
 - **Built for volume from day one.** Monthly range partitions, automatic
@@ -199,7 +205,8 @@ rows constituted "submitting an order".
 
 [`audit-log-demo`](https://github.com/web-ascender/audit-log-demo) is a small
 Rails app that installs this gem the way the next section describes — seeded
-data, emitted events, and the generated activity views on real pages. It is the demo app the rest of this file refers to as *the reference app*.
+data, emitted events, and the generated activity views on real pages. It is the
+demo app the rest of this file refers to as *the reference app*.
 
 ---
 
@@ -252,8 +259,8 @@ domain, so nothing can infer it for you.
 Two things to know, both covered in
 [Attaching to a table that already exists](#attaching-to-a-table-that-already-exists):
 the table needs a `bigint` primary key named `id` or the first write after
-attaching fails, and there is **no backfill** — rows that predate the trigger
-have no history, so write the attach date down.
+attaching fails, and there is **no backfill** — rows that predate the trigger have
+no history, so write the attach date down.
 
 Flags: [`audit_log:trigger` options](#audit_logtrigger-options).
 
@@ -322,7 +329,6 @@ red because it **denies everyone** until you do. Running it again later adds a
 model and leaves your edits alone. See
 [Building an activity history](#building-an-activity-history-in-your-own-app).
 
-
 ### What the generator wrote
 
 Step 2 does all of this. Worth a look rather than a read — it reports anything it
@@ -369,15 +375,14 @@ You never pass the actor, IP, source, timestamp or `request_id`. All five come
 from `AuditLog::Current`, which `ControllerContext` populated in a
 `before_action` — the payload is only the domain detail.
 
-### Registering actions (optional - recommended)
+### Registering actions
 
-Actions with business significance should be registered in
-`config/initializers/audit_log.rb`. Registering is how you customize action labels and define the primary model type and id, so it can be
-queried correctly.
+Register the actions with business significance in
+`config/initializers/audit_log.rb`. An entry gives the action three things it does
+not otherwise have: a human sentence, the record it was about, and a name an
+auditor can filter and group by.
 
-**This step is optional, but highly recommended.** Layer 1 triggers have already written a field-level diff of every row the
-action touched, under the same actor and `request_id`. Registering gets you
-readability, not completeness — the difference between an auditor reading
+What you gain is readability — the difference between an auditor reading
 "Cancelled order SO-4471 (duplicate)" and reading four column diffs to infer it.
 
 ```ruby
@@ -404,7 +409,7 @@ AuditLog::Registry.register "order.cancelled",
 
 | | Shape | Purpose | Example | Stored on the row? |
 |---|---|---|---|---|
-| `summary:` <br><br> (required) | lambda → `String` | Describe a **specific occurrence**. Should usually include a noun, verb and some kind of human-friendly record descriptor | <span style="white-space: nowrap;">`"Submitted Order #{p[:number]}"`<span> | yes — `audit_events.summary`, rendered at emit and frozen |
+| `summary:` <br><br> (required) | lambda → `String` | Describe a **specific occurrence**. Should usually include a noun, a verb and some kind of human-friendly record descriptor | `"Submitted Order #{p[:number]}"` | yes — `audit_events.summary`, rendered at emit and frozen |
 | `subject:` <br><br> (optional - recommended) | lambda → `[type, id]`, optional | Track the model type and id (each occurrence) | `["Order", p[:order_id]]` | yes — `subject_type` / `subject_id`, indexed |
 | `description:` <br><br> (optional - recommended) | `String` | What this action means, in general | `"An order was submitted for fulfillment."` <br> (for an action registered as `"order.submitted"`) | no — it lives only in this initializer |
 | `requires:` <br><br> (optional) | `Array<Symbol>` | Payload keys this entry cannot render without. Emitting it without one raises instead of storing a sentence with a hole in it — see [Declaring a payload contract](#declaring-a-payload-contract) | `%i[order_id number reason]` | no — it is a check, not data |
@@ -431,14 +436,17 @@ glossary says everywhere — which is right: it documents what the name means no
 not a historical claim about any event.
 
 > [!NOTE]
-> A call to `AuditLog.notify(...)` (or `AuditLog.audited`) for an action that is **not** registered is a silent no-op:
->- the event still reaches any other `Rails.event` subscriber, which is how
->  analytics events stay out of the audit tables;
->- the change rows land as they always would, so the record layer stays complete;
->- the activity simply has no `headline`, and a timeline renders it as
->  `:change_only` — the diff, with no sentence over the top of it;
->- `bin/rails audit_log:reconcile` lists it, which is how this file fills in over
->  time instead of being an up-front project. This is the first thing to check when an action does not show up on `/audit`.
+> A call to `AuditLog.notify(...)` (or `AuditLog.audited`) for an action that is
+> **not** registered is a silent no-op:
+>
+> - the event still reaches any other `Rails.event` subscriber, which is how
+>   analytics events stay out of the audit tables;
+> - the change rows land as they always would, so the record layer stays complete;
+> - the activity simply has no `headline`, and a timeline renders it as
+>   `:change_only` — the diff, with no sentence over the top of it;
+> - `bin/rails audit_log:reconcile` lists it.
+>
+> **This is the first thing to check when an action does not show up on `/audit`.**
 
 ### Emitting it: create, update, destroy
 
@@ -560,14 +568,21 @@ def submit!(by:)
 end
 ```
 
-| Identity and input data <br> (data that will NOT change inside the block)| Outcomes / Calculated Data <br> (data only known inside the block) |
+| Identity and inputs <br> (values that will not change inside the block) | Outcomes <br> (values only known inside the block) |
 |---|---|
-|keyword-arguments pass in to `.audited(...)`|assign using block variable
+| pass as keyword arguments to `.audited(...)` | assign through the `audit` block variable |
 
 > [!CAUTION]
-> a key set in both places (kwargs and block assignment) will raise an error
+> **A key passed as a keyword *and* set in the block raises** — it does not
+> overwrite. Keyword arguments are evaluated before the block runs, so the keyword
+> holds the **pre-write** value; if the block changes it, it belonged in the block.
+> Nothing can prove a value is an input, so this collision is the one guard that
+> can exist.
+>
+> Within the block there is no such guard: a key the keywords never carried can be
+> assigned twice and the last write wins, silently. Same for `merge!`.
 
-`audit` block takes keys three ways, all equivalent:
+The `audit` collector takes keys three ways, all equivalent:
 
 ```ruby
 # assignment
@@ -619,7 +634,6 @@ That is the whole of the everyday API, and it assumes a single database. Savepoi
 Rails documents but does not have are in
 [Transaction control in `audited`](#transaction-control-in-audited); apps using
 `connects_to` need [Multi-database apps](#multi-database-apps).
-
 
 ### An action whose writes skip Active Record
 
@@ -706,7 +720,8 @@ the key, inside your transaction, so the change rolls back with it.
 
 Four things to know:
 
-- **Opt-in per entry.** An entry with no `requires:` is unchecked (allows anything and **nothing**!)
+- **Opt-in per entry.** An entry with no `requires:` is unchecked — any payload
+  passes, including an empty one.
 - **Extra keys pass, and are still stored.**
 - **A key present with a `nil` value counts as supplied** — `metadata` is stored
   `.compact`ed, so this is the only place that distinction survives.
@@ -716,11 +731,10 @@ The reasoning behind each is in [`DESIGN.md`](DESIGN.md) §7.
 
 ### Finding the actions you have not registered yet
 
-Skipping a `notify` is legal — the change is still fully audited at the record
-level, it just appears under the generic record view with no name on it. That is
-what `bin/rails audit_log:reconcile` reports: correlated changes with no
-registered action. Run it after adding controllers, and let it tell you which
-narratives are still missing.
+`bin/rails audit_log:reconcile` reports correlated changes with no registered
+action — the writes that happened under one `request_id` and have no sentence over
+them. Run it after adding controllers, and let it tell you which narratives are
+still missing.
 
 ---
 
@@ -794,13 +808,11 @@ The auditor UI is for auditors. For an *"activity history"* on your own
 **units of work**, each one carrying its narrative, that record's field changes,
 and the other records the same action touched.
 
-**The fast path is the generator**, below. Everything after it is what the
-generator produces and the contract underneath, for when you want to change it or
-write your own.
+**Start with the generator.** Everything after it — the worked example, the view
+written by hand, the value objects — is what it produces and the contract
+underneath, for when you want to change it or replace it.
 
 ### Generate it
-
-You do not have to write any of the above by hand:
 
 ```bash
 rails generate audit_log:views:activity Order Product Customer
@@ -879,8 +891,6 @@ exactly one element, because the field list is a CSS grid whose `<li>` is
 `display: contents`. Returning a label and its id as two elements gives valid
 markup, correct values and a scrambled page — the kind of thing only rendering
 finds.
-
----
 
 ### Writing the view yourself
 
@@ -998,9 +1008,20 @@ so gate it with your own policy layer.
 
 ### Bounding it
 
-`range:` narrows both halves of the union and is the biggest lever on cost: a
-30-day window touches 4 monthly partitions where an unbounded timeline touches
-all 72.
+`range:` narrows both halves of the union and is the biggest lever on cost. An
+unbounded timeline plans against **every partition your retention horizon holds**;
+a 30-day window plans against a handful, whatever that horizon is. Measured with
+`EXPLAIN` against a 36-month horizon — 72 monthly partitions across the two
+tables:
+
+| Bound | Partitions in the plan |
+|---|---|
+| unbounded | 72 |
+| `30.days.ago..` (endless) | 12 |
+| `30.days.ago..Time.current` | **4** |
+
+The full table, and why pruning survives the union and the `GROUP BY`, are in
+[`DESIGN.md`](DESIGN.md) §11.2b, *The date bound*.
 
 ```ruby
 AuditLog::Timeline.for(@order, range: 90.days.ago..Time.current)   # max age
@@ -1009,9 +1030,9 @@ AuditLog::Timeline.for(@order, range: (cutoff - 1.year)..cutoff)   # up to a dat
 
 Two rules for writing the range:
 
-- **Close it at the top, even when the top is "now."** `30.days.ago..` touches 12
-  partitions; `30.days.ago..Time.current` touches 4, for the same span. Pass an
-  endless range anyway and the library closes it for you.
+- **Close it at the top, even when the top is "now."** That is the difference
+  between the second and third rows above, for the same span. Pass an endless range
+  anyway and the library closes it for you.
 - **Pass Ruby times, not SQL.** `now() - interval '30 days'` defers pruning until
   after the planner has already opened every partition.
 
@@ -1027,9 +1048,6 @@ for that, and are in `as_json` too:
 indexed check per table — the difference between *"end of results"* and *"end of
 the window"*. Call it once, at the bottom of the last page. It is never called
 for you, because it deliberately looks below the bound.
-
-The full measurements, and why pruning survives the union and the `GROUP BY`, are
-in [`DESIGN.md`](DESIGN.md) §11.2b, *The date bound*.
 
 ### What the timeline covers
 
@@ -1158,13 +1176,13 @@ attach_audit_trigger :invoices, model: "Invoice",
                  shipping_location_id payment_provider_id]
 ```
 
-Every write to `invoices` now records those five values beside the diff — including
-`update_all`, a database cascade, raw SQL and a console session, because they are read
-from the row by the same trigger that writes the diff.
+Every write to `invoices` now records those five values beside the diff —
+including `update_all`, a database cascade, raw SQL and a console session,
+because they are read from the row by the same trigger that writes the diff.
 
-**Declare only what you will filter on.** Each facet costs index maintenance on every
-write to that table. A value you want to *read* on a screen belongs in the action's
-payload, which is free.
+**Declare only what you will filter on.** Each facet costs index maintenance on
+every write to that table. A value you want to *read* on a screen belongs in the
+action's payload, which is free.
 
 A name that is not a column on that table raises in the migration. That is the only
 enforcement in this feature, and it is there because the alternative is a facet that
@@ -1184,12 +1202,13 @@ page       = paginate(timeline.activity_keys)     # AuditLog::Pagination
 activities = timeline.activities(page.records)
 ```
 
-Any combination of the declared facets, in one index scan — you do not add an index per
-combination. The result is the same `Activity` objects a record timeline yields, so
-anything you already render for one works here unchanged.
+Any combination of the declared facets, in one index scan — you do not add an
+index per combination. The result is the same `Activity` objects a record
+timeline yields, so anything you already render for one works here unchanged.
 
-Values are normalised for you, so `department_id: 5` and `department_id: "5"` are the
-same query. On the relations directly, `AuditLog::Change.where_dimensions(...)` and
+Values are normalised for you, so `department_id: 5` and `department_id: "5"`
+are the same query. On the relations directly,
+`AuditLog::Change.where_dimensions(...)` and
 `AuditLog::Event.where_dimensions(...)` are the same normalisation.
 
 Unlike a record timeline, this one is **bounded by default** — 30 days, because an
@@ -1222,33 +1241,36 @@ Or on every event, taken from application state:
 config.default_dimensions = -> { { tenant_id: Current.tenant&.id, app_version: AppVersion.current } }
 ```
 
-Applied to every event, so no call site repeats them; a registry entry declaring the same
-key wins. The lambda takes no arguments on purpose: it supplies what is true of the *unit
-of work*, never of the action. Anything that varies per action belongs in the registry entry, where
-it is visible beside the summary. It must not raise — if it does, the event is still
-written, without them.
+Applied to every event, so no call site repeats them; a registry entry declaring
+the same key wins. The lambda takes no arguments on purpose: it supplies what is
+true of the *unit of work*, never of the action. Anything that varies per action
+belongs in the registry entry, where it is visible beside the summary. It must
+not raise — if it does, the event is still written, without them.
+
+Between them, the two halves cover each other: the trigger's facets reach every
+write, including the ones no callback sees, and an action's facets reach a unit
+of work whose writes landed in a table that declares none. A unit qualifies if
+either matched.
 
 ### Three things that affect what a filter returns
 
-- **It is not retroactive.** A facet declared today says nothing about yesterday. A filter
-  returns results from that migration forward; older rows do not match.
-- **A conjunction has to fit on one row.** Five facets on `invoices` combine freely.
-  `customer_id` from an order plus `product_id` from a line item matches nothing — no
-  single row carries both. Declare the facet on the table you will filter by.
-- **A record is filed under the value it held *after* the change.** An invoice moving from
-  department 5 to department 9 appears under 9, so department 5's feed shows it up to but
-  not including the move. The move itself is on the invoice's own timeline as an ordinary
-  field change.
-
-Between them, the two halves cover each other: the trigger's facets reach every write,
-including the ones no callback sees, and an action's facets reach a unit of work whose
-writes landed in a table that declares none. A unit qualifies if either matched.
+- **It is not retroactive.** A facet declared today says nothing about
+  yesterday. A filter returns results from that migration forward; older rows do
+  not match.
+- **A conjunction has to fit on one row.** Five facets on `invoices` combine
+  freely. `customer_id` from an order plus `product_id` from a line item matches
+  nothing — no single row carries both. Declare the facet on the table you will
+  filter by.
+- **A record is filed under the value it held *after* the change.** An invoice
+  moving from department 5 to department 9 appears under 9, so department 5's
+  feed shows it up to but not including the move. The move itself is on the
+  invoice's own timeline as an ordinary field change.
 
 ### A filter in the auditor UI
 
-Which facets a screen offers, at `/audit/dimensions`. Nothing here affects what is
-recorded — add it whenever, or never. `options:` reads from your own tables, never from
-the audit log, which cannot list them at volume:
+Which facets a screen offers, at `/audit/dimensions`. Nothing here affects what
+is recorded — add it whenever, or never. `options:` reads from your own tables,
+never from the audit log, which cannot list them at volume:
 
 ```ruby
 config.dimension_filters = {
@@ -1258,35 +1280,38 @@ config.dimension_filters = {
 }
 ```
 
-With this unset, the screen's nav link is hidden: an application that declares no facets
-has a complete audit log and no question that screen could answer.
+With this unset, the screen's nav link is hidden: an application that declares
+no facets has a complete audit log and no question that screen could answer.
 
 ### Keep them low-cardinality, and keep values out of them
 
-`app_version` (dozens), `tag` (hundreds), `department_id` (thousands) are all fine. A
-free-text note, a URL or an idempotency key drives the index toward one entry per row and
-belongs in the payload, which is already the right home for evidence somebody reads rather
-than filters on.
+`app_version` (dozens), `tag` (hundreds), `department_id` (thousands) are all
+fine. A free-text note, a URL or an idempotency key drives the index toward one
+entry per row and belongs in the payload, which is already the right home for
+evidence somebody reads rather than filters on.
 
-Facets survive redaction by design, which is correct for `department_id` and wrong for
-anything that is itself personal data. Dimensions are ids and scope labels, not values.
+Facets survive redaction by design, which is correct for `department_id` and
+wrong for anything that is itself personal data. Dimensions are ids and scope
+labels, not values.
 
 ### Turning it on in an app that already has audit data
 
-New installs get the storage and the index automatically. An existing deployment runs:
+New installs get the storage and the index automatically. An existing deployment
+runs:
 
 ```bash
 bin/rails generate audit_log:dimensions
 bin/rails db:migrate
 ```
 
-The generated migration adds the column, re-installs the trigger function so it reads
-your facet lists, and builds the facet index one partition at a time with
-`CONCURRENTLY`, so it never takes a lock that blocks audit writes. It reports each
-partition as it goes, and it is safe to re-run if it is interrupted.
+The generated migration adds the column, re-installs the trigger function so it
+reads your facet lists, and builds the facet index one partition at a time with
+`CONCURRENTLY`, so it never takes a lock that blocks audit writes. It reports
+each partition as it goes, and it is safe to re-run if it is interrupted.
 
-Applications that never declare a dimension pay nothing for this feature — the index
-excludes their rows by construction. The measurements are in [DESIGN §23](DESIGN.md).
+Applications that never declare a dimension pay nothing for this feature — the
+index excludes their rows by construction. The measurements are in
+[`DESIGN.md`](DESIGN.md) §23.
 
 ---
 
@@ -1344,14 +1369,14 @@ knowing anything about any of them.
 | | Default | Does |
 |---|---|---|
 | `correlated_connections` | `%w[primary]` | Which **connections** carry the correlation context — connection names as they appear in `database.yml` (`primary`, `queue`), *not* database names. The default is right for nearly every app, **including one whose `database.yml` has no `primary:` key**: Rails names a flat single-database config `primary`. **Does not decide what is audited** — a connection left out is still fully audited, its rows just arrive with no actor. The engine refuses to boot if this matches no connection, because that failure is otherwise silent. See [Multi-database apps](#multi-database-apps). |
-| `bypass_allowlist` | `[]` | Classes permitted to call `AuditLog.without_logging`. Empty means the bypass is unavailable, which is the right default. |
+| `bypass_allowlist` | `[]` | Classes permitted to call `AuditLog.without_logging`. Empty means the bypass is unavailable, which is the right default. See [Bypassing the log for a bulk load](#bypassing-the-log-for-a-bulk-load). |
 | `raise_on_subscriber_error` | `true` | Whether a failed layer-2 write raises. Leaving it true is what stops an audit failure vanishing while the change it described commits. |
 
 ## Generator options
 
-Every flag the four generators take. `audit_log:install`'s are listed with the
-step-by-step in [What the generator wrote](#what-the-generator-wrote); the two below
-are the ones with decisions in them.
+Every flag the generators take. `audit_log:install`'s are listed with the
+step-by-step in [What the generator wrote](#what-the-generator-wrote); the ones
+below are those with decisions in them.
 
 ### The generators
 
@@ -1362,6 +1387,8 @@ are the ones with decisions in them.
 | `audit_log:trigger TABLE --replace` | detach-then-attach, to change a table's model or exclusions | when those change |
 | `audit_log:views:activity Model [Model...]` | controller, concern, helper, views, route, locale, stylesheet — and wires each model's show page | once, then again per new model |
 | `audit_log:dimensions` | retrofits the `dimensions` column, re-installs the trigger function, and builds the facet index one partition at a time with `CONCURRENTLY` | only on an app installed before dimensions existed |
+| `audit_log:disable --reason=...` | a reversible migration detaching every audit trigger, keeping the tables and rows | to stop capture, or before removing the gem — see [Stopping auditing](#stopping-auditing-and-starting-again) |
+| `audit_log:enable` | rebuilds the attach lines from the marker, when the disable migration is gone | recovery only; `db:migrate:down` is the ordinary way back |
 
 ### `audit_log:trigger` options
 
@@ -1421,8 +1448,8 @@ creates the column and the index with the tables. See
 
 ### `audit_log:views:activity` options
 
-`audit_log:views:activity` takes **any number of models in one call**, and calling it
-again later is how you add more. Both reach the same place:
+`audit_log:views:activity` takes **any number of models in one call**, and
+calling it again later is how you add more. Both reach the same place:
 
 ```bash
 bin/rails generate audit_log:views:activity Order Product LineItem
@@ -1480,13 +1507,12 @@ stall the write path.
 | `audit_log:coverage` | Lists tables in the primary database with no audit trigger | **In CI, not cron.** The forcing function. Fails for any table that is neither audited nor in `config.unaudited_tables` **with a written reason**. Run it in CI — it is what stops a table added next month being quietly unaudited. |
 | `audit_log:reconcile` | Reports correlated changes with no registered action | Tells you which narratives are still missing, so layer 2 fills in over time instead of being an up-front project. Run after adding controllers. |
 | `audit_log:partitions:drain_default` | Moves rows out of the default partition into the ones that should hold them | When `partitions` reports default-partition overflow. **Do not schedule this one.** Needing it means a row landed in the default partition, which means the rotation task was not running — scheduling the repair hides the fault that caused it. Takes `ACCESS EXCLUSIVE`. Stages through a temp table in one transaction, so a failure leaves the rows where they started. |
-| `audit_log:redact` | Removes a record's **values** from the log, keeping the structure | An erasure request. `RECORD=Customer:42 REASON=DSR-1182 [FIELDS=email,phone] [DRY_RUN=1]`. The only thing permitted to modify audit rows; it narrates itself in the same transaction. `changed_columns` survives, so *"the email changed at 14:02, by Jane"* stays provable. |
+| `audit_log:redact` | Removes a record's **values** from the log, keeping the structure | An erasure request. `RECORD=Customer:42 REASON=DSR-1182 [FIELDS=email,phone] [DRY_RUN=1]`. The only thing permitted to modify audit rows; it narrates itself in the same transaction. `changed_columns` survives, so *"the email changed at 14:02, by Jane"* stays provable. Full guide: [Redacting values under an erasure request](#redacting-values-under-an-erasure-request). |
 
 ### Retention: schedulable, in this order
 
-Every state named below is defined in
-[DESIGN §8, The partition lifecycle](DESIGN.md) — including which states the gem
-can still see, and which are DBA-only.
+Every state named below is defined in [`DESIGN.md`](DESIGN.md) §8, *The partition
+lifecycle* — including which states the gem can still see, and which are DBA-only.
 
 | Task | What it does | Why, and when |
 |---|---|---|
@@ -1512,8 +1538,8 @@ days, one partition per table on the first run of a month.
 
 A **redaction** un-freezes whatever partitions held the redacted rows, because it
 updates the parent table and dirties pages there; the next daily run re-freezes
-them. [DESIGN §8](DESIGN.md) has the mechanism and why the timing is the only
-part actually on offer.
+them. [`DESIGN.md`](DESIGN.md) §8 has the mechanism, and why the timing is the
+only part actually on offer.
 
 **Only partitions this gem retired are ever exported or dropped.** A table merely
 *named* like a retired partition — a manual copy taken before a risky migration,
@@ -1527,18 +1553,25 @@ that keeps rollup from dropping somebody's `audit_events_2019`.
 | `audit_log:benchmark` | Generates volume and `EXPLAIN`s the canonical auditor queries | `ROWS=100000`. **Writes synthetic rows into your real audit tables.** Use a scratch database or clean up after. |
 | `audit_log:benchmark_cleanup` | Deletes the synthetic rows `benchmark` wrote | Immediately after `benchmark`, unless the database is disposable. |
 
-> **`redact` takes `FIELDS=`, never `COLUMNS=`.** `COLUMNS` is a reserved shell
-> variable holding your terminal width, so `COLUMNS=email rails audit_log:redact`
-> arrives as a number, matches no column, and **redacts nothing while reporting
-> success**. Found by running it.
+> **`redact` takes `FIELDS=`, never `COLUMNS=`** — and getting that wrong redacts
+> nothing while reporting success. The trap, and the rest of what a redaction
+> reaches, is in
+> [Redacting values under an erasure request](#redacting-values-under-an-erasure-request).
 
 ---
 
 ## Advanced
 
 Everything above is enough to install this gem, use it, and put a history on
-your own pages. What follows is the reasoning behind the parts most likely to
-surprise you — worth reading when one of them does, and skippable until then.
+your own pages. What follows is reached when you have a reason rather than on the
+way in, and it is two kinds of thing:
+
+- **Jobs you will eventually have to do** — attach a trigger to a table that
+  already exists, change a table's exclusions, redact values under an erasure
+  request, bypass the log for a bulk load, stop auditing altogether. Read these
+  when the job lands.
+- **The parts most likely to surprise you** — multiple schemas, transaction
+  control, multiple databases. Read these when one of them does.
 
 The full design record lives in [`DESIGN.md`](DESIGN.md), which is the
 authority on *why* anything here is shaped the way it is.
@@ -1603,15 +1636,12 @@ already-audited table fails:
 ERROR:  trigger "orders_audit" for relation "orders" already exists   -- SQLSTATE 42710
 ```
 
-`trigger_name` is `#{table}_audit` — derived from the table alone, ignoring both
-`model:` and `exclude:` — so two attaches on one table *always* collide on the
-name, whatever arguments they pass. That collision is load-bearing. Were the name
-to incorporate the model or the exclusion list, the second attach would **succeed**
-and the table would carry two triggers: two `audit_changes` rows for every write,
-under possibly different exclusion sets. Double-counted audit rows are far worse
-than a failed migration — invisible until somebody counts, and wrong in every
-rollup and reconciliation downstream. Postgres DDL is transactional and Rails
-wraps each migration, so the duplicate fails loudly with nothing half-applied.
+The trigger name is `#{table}_audit` — derived from the table alone, ignoring both
+`model:` and `exclude:` — so two attaches on one table *always* collide, whatever
+arguments they pass. **Treat the failure as the answer, not as an obstacle.** Were
+the name to carry the model or the exclusion list, the second attach would
+*succeed*, and the table would write two `audit_changes` rows per change under two
+different exclusion sets — invisible until somebody counts them.
 
 `detach_audit_trigger` **is** idempotent (`DROP TRIGGER IF EXISTS`). The asymmetry
 is the point, and it makes detach-then-attach the supported way to change a
@@ -1628,17 +1658,248 @@ Changing the exclusion list is not retroactive: rows already in `audit_changes`
 keep the diffs they were written with. A newly excluded column stops appearing
 from the re-attach forward and stays in the history before it.
 
-`CREATE OR REPLACE TRIGGER` exists as of PostgreSQL 14 (verified on 18.6) and
-would make attaching idempotent. It is deliberately not used: it would also
-silently absorb a second attach carrying a *different* model name or exclusion
-list, which is exactly the mistake worth hearing about. There is no
-`CREATE TRIGGER IF NOT EXISTS` in PostgreSQL at all.
+**Do not reach for `CREATE OR REPLACE TRIGGER`** to make attaching idempotent. It
+exists (PostgreSQL 14+) and it works, and it would also silently absorb a second
+attach carrying a *different* model or exclusion list — the one case worth
+hearing about. There is no `CREATE TRIGGER IF NOT EXISTS` at all.
 
-Re-running a migration is not how you meet this — `schema_migrations` prevents
-that. The reachable paths are two branches each attaching the same table, a later
-"fix" migration attaching a trigger the table already has, and a migration
-attaching to a table whose trigger already arrived via `db/structure.sql` (which
-carries every trigger, since `schema_format = :sql`).
+Which paths actually reach the collision, and why the trade is what it is:
+[`DESIGN.md`](DESIGN.md) §5.2.
+
+### Redacting values under an erasure request
+
+An audit log holds old values of fields that may be personal data, which puts
+immutability in direct tension with a right-to-erasure request. The resolution is
+not to delete rows.
+
+- The **structural record survives**: who changed which field, on which record,
+  when, in which request. `changed_columns` is never touched, so *"the email
+  address changed at 14:02, by Jane"* stays provable after the address is gone.
+- The **values are replaced** with a marker naming the authorization —
+  `[redacted 2026-09-01 per DSR-1182]`.
+- The redaction **is itself an audited action**, written in the same transaction.
+
+```bash
+# preview first -- it changes nothing and tells you what it would touch
+bin/rails audit_log:redact RECORD=Customer:42 REASON=DSR-1182 FIELDS=email,phone DRY_RUN=1
+
+bin/rails audit_log:redact RECORD=Customer:42 REASON=DSR-1182 FIELDS=email,phone
+```
+
+`REASON` is required and there is no default — a redaction without a written
+authorization is not auditable. `FIELDS` is optional and **naming fields is the
+better habit**: an erasure request is usually about an email address, not about
+the fact that a status changed. Omitting it redacts every recorded value for that
+record.
+
+> [!WARNING]
+> **It is `FIELDS=`, never `COLUMNS=`.** `COLUMNS` is a reserved shell variable
+> holding your terminal width, so `COLUMNS=email bin/rails audit_log:redact`
+> arrives as a number, matches no column, and **redacts nothing while reporting
+> success**.
+
+**It is irreversible.** The values are overwritten in place, which is the point.
+`DRY_RUN=1` is the only preview you get.
+
+#### What it reaches, and what it does not
+
+| | |
+|---|---|
+| `audit_changes.diff` | targeted keys replaced with the marker. Every key survives, including untargeted ones with their values intact |
+| `audit_changes.changed_columns` | **untouched.** The structural record is what survives an erasure |
+| `audit_events.summary` | replaced with the marker — the summary is the payload rendered into a sentence, so it is the second place the same data sits |
+| `audit_events.metadata` | emptied to `{}` |
+| `audit_events.dimensions` | **untouched.** Facets are structure, like `changed_columns` — correct for `department_id`, and something to keep in mind before declaring a facet on anything that is itself personal data (DESIGN §23) |
+| `action`, `actor`, `occurred_at`, `request_id` | untouched, so the narrative still says something happened to this record, by whom, and when |
+
+The `audit.redaction` rows themselves are skipped, so the record of the erasure
+cannot erase itself.
+
+#### From the console
+
+Two things the rake task does not expose. Both are documented capabilities, not
+internals (DESIGN §13).
+
+```ruby
+# what would it touch?
+AuditLog::Redaction.preview(record_type: "Customer", record_id: 42)
+# => { changes: 31, events: 4, columns: ["email", "name", "phone", "status"] }
+
+# pseudonymize an ACTOR: replace the snapshotted label, keep actor_type/actor_id.
+# Their activity stays attributable to a stable identifier and stays countable --
+# it simply stops naming them.
+AuditLog::Redaction.redact_actor!(actor_type: "User", actor_id: 7, reason: "DSR-1190")
+```
+
+#### Three operational notes
+
+- **It is the only thing permitted to modify audit rows.** Everything else treats
+  them as append-only. Do not add a second mutation path, and do not reach for
+  `DELETE` — a missing row is indistinguishable from a row that never existed.
+- **It is deliberately not date-bounded.** Every other query here carries a range
+  so the planner can prune partitions; this one must reach every partition or the
+  redaction is incomplete, which is a compliance failure rather than a slow
+  screen. Run it in a maintenance window on a large log.
+- **It un-freezes every frozen partition,** because it `UPDATE`s the parent and so
+  dirties pages in closed partitions the daily task believed were handled. The
+  daily task re-freezes them. Nothing to do, but it explains a `rake
+  audit_log:partitions` run that suddenly has work.
+
+**Keep it rare by keeping the worst fields out of the log entirely.**
+`config.default_excluded_columns` and the per-table `exclude:` are the first line
+and they cost nothing; redaction is the tool for values already recorded.
+
+What is still open about redaction is policy, not mechanism: who may authorize
+one, and what makes a `REASON` valid. Those are yours.
+
+### Bypassing the log for a bulk load
+
+The one escape hatch from layer 1, for a bulk operation where a row per record is
+genuinely not wanted — a nightly ERP sync, a one-off backfill of a million rows.
+It is scoped to a block, and **it logs itself**.
+
+```ruby
+# config/initializers/audit_log.rb
+config.bypass_allowlist = %w[ErpSyncJob CatalogImportJob]
+
+# and at the call site
+AuditLog.without_logging(reason: "Nightly ERP sync", by: ErpSyncJob) do
+  Product.upsert_all(rows)
+end
+```
+
+`by:` must match an entry in `config.bypass_allowlist` or it raises
+`AuditLog::BypassNotPermitted`, and `reason:` cannot be blank. The allowlist is
+empty by default, so the bypass is unavailable until somebody adds a class to it —
+which is the right default for something that puts a hole in the audit log.
+
+> [!IMPORTANT]
+> **The allowlist is an intent declaration, not a security boundary.** Anything
+> that can call `without_logging` can also edit the initializer. Its value is that
+> enabling the bypass for a new caller shows up as a diff in one reviewable file,
+> rather than as a line buried in a job.
+
+**It narrates the gap it creates.** An `audit.bypass` event is written *before*
+anything is disabled — inside the same transaction, so a rollback discards the
+narration along with the work it described — and an `audit.bypass_completed`
+follows with the elapsed time. An un-narrated gap in an audit log is a finding; a
+narrated one is a control.
+
+Four things to know:
+
+- **It suppresses layer 1 only.** `AuditLog.notify` and `AuditLog.audited` still
+  write `audit_events` rows, so the action keeps its sentence and loses the
+  field-level diffs beneath it.
+- **It is restored when the block exits**, including when the block raises — the
+  toggle is transaction-local and reset in an `ensure`.
+- **It returns the block's value**, so it wraps an existing call without
+  restructuring it.
+- **Register `audit.bypass` and `audit.bypass_completed`**, which
+  `audit_log:install` now writes into your initializer. An unregistered action is
+  a silent no-op in the subscriber, so without those entries the bypass does
+  *not* log itself and the gap is the only evidence it ran.
+
+**Reach for this, not for [stopping capture](#stopping-auditing-and-starting-again),
+when the scope is one operation.** Detaching triggers is for a window measured in
+hours or longer; this is for a block, and it needs no migration and no schema
+change. If a bulk load is large enough that you were considering detaching, this
+is usually still the right tool — it costs one event row.
+
+### Stopping auditing, and starting again
+
+Two different questions with one answer.
+
+- *"I am removing the gem and do not want triggers left behind writing to tables
+  nothing reads."*
+- *"I want capture to stop for a window and resume afterwards — a staging
+  database, a cost decision, a migration too long to hold inside
+  [one bypassed block](#bypassing-the-log-for-a-bulk-load) — with the log intact
+  and a gap in it I have accounted for."*
+
+Both are the same mechanism: **detach the triggers and keep everything else.**
+
+```bash
+bin/rails generate audit_log:disable --reason="ERP backfill, ticket OPS-4412"
+bin/rails db:migrate
+```
+
+That writes one reversible migration. `up` detaches every audit trigger in the
+schema; `down` re-attaches exactly what was there. **The cycle is that one
+migration, indefinitely** — `db:migrate:down VERSION=…` resumes capture,
+`db:migrate:up VERSION=…` stops it again. There is no separate re-disable
+generator, because Rails already has the verb.
+
+The audit tables, every partition, every row and the auditor UI are
+**untouched**, and the screens go on reading the history you already have.
+(`AuditLog::Schema.uninstall!` is the other thing entirely — it `DROP TABLE ...
+CASCADE`s both audit tables. If you want the data gone, that is the call; this
+is not it.)
+
+The re-attach is exact rather than approximate: the model name, the merged
+exclusion list and any declared `dimensions:` are read out of `pg_trigger` at
+generate time and written into the migration as literals you can review before
+running it. `capture_spec` pins that `pg_get_triggerdef` comes back byte-identical
+across a full cycle.
+
+#### What stops, what does not
+
+**Layer 1 stops.** No `audit_changes` row is written for any table.
+
+**Layer 2 keeps going.** `AuditLog.notify` and `AuditLog.audited` still write
+`audit_events` rows, so the timeline keeps its narrative activities and loses the
+field changes beneath them. That asymmetry is deliberate — a screen reading
+*"Jane submitted order 4821"* with no diffs under it reports exactly what
+happened. There is no `config.enabled = false`; an app that wants layer 2 off too
+stops calling it, or clears the registry. DESIGN §25.
+
+**It narrates itself.** An `audit.capture_disabled` event is written before the
+detach and an `audit.capture_resumed` after the re-attach, both carrying the
+reason. The generator **refuses to run** if those two actions are not registered
+in your initializer — an unnarrated gap would leave the hole itself as the only
+evidence anything was turned off.
+
+#### `rake audit_log:coverage` will fail, and that is the design
+
+While capture is disabled, coverage and the shared example both fail — saying
+*capture is disabled, since this date, for this reason*, rather than listing your
+tables and telling you to write attach migrations.
+
+> [!IMPORTANT]
+> **Do not skip the spec to make the build green.** A disabled audit log is not
+> OK, and the reason this feature detaches triggers rather than setting a flag is
+> precisely that a flag would pass this check while auditing nothing. The honest
+> options are to resume capture, or to run red for as long as the pause lasts.
+
+#### The gap
+
+Everything in the window is a hole with visible edges, except one thing.
+
+- The **first change after capture resumes** still yields a complete `[old, new]`
+  pair, because the diff reads `to_jsonb(OLD)` off the live row.
+- A **`DELETE` after capture resumes** snapshots the whole final row.
+- **A record created *and* deleted inside the window leaves no trace that it ever
+  existed.** That is the one genuinely lossy case, and the one to know before
+  accepting the gap.
+
+There is no backfill, and there could not be one: the rows that would describe the
+window were never written. **Record the dates** — the two migration timestamps are
+the durable answer, and the two `audit.capture_*` events are the answer inside the
+log itself.
+
+#### If the disable migration is gone
+
+Squashed, deleted, or absent from the checkout you are holding. The triggers no
+longer exist, so the catalog cannot say what they were — but the marker
+`audit_log:disable` stamped on `audit_changes` carries the same snapshot.
+
+```bash
+bin/rails generate audit_log:enable    # rebuilds the attach lines from the marker
+```
+
+**Check the model names before running it.** They are what the triggers carried
+when capture was disabled; a model renamed since then needs its new name, or
+`record_type` will name a class your app no longer has. It refuses outright if
+there is no marker, rather than guessing model names from table names.
 
 ### Installing into a schema other than `public`
 
@@ -1811,7 +2072,8 @@ covers both cases:
 Order.current_transaction.after_commit { NotifyCustomerJob.perform_later(id) }
 ```
 
-It is a class method, so `Order.current_transaction`, not `order.current_transaction`.
+It is a class method, so `Order.current_transaction`, not
+`order.current_transaction`.
 
 **And the explicit `transaction do ... AuditLog.notify ... end` form is not
 deprecated and never will be.** Use it wherever several notifies belong in one
@@ -1892,10 +2154,10 @@ straight back, never render it. `activities` turns that page into
 `Timeline::Activity` objects, loading the events, change rows and labels for the
 whole page in three queries rather than three per row.
 
-They are separate because keyset paging needs a *relation* to build a cursor from, because
-hydration has to be batched, and because the limit belongs above the controller
-where you can see it (DESIGN §11.0 Rule 2) — so the library cannot paginate and
-load in one call.
+They are separate because keyset paging needs a *relation* to build a cursor
+from, because hydration has to be batched, and because the limit belongs above
+the controller where you can see it (DESIGN §11.0 Rule 2) — so the library
+cannot paginate and load in one call.
 
 ### Documentation for coding agents
 
@@ -1974,7 +2236,7 @@ Only relevant if you are changing the gem itself rather than using it.
 
 [`CLAUDE.md`](CLAUDE.md) is the terse companion to this section: the same
 decisions as a list of things not to "fix", for anyone — human or otherwise —
-who will not read a 2,600-line design document first.
+who will not read the whole design document first.
 
 ### Files
 
@@ -1988,14 +2250,16 @@ who will not read a 2,600-line design document first.
 | `lib/audit_log/job_context.rb` | The whole background-job integration. |
 | `lib/audit_log/registry.rb` | The allowlist of auditable actions, and each one's human sentence. |
 | `lib/audit_log/event_subscriber.rb` | `Rails.event` → `audit_events`. |
+| `lib/audit_log/payload.rb` | The collector `AuditLog.audited` yields. Wraps a Hash rather than subclassing one, normalises keys to symbols, and raises on a key set in both the keyword and block slots. |
 | `lib/audit_log/actor_label.rb` | Renders the label snapshotted onto every row, and (`display`/`linkable?`) the one definition of how a stored actor reads on a screen. |
 | `lib/audit_log/record_label.rb` | The **opt-in** label chain (`to_audit_label` → `to_label` → overridden `to_s` → nothing) for the record an association id points at. Display-time only; nothing it returns is stored. |
 | `lib/audit_log/migration_helpers.rb` | `attach_audit_trigger` / `detach_audit_trigger`, and `add_audit_dimension_index` for a hot facet. |
 | `lib/audit_log/schema.rb` | `install!` / `uninstall!` for a migration. |
 | `lib/audit_log/dimension_index.rb` | The **retrofit** path for the facet index: parent index, then `CONCURRENTLY` per partition, with the catalog asserting completeness. Only for an app installed before dimensions existed. |
 | `lib/audit_log/partitions.rb` | Partition rotation, default-partition drain, yearly rollup, retention, freezing, UTC-boundary enforcement. |
-| `lib/audit_log/bypass.rb` | The one escape hatch, which logs itself. |
+| `lib/audit_log/bypass.rb` | The one escape hatch from layer 1, scoped to a block, which logs itself before it opens. |
 | `lib/audit_log/redaction.rb` | The **only** thing allowed to modify audit rows. Values go, structure stays. |
+| `lib/audit_log/capture.rb` | Reads the trigger snapshot out of `pg_trigger`, and owns the marker and the narration for disabling capture. The DDL stays in the migration. |
 | `lib/audit_log/archive.rb` | Retired partitions → gzipped CSV + manifest; drops only what verifies. |
 | `lib/audit_log/pagination.rb` | Keyset paging, for the auditor screens **and for host apps** — `include AuditLog::Pagination`. No page numbers, no counts, and a microsecond cursor. |
 | `lib/audit_log/csv_export.rb` | Streaming CSV for the screens. No row cap. |
@@ -2010,11 +2274,9 @@ who will not read a 2,600-line design document first.
 | `app/queries/audit_log/timeline/` | Its value objects — `Activity` (one thing that happened, loaded), `ActivityKey` (its identity before loading), `FieldChange`, `TouchedRecord`, `Actor`. |
 | `app/controllers/`, `app/views/` | The auditor UI. `shared/_event_payload` and `records/_timeline_activities` both render `audit_events.metadata` in three states — present, absent, redacted. |
 | `lib/audit_log/rspec.rb` | Shared examples a host app uses instead of copying a spec. Not loaded by `lib/audit_log.rb` — rspec is the host's test dependency. |
-| `lib/generators/audit_log/` | `audit_log:install`, `audit_log:trigger`, `audit_log:dimensions` and `audit_log:views:activity`, with templates. |
+| `lib/generators/audit_log/` | `audit_log:install`, `audit_log:trigger`, `audit_log:dimensions`, `audit_log:disable`, `audit_log:enable` and `audit_log:views:activity`, with templates. |
 | `DESIGN.md` | Why every decision here is what it is. Cited by section number from source comments. |
 | `lib/audit_log/tasks/audit_log.rake` | `partitions` and the `partitions:` namespace, plus `redact`, `reconcile`, `coverage`, `benchmark`. Full list in [Rake tasks](#rake-tasks). |
-
----
 
 ### What reloads and what does not
 
@@ -2069,6 +2331,7 @@ sections most likely to matter, and the shape of the mistake each one prevents:
 | `pagination.rb` or a screen's scope | §11.0 | the cursor must carry microseconds, or rows vanish between pages — and a `.limit` below the controller is a silent truncation |
 | `csv_export.rb` | §11.4a | an export with a row cap reintroduces exactly what the paging removed |
 | `redaction.rb` | §13 | `changed_columns` must survive; it is what keeps "the email changed at 14:02" provable |
+| `capture.rb`, the `disable`/`enable` generators | §25 | capture is disabled by DETACHING, never by a flag the trigger reads — a flag would pass `audit_log:coverage` while auditing nothing |
 | `redaction.rb`'s marker, `shared/_event_payload` | §11.3, §13 | a redacted payload and an absent one are the same empty jsonb — the marker is the only trace, and a screen that cannot tell them apart renders an erasure as an absence |
 | `archive.rb` | §8 | `drop_exported!` may never drop a partition whose manifest does not verify |
 | `actor_label.rb`, an actor cell on a screen | §6.2 | a `GROUP BY` rollup has a tuple, not a record — a hand-rolled fallback chain drops the nil branch and `actor_path(nil)` 500s the screen |
@@ -2100,6 +2363,7 @@ grants would now have to carve out an exception for the one operation that is
 *supposed* to modify audit rows.
 
 Two things that used to be on this list are now built — **export of retired
-partitions** (`archive.rb`, `rake audit_log:partitions:export_retired`) and **PII redaction**
-(`redaction.rb`, `rake audit_log:redact`). What remains open about redaction is
-policy, not mechanism: who may authorize one, and what makes a `REASON` valid.
+partitions** (`archive.rb`, `rake audit_log:partitions:export_retired`) and
+**PII redaction** (`redaction.rb`, `rake audit_log:redact`). What remains open
+about redaction is policy, not mechanism: who may authorize one, and what makes
+a `REASON` valid.

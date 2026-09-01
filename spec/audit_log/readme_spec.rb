@@ -182,11 +182,45 @@ RSpec.describe "README.md" do
 
   # Every task the engine registers should be findable by somebody reading the
   # docs rather than by somebody reading the rake file.
-  it "documents every rake task the gem registers" do
-    rake  = Pathname(AuditLog::GEM_ROOT).join("lib/audit_log/tasks/audit_log.rake").read
-    tasks = rake.scan(/^\s{2}task (\w+)/).flatten.uniq
+  #
+  # THE NAMESPACE STACK IS THE POINT. This used to scan `/^\s{2}task (\w+)/` --
+  # two spaces, so top level only -- which made the entire `audit_log:partitions:`
+  # namespace invisible to the one example guarding against an undocumented task.
+  # That is seven of the library's thirteen, including every retention and disposal
+  # task: the ones whose behaviour an operator most needs written down, and the
+  # ones a reader is least likely to find by accident. They were all documented,
+  # so this never failed; it simply was not checking. A forcing function with a
+  # hole in it reports success for the part it skipped, which is the failure this
+  # whole library is built against, arrived at in its own spec.
+  def self.rake_task_names(source)
+    stack = []
 
-    undocumented = tasks.reject { |t| body.include?("audit_log:#{t}") }
+    source.lines.filter_map do |line|
+      if (m = line.match(/^(\s*)namespace :(\w+)/))
+        stack = stack.first(m[1].length / 2) << m[2]
+        next
+      end
+      # `task partitions: :environment do` and `task benchmark: :environment`
+      # both. Rake keys tasks by full name, so a task and a namespace sharing one
+      # -- `partitions` and `partitions:` -- are two distinct entries and both
+      # have to be documented.
+      next unless (m = line.match(/^(\s*)task (\w+)/))
+
+      (stack.first(m[1].length / 2) + [m[2]]).join(":")
+    end.uniq
+  end
+
+  it "documents every rake task the gem registers, nested ones included" do
+    rake  = Pathname(AuditLog::GEM_ROOT).join("lib/audit_log/tasks/audit_log.rake").read
+    tasks = self.class.rake_task_names(rake)
+
+    # Guards the guard: if the namespace walk breaks, this example must not go
+    # green by finding nothing. The count is a floor, not a pin -- adding a task
+    # should not fail here, it should fail on the README check below.
+    expect(tasks).to include("audit_log:partitions", "audit_log:partitions:retention")
+    expect(tasks.size).to be >= 13
+
+    undocumented = tasks.reject { |t| body.include?(t) }
     expect(undocumented).to be_empty,
       "these tasks exist but the README never mentions them: #{undocumented.join(", ")}"
   end

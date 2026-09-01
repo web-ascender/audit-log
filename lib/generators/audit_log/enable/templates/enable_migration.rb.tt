@@ -1,0 +1,56 @@
+# frozen_string_literal: true
+
+# Re-attaches the audit triggers that `audit_log:disable` detached, recovered from
+# the marker on `audit_changes` because the migration that detached them is no
+# longer in this repository. DESIGN §25.
+#
+# CAPTURE RESUMES FOR WRITES AFTER THIS RUNS, and the window stays a gap. There is
+# no backfill and there could not be one -- the rows that would describe it were
+# never written. A record created and deleted inside the window left no trace at
+# all; everything else in the log is intact and unchanged.
+#
+# CHECK THE MODEL NAMES. They are what each trigger carried when capture was
+# disabled <%= marker["disabled_at"] %>, reason <%= marker["reason"].inspect %>. A model renamed since then
+# needs its new name here, or `record_type` on every row written from now on will
+# name a class the application no longer has.
+class EnableAuditCapture < ActiveRecord::Migration<%= migration_version %>
+  # The merged exclusion list as recorded, handed back whole. It looks redundant
+  # with `config.default_excluded_columns` and is not: `attach_audit_trigger`
+  # computes `(defaults + exclude).uniq`, so passing the merged list reproduces
+  # the original argument exactly and still reproduces every exclusion the table
+  # had if a default has been removed from the config since.
+  COMMON_EXCLUDED = <%= words(common_excluded) %>.freeze
+
+  TRIGGERS = [
+<% triggers.each do |trigger| -%>
+    <%= trigger_literal(trigger) %>,
+<% end -%>
+  ].freeze
+
+  def up
+    # CREATE TRIGGER is catalog-only and instant, but it takes SHARE ROW EXCLUSIVE
+    # on the business table -- writes blocked, reads not -- and queues behind any
+    # open transaction on it. Bound the wait rather than stalling the application.
+    #
+    # SET LOCAL, so it reverts with this migration's transaction.
+    # `maintenance_lock_timeout` is a PostgreSQL interval string ("5s"), not a
+    # Duration -- hence `quote`, not arithmetic.
+    execute "SET LOCAL lock_timeout = #{quote(AuditLog.config.maintenance_lock_timeout)}"
+
+    TRIGGERS.each do |t|
+      attach_audit_trigger t[:table],
+        model: t[:model], exclude: t[:exclude], dimensions: t.fetch(:dimensions, [])
+    end
+
+    # Marker cleared and the resume narrated LAST, so the event lands inside the
+    # period it resumes and whatever it touches is captured again.
+    AuditLog::Capture.enable!(tables: TRIGGERS.map { |t| t[:table] })
+  end
+
+  def down
+    execute "SET LOCAL lock_timeout = #{quote(AuditLog.config.maintenance_lock_timeout)}"
+
+    AuditLog::Capture.disable!(reason: "reverted #{self.class.name}", triggers: TRIGGERS)
+    TRIGGERS.each { |t| detach_audit_trigger t[:table] }
+  end
+end

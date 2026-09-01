@@ -1,0 +1,100 @@
+# frozen_string_literal: true
+
+# Turns LAYER 1 OFF and keeps everything it recorded. DESIGN §25.
+#
+# `audit_changes`, `audit_events`, every partition and every row stay exactly
+# where they are, and the auditor UI goes on reading them. What stops is capture:
+# after this runs, an UPDATE on one of the tables below writes no audit_changes
+# row, and nothing anywhere will report that except the coverage forcing function
+# and the marker this stamps.
+#
+# WHAT IT DOES NOT STOP IS LAYER 2. `AuditLog.notify` and `AuditLog.audited` go on
+# writing audit_events rows, so the timeline keeps its narrative and loses the
+# field-level diffs beneath it. That asymmetry is deliberate: a narrated gap is a
+# control, a blank one is a finding.
+#
+# THE ONE GENUINELY LOSSY CASE: a record created AND deleted while capture is off
+# leaves no trace that it ever existed. Every other hole here has visible edges.
+#
+# `down` re-attaches exactly what `rails generate audit_log:disable` found in
+# pg_trigger at the moment it ran, so disable -> enable -> disable is a supported
+# cycle and costs nothing but the gap. It is NOT retroactive in either direction:
+# rows already written keep their diffs, and the window writes none.
+class DisableAuditCapture < ActiveRecord::Migration<%= migration_version %>
+  REASON = <%= reason.inspect %>
+
+  # The exclusion list these triggers carried, verbatim.
+  #
+  # IT LOOKS REDUNDANT WITH `config.default_excluded_columns` AND IS NOT. What the
+  # catalog holds is the MERGED list -- the config defaults as they were on the day
+  # each trigger was attached, plus that migration's own `exclude:`.
+  # `attach_audit_trigger` computes `(defaults + exclude).uniq`, so handing the
+  # merged list straight back reproduces the original argument byte for byte, and
+  # still reproduces every exclusion the table had if a default has been removed
+  # from the config in the meantime. Recovering the original `exclude:` by
+  # subtracting today's defaults would read better and would silently drop an
+  # exclusion the day somebody edits that config.
+  COMMON_EXCLUDED = <%= words(common_excluded) %>.freeze
+
+  TRIGGERS = [
+<% triggers.each do |trigger| -%>
+    <%= trigger_literal(trigger) %>,
+<% end -%>
+  ].freeze
+
+  def up
+    # Narrated FIRST, and inside this migration's transaction, so the log cannot
+    # hold a gap that nothing accounts for -- and cannot hold an account of a gap
+    # that did not happen. Same order, and the same reason, as AuditLog::Bypass.
+    #
+    # It RAISES if audit.capture_disabled has no registry entry, rather than
+    # writing nothing: an unregistered action is silently ignored by
+    # EventSubscriber, and a silently unnarrated audit gap is the worst outcome
+    # available here.
+    AuditLog::Capture.disable!(reason: REASON, triggers: TRIGGERS)
+
+    # DROP TRIGGER takes ACCESS EXCLUSIVE on each business table. It is
+    # catalog-only and instant, but it queues behind any open transaction on that
+    # table -- and a pending ACCESS EXCLUSIVE blocks every lock queued behind IT,
+    # so an unbounded wait stalls reads and writes for the whole application.
+    # Bound it: fail and retry, never queue indefinitely, which is the posture the
+    # rest of this library's maintenance takes.
+    #
+    # SET LOCAL, so it reverts when this migration's transaction commits and needs
+    # no save-and-restore of its own. `maintenance_lock_timeout` is a PostgreSQL
+    # interval string ("5s"), not a Duration -- hence `quote`, not arithmetic.
+    execute "SET LOCAL lock_timeout = #{quote(AuditLog.config.maintenance_lock_timeout)}"
+
+    TRIGGERS.each { |t| detach_audit_trigger t[:table] }
+
+    # NEVER REPORT SUCCESS FOR WORK IT DID NOT DO (DESIGN §21.1). A table attached
+    # after this migration was generated is one `down` cannot restore, so detaching
+    # it would be a silent, permanent loss of that table's capture. Refuse instead
+    # -- the migration is transactional, so this rolls the whole thing back.
+    remaining = AuditLog::Capture.attached.map { |t| t[:table] }
+    if remaining.any?
+      raise <<~MESSAGE
+        #{remaining.join(", ")} still has an audit trigger, which means it was attached
+        after this migration was generated and is not in TRIGGERS -- so `down` could
+        not put it back.
+
+        Re-run `rails generate audit_log:disable --reason=...` against a fresh
+        snapshot and delete this migration.
+      MESSAGE
+    end
+  end
+
+  def down
+    execute "SET LOCAL lock_timeout = #{quote(AuditLog.config.maintenance_lock_timeout)}"
+
+    TRIGGERS.each do |t|
+      attach_audit_trigger t[:table],
+        model: t[:model], exclude: t[:exclude], dimensions: t.fetch(:dimensions, [])
+    end
+
+    # Marker cleared and narrated LAST, the mirror image of `up`: the resume event
+    # belongs inside the period it resumes, so it is written once the triggers are
+    # back and whatever it touches is captured again.
+    AuditLog::Capture.enable!(tables: TRIGGERS.map { |t| t[:table] })
+  end
+end

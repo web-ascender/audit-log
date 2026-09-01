@@ -188,4 +188,62 @@ Rails.application.config.to_prepare do
   # from AuditLog::Current, which ControllerContext/JobContext populated. The
   # payload is only the domain detail, and it is stored on the event so a screen
   # can render the total AFTER the order has been deleted.
+
+  # -------------------------------------------------------------------------
+  # THE LIBRARY'S OWN ACTIONS. Leave these registered.
+  #
+  # Everything above is yours. These five are emitted by audit_log itself, and
+  # they are the actions that narrate the moments the audit log stops being a
+  # plain record of your application: a bypass, an erasure, a pause in capture.
+  #
+  # AN UNREGISTERED ACTION IS A SILENT NO-OP -- `EventSubscriber` is
+  # `Registry[name] or return` -- so deleting one of these does not disable a
+  # feature, it makes that feature stop narrating itself while going on working.
+  # `AuditLog::Bypass` promises "the bypass logs itself"; without the first entry
+  # below, it does not, and the only evidence a bulk load ran unaudited is the
+  # hole it left. Edit the wording freely; do not delete the entries.
+  #
+  # `AuditLog::Capture` is the exception that raises rather than falling silent,
+  # because a deliberate gap in an audit log with nothing accounting for it is
+  # the worst outcome this library has.
+  # -------------------------------------------------------------------------
+  AuditLog::Registry.register "audit.bypass",
+    requires: %i[reason],
+    description: "Layer 1 was deliberately disabled for a bulk operation.",
+    summary: ->(p) { "Audit logging bypassed by #{p[:by] || "System"}: #{p[:reason]}" }
+
+  AuditLog::Registry.register "audit.bypass_completed",
+    requires: %i[reason],
+    description: "A bypassed bulk operation finished.",
+    summary: ->(p) { "Bypass finished in #{p[:duration_ms]}ms: #{p[:reason]}" }
+
+  # The one action that modifies audit rows, so its own row matters most. Note
+  # what the summary keeps: what was redacted, from where, by whom and under what
+  # authority -- none of which is the redacted data.
+  AuditLog::Registry.register "audit.redaction",
+    requires: %i[target_type target_id reason],
+    description: "Values were redacted from the audit log under an erasure request. " \
+                 "The structural record -- which field changed, when, by whom -- is intact.",
+    subject: ->(p) { [p[:target_type], p[:target_id]] },
+    summary: lambda { |p|
+      scope = Array(p[:columns]).presence&.join(", ") || "all recorded values"
+      "Redacted #{scope} for #{p[:target_type]} ##{p[:target_id]} " \
+        "(#{p[:reason]}), by #{p[:redacted_by] || "System"}"
+    }
+
+  AuditLog::Registry.register "audit.capture_disabled",
+    requires: %i[reason],
+    description: "Layer 1 trigger capture was disabled. Field-level diffs stop " \
+                 "being recorded from this point until capture is resumed.",
+    summary: lambda { |p|
+      "Audit capture disabled for #{Array(p[:tables]).size} tables: #{p[:reason]}"
+    }
+
+  AuditLog::Registry.register "audit.capture_resumed",
+    description: "Layer 1 trigger capture was resumed. The window in between is a " \
+                 "gap in the change record, and there is no backfill for it.",
+    summary: lambda { |p|
+      since = p[:disabled_at].presence
+      "Audit capture resumed#{" (disabled since #{since})" if since}"
+    }
 end

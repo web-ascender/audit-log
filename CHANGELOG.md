@@ -7,6 +7,35 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Disabling capture, and resuming it** — `rails generate audit_log:disable
+  --reason="..."` writes one reversible migration that detaches every audit
+  trigger. The audit tables, every partition, every row and the auditor UI are
+  untouched; `db:migrate:down` re-attaches exactly what was there, and that one
+  migration is the whole cycle, indefinitely.
+
+  The re-attach is exact rather than approximate. Model name, merged exclusion
+  list and any declared `dimensions:` are read out of `pg_trigger.tgargs` at
+  generate time and written into the migration as reviewable literals;
+  `capture_spec` pins that `pg_get_triggerdef` comes back byte-identical across a
+  full cycle, on a table with facets and one without. `audit_log:enable` is the
+  recovery path for when that migration has been squashed or deleted — it rebuilds
+  the attach lines from a marker on `audit_changes` and refuses rather than
+  guessing model names from table names.
+
+  **It detaches rather than setting a flag, and that is the whole design.** A
+  durable GUC read by the trigger function is cheaper in every way except the one
+  that matters: it would satisfy `rake audit_log:coverage` and the shared example
+  while auditing nothing. Detaching is loud, so `AuditLog::Coverage` learns a third
+  state — `capture_disabled?` — and reports *"capture is disabled, since this date,
+  for this reason"* instead of listing tables and advising attach migrations. `ok?`
+  is still false and the spec still fails, on purpose.
+
+  Layer 2 is untouched: `AuditLog.notify` and `AuditLog.audited` go on writing
+  `audit_events`, so a paused app keeps its narrative and loses the field changes
+  beneath it. There is deliberately no `config.enabled = false`. Both directions
+  narrate themselves (`audit.capture_disabled` / `audit.capture_resumed`) and
+  **raise** rather than emit nothing if those actions are unregistered. DESIGN §25.
+
 - **`AuditLog::Timeline::TouchedRecord#field_changes`** — the other records a unit
   of work touched now carry their own before-and-after, not only which columns
   they touched. `columns` says a line item's `quantity` changed; this says it went
@@ -30,10 +59,6 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
   generator never overwrites, so the snippet in the README is the way to add it to
   views you own.
 
-## Unreleased
-
-### Added
-
 - **Documentation for coding agents.** The gem now packages `llms.txt` — the
   [llms.txt](https://llmstxt.org) convention in its packaged form, with links as
   file paths inside the installed gem rather than URLs. It is a summary and a
@@ -52,6 +77,73 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
   quiet: it answers from what it knows about `paper_trail`, writes a concern into a
   model class, and records nothing. `CLAUDE.md` is deliberately **not** packaged;
   `readme_spec` guards both that and every link `llms.txt` makes. DESIGN §24.
+
+### Fixed
+
+- **`readme_spec`'s undocumented-task guard was skipping the whole
+  `audit_log:partitions:` namespace.** It scanned `/^\s{2}task (\w+)/` — two
+  spaces, so top level only — and therefore checked 6 of the library's 13 tasks.
+  The 7 it missed are every retention and disposal task: the ones whose behaviour
+  an operator most needs written down. All 7 happened to be documented, so the
+  example never failed; it simply was not checking. It now walks the namespace
+  stack, asserts a floor on what it found so a broken walk cannot pass by finding
+  nothing, and was verified to fail when a nested task's mentions are removed.
+
+- **The library's own actions are now registered by `audit_log:install`.**
+  `audit.bypass`, `audit.bypass_completed` and `audit.redaction` were registered
+  only by the dummy app — absent from the install generator's initializer template
+  and unmentioned in the README. Since an unregistered action is a silent no-op in
+  `EventSubscriber`, `AuditLog::Bypass`'s documented promise that *"the bypass logs
+  itself"* did not hold in any real adopting application, and a redaction wrote no
+  `audit.redaction` row. All five library actions now ship in the template.
+
+  Existing apps are unaffected by upgrading and should add the entries; the raise
+  in `AuditLog::Capture` names them, and the block in the template is the copy to
+  paste.
+
+### Changed
+
+- **`README.md` documents the bypass and redaction**, the two operations that put
+  a deliberate hole in the log and had between them one row of a config table and
+  one row of the rake-task table. How to perform an erasure, what it reaches, what
+  deliberately survives it, the `FIELDS=` / `COLUMNS=` trap, and the whole of
+  `AuditLog.without_logging` were undocumented for the person doing them under time
+  pressure. New "Bypassing the log for a bulk load" and "Redacting values under an
+  erasure request" sections under Advanced, beside "Stopping auditing" — three
+  escalating scopes, cross-linked, so a reader lands on the smallest tool that
+  covers their case.
+
+- **Corrected stale claims in `DESIGN.md` that contradicted `README.md` and
+  `CLAUDE.md`.** §2.2 and §16 still said CI tested Rails 8.1 only, that the suite
+  ran on four legs, and that a Rails 8.0 leg "is still missing" — none true since
+  0.4.0 closed that gap, which this file already recorded and both other documents
+  already reflected. §2.2 also listed
+  `config.active_job.enqueue_after_transaction_commit` as required of the host,
+  which §6.4 of the same document says **does nothing**: ActiveJob's railtie
+  filters that key out, and `JobContext` sets it on the job class instead.
+
+  Also: §21 said "three generators ship" when six do, the README's generator
+  options said "four", its Files table listed four and omitted `payload.rb`, and
+  three documents carried three different, all-stale line counts for each other.
+  Plus markdown defects in the README — an unclosed `<span>`, a malformed table
+  row, and `---` separators between `###` subsections where they mark `##` ones.
+
+- **An editorial pass over `README.md`.** *"Registering is optional"* was stated
+  five times in one section and is now stated twice — once at the top, where a
+  reader decides whether to continue, and once in the `[!NOTE]` that says what
+  happens if you skip it. A stale *"you do not have to write any of the above by
+  hand"* pointed forward at a section that comes after it. The migration
+  archaeology closing "Re-attaching" moved to DESIGN §5.2, per §22's test: it
+  explains why the collision is reachable and changes nothing the reader does.
+  The unexplained `72` in "Bounding it" now carries the 36-month horizon it was
+  measured against, so it no longer silently contradicts the documented 7-year
+  `retention` default. And the prose is rewrapped to 80 columns throughout — the
+  Dimensions section had drifted to ~95, which reads as a different document.
+
+  The `audited` two-slot caution said only that "a key set in both places will
+  raise", which is true and reads as wrong, because re-assigning a key **inside**
+  the block overwrites silently. `Payload#reject_eager_overwrite!` guards eager
+  keys only. Both halves are now stated.
 
 ## 0.4.0 — 2026-09-01
 
