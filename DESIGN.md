@@ -1,8 +1,9 @@
 # AuditLog — Design Record
 
 **Status:** validated against the working implementation in this gem, and against
-the reference application in `../audit-log-demo`
-**Last updated:** 2026-08-29
+the reference application in `../audit-log-demo`. One exception, marked in its own
+heading: §23 is a design, not a description of code that exists.
+**Last updated:** 2026-08-31
 
 > **Why this decision is what it is.** This is the reasoning behind every choice in this gem, and
 > it travelled with the code when the library was extracted from the reference app — which was the
@@ -13,15 +14,17 @@ the reference application in `../audit-log-demo`
 > Section numbers are cited from source comments (`plan §6.1`, `§11.0 Rule 1`, and a dozen more),
 > so **they are stable**. Sections 15, 18 and 19 covered project rollout; that is not library
 > documentation and lives in the reference app's `ROLLOUT.md`. Nothing renumbered. As of
-> 2026-08-28 no open question remains: the last four closed as retention (§8), export (§8),
-> redaction (§13) and pagination (§11.0) were built. Section 19 planned improvements to the existing
-> paper_trail applications and was dropped on 2026-08-28 — this library is for new projects, and
-> those apps are not being migrated.
+> 2026-08-28 no open question remained: the last four closed as retention (§8), export (§8),
+> redaction (§13) and pagination (§11.0) were built. §23 (dimensions) reopened one on 2026-08-31,
+> and it is the only section here describing something not yet built. Section 19 planned
+> improvements to the existing paper_trail applications and was dropped on 2026-08-28 — this
+> library is for new projects, and those apps are not being migrated.
 >
 > Sections corrected by actually building the thing are marked **[corrected 2026-08-27]**. Those
 > are the most valuable paragraphs here: every one was a defect that failed *silently*. §21
-> (generators) was added on 2026-08-29 and sits at the end for the same reason nothing renumbered:
-> the numbers are stable, so new material appends rather than inserts.
+> (generators, 2026-08-29), §22 (the documentation split, 2026-08-31) and §23 (dimensions,
+> 2026-08-31) each sit at the end for the same reason nothing renumbered: the numbers are stable,
+> so new material appends rather than inserts.
 ---
 
 ## 1. Goal
@@ -3311,3 +3314,507 @@ That last row is the one to keep in mind: **"too deep for the intro" and "belong
 different judgements.** An option a user must eventually set moves *later in the README*; only the
 reasoning behind it comes here.
 
+
+---
+
+## 23. Dimensions — host-defined facets  **[added 2026-08-31 — designed, not yet built]**
+
+Every question above is one this library can pose on its own: what did this actor do, what happened
+to this record, what did this request touch. A host application has a fourth kind, and the library
+cannot ask it — *all activity for invoices in department 5*, or *in department 5 and shipping
+location 12 that used payment provider 3*. The facets are foreign keys and scope labels whose names
+this gem must never know.
+
+**This is a convenience layer, and saying so is load-bearing**, because it justifies every softening
+below. Auditing is complete without it: every write is already captured by the trigger, every
+narrative by the registry, and a dimension adds nothing to what is *recorded* — only to what is
+findable in one query. So there is no coverage forcing function here, no `required_dimensions`, no
+backfill, and no raise anywhere in the feature. A host that adds a facet six months late gets it from
+that day forward and decides for itself whether the history is worth rewriting.
+
+That is not a contradiction of §16. A table that escapes `coverage_spec` produces a log with a hole
+in it and no way to fill it; a table that never declared a dimension produces a *filtered view* that
+returns less, over data that is complete and reachable by every other screen in the library. The
+first is a defect in the record, the second is a query that was never asked. Forcing functions belong
+on the first.
+
+### Why not `metadata`, which already exists
+
+`audit_events.metadata` is jsonb, it already holds everything else an action carries, and every host
+instinct is to put `customer_id` in it and filter on that. Three existing rules say no, and each one is a decision this
+document has already made elsewhere.
+
+- **It is the action's payload, not the framework's.** §6's `caused_by_request_id` was moved *out* of
+  `metadata` into a real column precisely because a registered action carrying that key silently
+  overwrote the framework's value. `customer_id` is a far likelier collision than
+  `caused_by_request_id` ever was.
+- **`Redaction` empties it.** §13 exists to erase payload values on request, and it leaves
+  `changed_columns` intact because structure survives erasure. A facet stored in `metadata` is erased
+  along with the values, and the record silently drops out of every faceted query the day somebody
+  exercises an erasure. A dimension is structure and has to sit where redaction does not reach.
+- **It is layer 2 only.** Every `update_all`, every cascade, every console session and every rake
+  task — the entire population §9 exists to surface — carries no `metadata` at all. An "all activity
+  for customer 5" screen that omits exactly the writes an auditor scrutinises most is the failure
+  this document is organised around.
+
+So: a `dimensions jsonb` column of its own, on both tables.
+
+### Two sources, and they mirror the two layers
+
+The library's whole shape is layer 1 catching what layer 2 cannot see, and layer 2 saying what layer
+1 cannot express (§3). Dimensions reproduce that one level down, which is the strongest evidence the
+shape is right.
+
+| | Written by | Covers | Cannot reach |
+|---|---|---|---|
+| `audit_changes.dimensions` | the trigger, from the row | **every** write — `update_all`, `delete_all`, raw SQL, DB cascades, console, migrations | anything that is not a column on the row that changed |
+| `audit_events.dimensions` | `EventSubscriber`, from the app | anything the application knows — an N-hop denormalisation, the current tenant, a tag, the deployed version | any write with no registered event |
+
+Each covers the other's hole, and `request_id` joins them inside a unit of work: a change row with no
+dimensions of its own still surfaces when its event matched, because the timeline groups on the unit
+and hydrates the whole of it (§11.2b).
+
+### The row-derived half
+
+Declared beside the trigger, in the migration, where every other per-table decision in this library
+already lives (§5.1):
+
+```ruby
+attach_audit_trigger :invoices, model: "Invoice",
+  dimensions: %i[organization_id customer_id department_id
+                 shipping_location_id billing_location_id payment_provider_id]
+```
+
+`TG_ARGV[2]` carries the list as a comma-separated string — the same shape, the same
+`string_to_array` parsing and the same `validate_identifiers!` guard as the exclusion list in
+`TG_ARGV[0]`, so the feature adds no new parsing and no new validation. The trigger already builds
+`to_jsonb(NEW)`; extracting six keys from it is a handful of `->>` operators and no extra query. That
+is what makes this half free, and free is what lets it run on the hottest write path in the system.
+
+**A table that declares no dimensions must pay nothing for the ones that do**, since one function
+serves every audited table in the schema. The extraction therefore sits behind
+`IF TG_ARGV[2] IS NOT NULL`, and nothing above it changes. Measured on 18.6 at 200k rows a leg, seven
+paired trials with the order alternated: the per-trial delta ranges from −4.2% to +14.5% and changes
+sign, mean +2.3%, minimum −1.8%. The guard is below this machine's noise floor — which is the
+strongest claim the measurement supports, and a stronger one than the code needs.
+
+**Explicit only. There is no `dimensions: :auto`.** Recording every `%_id` column with no declaration
+was considered and is genuinely tempting — a seventh foreign key would need no migration at all, and
+"hosts will add and remove facets over an application's life" is a real prediction. It is rejected
+because the failure mode is invisible: `:auto` sweeps in `stripe_charge_id` and `external_uuid`
+alongside the real associations, and a high-cardinality text id in a GIN index produces one entry per
+row — its worst case, arrived at silently, on the largest table in the database. An opt-in feature
+whose cost curve depends on columns nobody chose is not opt-in.
+
+**Values are scalar text, read from `NEW` (`OLD` on delete), and NULLs are skipped.** Four decisions
+in one sentence, each with a reason:
+
+- *Text*, because `{"customer_id": 5}` and `{"customer_id": "5"}` do not match under `@>` and the
+  symptom is an empty screen. One normalisation point, in `where_dimensions`, so no caller can get it
+  wrong — and `dimensions->>'customer_id' = '5'` keeps working for a host writing SQL by hand.
+- *`OLD` on delete*, because a deleted invoice's final department is exactly how somebody goes looking
+  for it.
+- *NULLs skipped.* Storing an explicit JSON null appears to buy the negative query — "invoices with no
+  department" — and does not, because absence in this column is already overloaded: a key is missing
+  either because the foreign key was null **or** because the row predates the declaration. The
+  negative query carries a permanent asterisk either way, and storing nulls would pay for it with one
+  enormous posting list on every null-FK row. "Which invoices have no department" is a current-state
+  question about business data; ask `invoices`.
+- *Scalar*, which has a consequence worth stating outright.
+
+**A dimension records the row's value *after* the change, so departures are not captured.** An
+invoice moving from department 5 to department 9 writes a change row filed under 9. Department 5's
+faceted feed therefore shows that invoice up to, but not including, the row that took it away — the
+feed simply stops. The asymmetry is real: arrivals are recorded and departures are not.
+
+Storing `OLD ∪ NEW` as a one- or two-element array was designed in full and rejected. jsonb
+containment has array semantics, so it works (verified below), and it costs about two bytes — but it
+breaks the guessable query. `dimensions @> '{"department_id":"5"}'` against an array-valued column
+returns nothing, silently, and this is a feature whose entire premise is convenient ad-hoc querying
+by hosts who will not always go through our query objects. Handing them a stored shape that reads
+oddly in `psql` and defeats the obvious spelling is a worse trade than the gap.
+
+Nothing is lost from the record. The transition writes an ordinary change row carrying
+`diff = {"department_id": [5, 9]}` and `changed_columns = {department_id}`, and it renders normally
+on the invoice's own timeline, in the drill-down, on the records and actions screens and in the CSV
+export. Only the *filtered* view omits it. And because `diff` stores `[old, new]` as a real jsonb
+array, containment already answers the departure query on either side — so a host that ever needs it
+can add the `jsonb_path_ops` index on `diff` that §4 anticipated — *"add a `jsonb_path_ops` index for
+`@>` containment later if it materializes"* — without changing a stored byte. Verified on 18.6
+rather than assumed:
+
+| Expression | |
+|---|---|
+| `'{"d":[5,9]}'::jsonb @> '{"d":[5]}'::jsonb` — the departed value | `t` |
+| `'{"d":[5,9]}'::jsonb @> '{"d":[9]}'::jsonb` — the arrived value | `t` |
+| `'{"d":[5,null]}'::jsonb @> '{"d":[5]}'::jsonb` — a delete row | `t` |
+| `'{"d":["5","9"]}'::jsonb @> '{"d":["5"]}'::jsonb` — array-valued dimensions | `t` |
+| `'{"d":["5"]}'::jsonb @> '{"d":"5"}'::jsonb` — **the footgun arrays would ship** | `f` |
+| `'{"d":"5"}'::jsonb @> '{"d":"5"}'::jsonb` — scalar, as designed | `t` |
+
+**Changing the set is detach-then-attach, and it is not retroactive** — identical to changing a
+table's exclusions (§5.1), for the identical reason, and needing no new mechanism. Removing a
+dimension stops recording it from that migration forward; rows already written keep it and go on
+matching, which is honest rather than awkward.
+
+**The column list is checked against `information_schema.columns` at migration time** and raises
+there, beside the `CREATE TRIGGER` that already raises when the function is not visible. A typo'd
+`deparment_id` otherwise writes a dimension that is absent forever, and the symptom is a filter that
+returns nothing and never says why. The check costs one `SELECT` in a migration and nothing at
+runtime, and it is the only enforcement in the entire feature.
+
+### The app-supplied half
+
+Two mechanisms, and they are deliberately non-overlapping: the registry is the action-specific layer,
+reading the payload; the config lambda is the layer that by construction can see neither.
+
+```ruby
+AuditLog::Registry.register "invoice.approved",
+  dimensions: %i[organization_id department_id tag],
+  requires:   %i[invoice_id],
+  subject:    ->(p) { ["Invoice", p[:invoice_id]] },
+  summary:    ->(p) { "Invoice #{p[:invoice_id]} approved" }
+```
+
+`EventSubscriber#emit` lifts the declared keys out of the completed payload — the same single
+crossing point where `requires:` runs, so `notify`, `audited` and a bare `Rails.event.notify` all
+behave identically (§7).
+
+**Lifting from the payload beats a reserved `dimensions:` keyword**, which was the obvious
+alternative. Lifting happens *after* the payload is assembled, so a dimension computed inside an
+`audited` block — `audit[:department_id] = invoice.department_id`, on a record the block just created
+— is lifted exactly like an eagerly-passed one. It inherits the two-slot design (§7) for free instead
+of duplicating it, and a reserved keyword would have been eager-only and needed its own block-slot
+twin. It also leaves `on:` and `transaction:` the closed pair of reserved words that they are.
+
+**Copied, not moved.** The key stays in `metadata`, where it is evidence and renders in
+`shared/_event_payload`, *and* lands in `dimensions`, where it is an index. That duplication is the
+entire point of the column existing — see the redaction argument above.
+
+**`dimensions:` does not imply `requires:`.** An entry that wants a facet enforced lists it in both.
+Explicit, composable, and loose by default, which is what this feature is.
+
+The ambient constants — current tenant, deployed version — have no business being repeated at a
+thousand call sites:
+
+```ruby
+config.event_dimensions = -> { { tenant_id: Current.tenant&.id, app_version: AppVersion.current } }
+```
+
+Merged *under* the declared keys, so a call site wins on any overlap.
+
+**It takes no arguments at all, and that is what makes the two mechanisms different things rather
+than two spellings of one.** Nothing downstream can distinguish a key the registry lifted from a key
+this lambda supplied — identical jsonb, same column, same table — and nothing should be able to. The
+distinction is entirely in where the value is READ FROM, and therefore in what it can vary with: the
+registry reads the *payload*, so its facets differ between two events of the same action; this lambda
+reads *application state*, so its facets are identical for every event in a unit of work. Hand it the
+payload and that distinction collapses. It becomes a registry declaration applied globally with worse
+discoverability, "ambient" stops naming a property and starts naming a convention, and the option
+would have to be renamed `default_dimensions` to stay honest.
+
+Two things follow from taking nothing, and neither is available otherwise. It is a **guarantee** that
+two events in one unit of work cannot disagree about the tenant. And a value that cannot depend on
+the event can be computed **once per unit of work** and memoised on `Current` — reset by the executor
+like everything else there — rather than once per event.
+
+**What each argument would have bought, and why neither is worth it.** The *action name* would let an
+app vary the ambient set per action; per-action dimensions already have a home, in the registry entry,
+next to that action's `summary` and `requires:` where anybody auditing "the finite, reviewable list of
+what this system considers an auditable action" (§7) can see them. A `case action when
+"invoice.approved"` inside a config lambda is the same information moved somewhere strictly worse:
+far from the entry, leaving no declaration behind, discoverable only by reading the initialiser end
+to end. The *payload* would serve exactly one case the registry does not — a key present in nearly
+every payload, an `account_id` every action already passes, which would otherwise be declared on
+forty entries. That case is real, and it is also the one with the worst discoverability of any in
+this section: forty registry entries would silently carry a facet that none of them mentions.
+
+The one honest argument against is arity: Ruby lambdas are strict, so widening `-> { }` later raises
+`ArgumentError` at emit time, inside the caller's transaction, in every adopter's application. That
+would be a one-way door if it could not be reopened — it can, by accepting more than one arity in two
+lines on the day it is wanted, and a host with the ubiquitous-key problem has the registry in the
+meantime. A door that can be reopened is not a reason to walk through it now.
+
+**It never re-raises.** A raising `event_dimensions` is caught, logged and the event stored with
+whatever dimensions were gathered. The precedent split is principled rather than arbitrary:
+`requires:` and `raise_on_error` roll the transaction back because they protect the *trail*;
+`LabelResolver` logs and renders FAILED because it is display (§11.8). Dimensions are a convenience,
+so they follow `LabelResolver`. Rolling back an approved invoice because an app-version lookup raised
+would be indefensible.
+
+**What a global lambda costs, measured.** Three ambient keys on every event, against an
+`audit_events` carrying all five of the indexes it really has, paired trials with the order
+alternated, 150k rows a leg:
+
+| | insert | heap | facet index |
+|---|---|---|---|
+| no dimensions | 2.893 s | 53 MB | 16 kB |
+| three ambient keys on every event | 3.834 s | 65 MB | 4.9 MB |
+| | **+32.5% mean, +38.9% min** | +23% | |
+
+Roughly half of that is the jsonb value and half the GIN entry. Three things put it in proportion:
+`audit_events` is the low-volume table, so at a typical 1:5 event-to-change ratio — with change rows
+costing nothing — it lands near **+5% of total audit write cost**; the measurement is a 150k-row bulk
+insert, where server-side tuple work is the whole cost, while a real `notify` is a single row behind
+Ruby, parameter binding and a round trip; and it is opt-in per key.
+
+Two pieces of guidance fall out, and both belong in the README. **Declare as a dimension only what
+will be filtered on** — half the cost is the index, and a value merely read on a screen belongs in
+`metadata`, which is free. And note what a lambda applied to *every* event does: every
+`audit_events` row gets a non-NULL `dimensions`, so the partial index's predicate excludes nothing on
+that table. That is the ambient-GUC argument below, one table over, and cheaper only because of
+volume. It needs no machinery to fix and is self-selecting — the lambda for a facet wanted on
+everything, a registry declaration for one wanted only where it will be queried.
+
+### There is no GUC, and no ambient dimension on change rows
+
+The obvious symmetry — a fifth `set_config` in `Context::STAMP_SQL` carrying a jsonb blob the trigger
+merges into every row — is not built. The cost accounting matters, because the naive version of this
+argument is wrong: `ensure_stamped!` already rewrites at least once per request, since `request_id`
+changes every request, so a fifth element in that comparison and one more bind parameter are
+marginal. The real cost is in the trigger, which would parse a jsonb GUC and merge it **per audited
+row**, on the hottest write path in the system, plus wider rows and more GIN entries on the
+highest-volume table rather than on the low-volume one — to serve facets that the events half already
+carries for every write that has a registered action.
+
+The partial index sharpens that further. `WHERE dimensions IS NOT NULL` is what keeps the index
+proportional to adoption, and an ambient dimension would give **every audited row in the database** a
+non-NULL value — including every row of every table that declared no facets. The predicate would
+then exclude nothing, and the index would be back to the size and write cost the unqualified version
+was rejected for. Ambient dimensions are not merely more expensive than row-derived ones; they
+dismantle the mechanism that makes the feature free for the tables that opt out.
+
+§14 already covers the one case that genuinely wants this. An application that needs the tenant on
+the audit rows themselves should add a real `tenant_id bigint`, index it leading, and have the trigger
+read a third GUC — a heavier and better-suited decision than a facet, already written down, and not
+something to fold in here.
+
+### There are no actor dimensions
+
+"All activity by users in organisation 5" needs nothing built. `audit_changes` is already indexed on
+`(actor_type, actor_id, occurred_at DESC)`, so a host resolves its own actor ids however it likes and
+passes them in; the query API accepts an array or a relation, and a dimension filter composes with it
+as one index scan and a filter. Two properties are worth stating: the membership is *live* rather
+than snapshot, so "users currently in organisation 5" is a different answer next year — acceptable
+for a convenience filter, and a host that needs the as-of-then answer can freeze the list itself. And
+an organisation attribute of the *acting session* would have to be ambient, which the section above
+declines to build.
+
+### Storage and indexing
+
+`dimensions jsonb`, **nullable with no default**, on both tables. `NOT NULL DEFAULT '{}'` buys
+nothing here and costs more: a nullable column with no default is a catalog-only `ADD COLUMN` (still
+brief `ACCESS EXCLUSIVE` on the parent and every partition, so it runs under
+`maintenance_lock_timeout` like every other maintenance path in §8), and NULL keeps "never recorded"
+distinguishable from "recorded, empty" — which matters precisely because the feature is not
+retroactive.
+
+**What the column itself costs a non-adopter**, measured rather than reasoned about. On
+`audit_events`: **nothing at all** — 0 bytes per tuple, 0% heap. Those rows already carry a null
+bitmap (`caused_by_request_id` is NULL on any event that was not job-originated), and the bitmap is
+sized `ceil(natts/8)`, so a sixteenth column fits in the two bytes the fifteenth already needed. On
+`audit_changes` it is **8 bytes per row, +0.54% heap**: a fully correlated change row populates every
+column today and therefore carries *no* null bitmap, and an always-NULL column forces one into
+existence (`t_hoff` 24 → 32). Rows that already contain a NULL — an out-of-band write, a system
+actor — pay zero. That 0.54% was measured, put to the decision, and accepted on 2026-08-31: the
+column ships with the schema rather than being gated behind the opt-in migration, and there is one
+trigger function rather than two.
+
+One measurement artefact is worth recording so nobody re-derives it as a bug: with *uniform* row
+sizes those 8 bytes can push rows-per-page across a boundary and show up as a 14% heap increase. That
+is an artefact of a synthetic benchmark. Real `diff` values vary in size row to row, so the packing
+effect averages out and 0.54% is the number that survives.
+
+**GIN `jsonb_path_ops` is the right index, and §4's argument endorses here exactly what it rejected
+one column over.** The reason `diff` gets no `jsonb_path_ops` index is that its question needs the
+`?` key-existence operator, which that opclass does not support. A facet query only ever needs `@>`,
+which it does — in its smaller and faster form. The fit is better than merely adequate: six declared
+facets are 63 non-empty subsets, so covering arbitrary conjunctions with btree indexes means 63 of
+them, while multi-key containment is `jsonb_path_ops`'s *best* case — it intersects posting lists
+inside the index before touching the heap, so more facets makes the query narrower rather than
+slower.
+
+**The index carries `WHERE dimensions IS NOT NULL`, and that predicate is load-bearing rather than
+tidy.** The first draft shipped an unqualified GIN on both tables, on the theory that GIN stores no
+entries for a NULL value and a non-adopter would therefore carry an empty index. That theory is
+wrong: PostgreSQL records a placeholder entry for a NULL indexed value — the category
+`GIN_CAT_NULL_ITEM` — so every row of every non-adopting application would enter one enormous shared
+posting list, serving a query nobody in that application can ask.
+
+Measured on 18.6, `audit_changes`-shaped rows with heterogeneous `diff` sizes, paired trials with the
+order alternated and warm-up discarded. The first run of this comparison was ordered rather than
+alternated and reported the partial index at +15.4%, which was entirely the ordering bias:
+
+| | insert throughput, NULL-dimension rows | index after 150k such rows |
+|---|---|---|
+| the `dimensions` column alone | within noise | — |
+| … + unqualified GIN | **+15%** | **4.3 MB** of dead entries |
+| … + GIN `WHERE dimensions IS NOT NULL` | **0.0% mean, −0.7% min** | **16 kB** |
+
+The predicate makes the index proportional to *adoption* rather than to table size. It excludes every
+pre-adoption row — all NULL, and by the non-retroactivity rule they can never match a facet query
+anyway — and every row of every table that never declares a dimension, permanently. It excludes them
+at write time too: a partial index does no work for a tuple that fails its predicate, which is why
+the throughput column reads zero rather than merely small.
+
+The planner still chooses it, because `@>` is strict and therefore implies `dimensions IS NOT NULL`.
+Verified rather than assumed:
+
+```
+Bitmap Heap Scan on t
+  ->  Bitmap Index Scan on t_part
+        Index Cond: (d @> '{"department_id": "7"}'::jsonb)
+```
+
+**So the index ships in the install migration, and the opt-in migration is the RETROFIT path.** A new
+application creates it against empty tables: instant, and free for the life of the application if
+the feature is never used. An established application with years of audit rows already in place is
+the case that needs care.
+
+### Adding the index to a live deployment
+
+`CREATE INDEX CONCURRENTLY` is refused on a partitioned table. Verified on 18.6:
+
+```
+ERROR:  cannot create index on partitioned table "p" concurrently
+```
+
+So `add_index :audit_changes, :dimensions, using: :gin` builds across every partition under a lock
+that blocks the audit write path for the duration — on a seven-year horizon, a GIN build over 84
+partitions. The retrofit helper does the per-partition dance instead:
+
+```sql
+CREATE INDEX audit_changes_dim ON ONLY audit_changes            -- parent, no build
+  USING gin (dimensions jsonb_path_ops) WHERE dimensions IS NOT NULL;
+CREATE INDEX CONCURRENTLY audit_changes_2026_08_dim ON audit_changes_2026_08 …;
+ALTER INDEX audit_changes_dim ATTACH PARTITION audit_changes_2026_08_dim;
+-- repeated per partition
+```
+
+Two properties make that safe rather than fiddly, and both were verified rather than reasoned about:
+
+- **Postgres tracks completeness itself.** The parent index sits at `indisvalid = false` and flips to
+  `true` at the moment the last partition attaches. The migration asserts *that*, rather than
+  counting partitions and trusting its own arithmetic — §21.1's "never report success for work it did
+  not do", enforced by the catalog instead of by care.
+- **`disable_ddl_transaction!` is mandatory**, because `CONCURRENTLY` cannot run inside a
+  transaction. A failure therefore leaves partial state, which is precisely why the `indisvalid`
+  assertion matters and why the helper must be re-runnable: skip partitions already attached, and
+  drop the `INVALID` partition index a failed `CONCURRENTLY` leaves behind before retrying.
+
+**Nothing else in §8 has to learn that the index exists.** A partition created after the parent index
+exists inherits it (verified), so `Partitions.ensure!` and the daily task are untouched.
+`rollup_year!` builds its staging table with `LIKE … INCLUDING ALL`, so a yearly partition acquires
+the facet index without the rollup code knowing this feature exists. A retired partition takes its
+indexes with it, and `drain_default!`'s temp table needs none.
+
+**The tuning step, when one facet is on every screen**, is a btree expression index rather than a
+schema change:
+
+```ruby
+add_audit_dimension_index :department_id   # ((dimensions->>'department_id'), occurred_at DESC)
+```
+
+GIN can filter but cannot order, so `ORDER BY occurred_at DESC LIMIT 25` under a GIN-only plan
+fetches every match in the window and sorts. The expression index restores index-ordered keyset
+paging for the hot facet and leaves the rest as filters. Promotion to a real column (§14's `tenant_id`
+recipe) remains available above that.
+
+### Querying
+
+`where_dimensions` lives on `AuditLog::Record`, the shared base — both tables, one implementation,
+one normalisation, for the same reason `grouped_by_request` lives there (§11.2a).
+
+`AuditLog::DimensionTimeline` is `Timeline` with the record predicate swapped:
+
+```sql
+SELECT "key", max(occurred_at) AS occurred_at FROM (
+  SELECT COALESCE(request_id::text, 'row:' || id) AS "key", occurred_at
+    FROM audit_changes WHERE dimensions @> ?::jsonb AND occurred_at BETWEEN ? AND ?
+  UNION ALL
+  SELECT request_id::text AS "key", occurred_at
+    FROM audit_events  WHERE dimensions @> ?::jsonb AND occurred_at BETWEEN ? AND ?
+) legs GROUP BY "key"
+```
+
+Putting the column on **both** tables is what keeps this shape identical to §11.2b's. With dimensions
+on `audit_changes` alone the events leg would need `request_id IN (SELECT … FROM audit_changes …)` —
+a semi-join, evaluated twice, on the one query in the library that is already a union over two
+partitioned tables. Both legs filtering their own column deletes it. A unit qualifies if *either*
+table matched, and `#activities` then hydrates all of it through `grouped_by_request`, so nothing is
+half-loaded.
+
+The window is bounded by default here, which is the one place this diverges from §11.2b's "unbounded
+on purpose". An unfiltered facet scan across 84 partitions where `department_id = 5` matches a third
+of the table is genuinely slow, and the resolution is already in the document: `RequestDrillDown`
+(§11.6) bounds generously, **discloses the bound on the screen**, and escapes with `?full=1`.
+Disclosed truncation is not invisible truncation, so the rule is satisfied rather than broken. The
+faceted feed reuses `scope_description` to say so.
+
+Screens declare their facets so the filter can be rendered without the library knowing a single host
+model:
+
+```ruby
+config.dimensions = {
+  customer_id: { label: "Customer",
+                 options: -> { Customer.order(:name).limit(200).pluck(:name, :id) } },
+  status:      { label: "Order status", options: -> { %w[draft submitted approved shipped] } },
+  app_version: { label: "App version" }   # no options -> free-text input
+}
+```
+
+`options:` follows `config.actor_picker` exactly, and for the reason that option's own comment gives:
+populate a picker from the host's own table, never from
+`SELECT DISTINCT dimensions->>'customer_id'` over a partitioned audit table, which is unusable at
+volume. No lambda means a text input — honest, zero coupling, and correct
+for `app_version`, where the host may have no list to offer.
+
+### Limits, stated rather than discovered
+
+Every one of these is a screen that renders fine and returns less than a reader might assume, so each
+belongs in the README as well as here.
+
+- **Conjunction is within one row.** `@>` matches a single jsonb value, so
+  `{customer_id: 5, product_id: 12}` finds nothing when `customer_id` lives on `orders` and
+  `product_id` on `line_items`. The six-facet invoice case is unaffected — all six are columns on
+  `invoices` — but a cross-table conjunction is a different query (match each facet, intersect the
+  `request_id`s at the unit-of-work level), more expensive and semantically distinct, and it is not
+  built.
+- **Not retroactive**, in both halves. A dimension declared today says nothing about yesterday.
+- **Departures are not captured**, per the scalar decision above.
+- **Dimensions are for slicing, so keep them low-cardinality.** The name is the guidance:
+  `app_version` (dozens), `tag` (hundreds), `department_id` (thousands) are all fine; a free-text
+  note, a URL or an idempotency key drives the GIN index toward one entry per row and belongs in
+  `metadata`, which is already the right home for evidence somebody reads rather than filters on.
+- **Dimensions are ids and scope labels, not values.** They survive `Redaction` by design, which is
+  correct for `department_id` and wrong for anything that is itself personal data. Documented, not
+  enforced — consistent with everything else in this section.
+
+### Alternatives considered and rejected
+
+- **A narrow `audit_dimensions` side table** (row id, key, value). A second write path, needing its
+  own partitioning aligned to two parents and its own lockstep retention. §4 already rejected
+  `audit_actors` on the second-write-path argument; this is that table wearing a different hat.
+- **A host-maintained join table keyed on audit row ids.** The natural host instinct, and the
+  mechanism is worse than it looks: retention *detaches and drops* partitions (§8), so the references
+  dangle silently, and a foreign key into a partitioned table whose partitions are detached on a
+  schedule is not viable in the first place. Keyed on `request_id` it is defensible — that value is
+  stable, never rewritten, survives rollup, and is indexed on both tables — and it remains the right
+  recipe for an application that wants facets this library does not store. Its holes are the ones
+  described above: nothing for out-of-band writes, and retention drift between the two tables.
+- **Resolving a subject's dimensions at emit time** through a host lambda that queries. One live
+  query per event, inside the caller's transaction, where a raise rolls back the change it was
+  describing. Far too heavy a failure mode for an optional convenience.
+- **A join inside the trigger**, to reach `line_items.order_id -> invoices.department_id`. N `SELECT`s
+  on every audited write — the cost §11.8 already refused for association labels, on a hotter path.
+  The supported answers are to declare the facet on the child table if the column is there, to let
+  unit-of-work correlation carry it when there is a registered event, or for the host to denormalise
+  the column. Each is honest about what it does and does not reach.
+- **Gating the `dimensions` column itself behind the opt-in migration**, so that a non-adopting
+  application's schema stayed byte-identical to what it has today. Genuinely reachable: the migration
+  would add the column *and* re-install the trigger function in a dimension-aware form, with
+  `Schema.install_function!` substituting a `{{dimensions_block}}` slot exactly as it already
+  substitutes `{{schema}}`. Rejected for what it costs to save 0.54% of one table's heap — two shapes
+  of the one function in this library that must never be wrong, and a second thing for
+  `Schema.install!` to get right on every upgrade and in every tenant schema (§14). The measurement
+  is above; the trade was taken deliberately rather than by default.
