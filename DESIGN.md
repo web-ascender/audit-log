@@ -2673,7 +2673,15 @@ object graph.
    worse than one that labels nothing. `config.association_targets` overrides the
    reflected map for what reflection cannot see, and `false` suppresses a column.
 
-2. **The label chain ends in `nil`, not in `"Product #51"`.** `ActorLabel`'s chain
+2. **The label chain ends in `nil`, not in `"Product #51"`.** The two chains share
+   a head and diverge at the tail, and only the tail is a difference of principle.
+   Both start `to_audit_label`, then `to_label` — one hook answers "what should an
+   auditor see" wherever a model appears in the log, and the argument for trying it
+   first is *stronger* on the actor side, where the string is snapshotted onto every
+   row rather than resolved at display time beside an id that stays visible.
+   (`Configuration#default_actor_label` omitted `to_audit_label` until 2026-09-01;
+   that was an oversight, not a decision, and a host wanting the separation had to
+   replace the whole resolver.) The tail is the real divergence: `ActorLabel`'s chain
    must terminate in something because its column would otherwise be blank. Here
    the id renders unconditionally, so a model with no label hook must produce *no*
    label and leave the cell byte-identical to what it was before this feature

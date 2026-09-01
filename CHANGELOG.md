@@ -5,20 +5,34 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## 0.5.1 — 2026-09-01
+
+### Changed
+
+- **The default `actor_label_resolver` now tries `to_audit_label` before
+  `to_label`**, the head `AuditLog::RecordLabel` has always used. The tails still
+  differ on purpose — `RecordLabel` ends in `nil` so association labelling stays
+  opt-in, this one ends in `Class #id` because the actor column would otherwise be
+  blank — but one hook now answers "what should an auditor see" wherever a model
+  appears in the log, and it matters more here, where the string is snapshotted
+  onto every row rather than resolved live beside an id that stays visible.
+
+  Affects only an app on the **default** resolver whose actor model defines
+  `to_audit_label`, and is not retroactive. `config.actor_label_resolver =
+  ->(a) { a.to_label }` keeps the old behaviour. DESIGN §11.8.
+
 ### Added
 
 - **`.github/workflows/release.yml`** — a pushed `v*` tag now becomes a GitHub
-  Release, with that version's CHANGELOG section as the body. A tag and a Release
-  are different objects and pushing the first never creates the second, which is
-  why this repository reached five tags with two Releases and GitHub labelling
-  0.2.0 "Latest" for three releases. Releases for v0.3.0, v0.4.0 and v0.5.0 were
-  backfilled by hand from the same extractor the workflow uses.
+  Release with that version's CHANGELOG section as the body, via the same
+  `.github/scripts/changelog-section` extractor a human uses by hand. A tag and a
+  Release are different objects and pushing the first never creates the second,
+  which is how this repository reached five tags with two Releases. It refuses
+  when the tag and `version.rb` disagree, and does **not** run `gem push`.
 
-  It refuses when the tag and `version.rb` disagree — the README pins by tag, so
-  `v0.5.0` on a tree still saying `0.4.0` would hand an adopter the wrong code
-  under the right notes — and it repeats CI's warning-free `gem build` gate,
-  because a tag can be pushed to a commit CI never ran. It does **not** run
-  `gem push`, and must not: `allowed_push_host` is a deliberate non-host.
+- `spec/audit_log/actor_label_spec.rb` — `AuditLog::ActorLabel` had no spec, and
+  `spec/dummy` overrides the resolver, so the default chain was untested from both
+  directions.
 
 ## 0.5.0 — 2026-09-01
 

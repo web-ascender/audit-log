@@ -87,7 +87,8 @@ is a lambda or string on `AuditLog.config`, configured in
 about the host app, add a config attribute — do not reach for the constant.
 
 It assumes only that the host app exposes `current_user` in controller scope and
-that the actor responds to `to_label`. Both are resolved through config.
+that the actor produces a label (`to_audit_label`, else `to_label`, else a
+name/email pair, else `Class #id`). Both are resolved through config.
 
 `README.md` is the extraction guide and the design-decision record.
 Update it when you change behaviour.
@@ -314,7 +315,10 @@ Do not "fix" these without reading the linked reasoning first.
   something because its column would otherwise be blank. Here the id renders
   unconditionally, so a model with no hook must produce no label and leave the cell
   byte-identical to before the feature existed. That nil ending *is* the opt-in.
-  The chain is `to_audit_label` → `to_label` → a deliberately overridden `to_s`,
+  The chain is `to_audit_label` → `to_label` → a deliberately overridden `to_s`
+  — **the same head `Configuration#default_actor_label` uses**, and only the tail
+  differs (that default ends in `Class #id` because the actor column would
+  otherwise be blank),
   and **there is deliberately no `name`/`title` column sniffing** — guessing which
   column reads as a label is how a screen confidently captions an id with the wrong
   string. Adding a sniffing fallback, or a `"Type #id"` terminal, both look like

@@ -219,7 +219,7 @@ command, and the reasoning for any of it is linked rather than inline.
 
 ```ruby
 # Gemfile
-gem "audit_log", git: "https://github.com/web-ascender/audit-log", tag: "v0.5.0"
+gem "audit_log", git: "https://github.com/web-ascender/audit-log", tag: "v0.5.1"
 ```
 
 A private repo, so `bundle` needs credentials for the company GitHub org. Pin to
@@ -1094,7 +1094,7 @@ they point at, and the label chain is tried in this order —
 | | |
 |---|---|
 | `to_audit_label` | first, so a model can show auditors something other than what it shows the rest of the UI |
-| `to_label` | the same hook actor labels use |
+| `to_label` | the same hook actor labels use, and in the same order |
 | `to_s` | only when the model deliberately overrode it |
 | *nothing* | no label. The cell renders the bare id, exactly as it did before |
 
@@ -1335,7 +1335,7 @@ knowing anything about any of them.
 |---|---|---|
 | `authorize` | **no-op** | Gates the auditor UI at `/audit`. The default lets *everyone* in, which is right for a demo and wrong for you. Raise or redirect. |
 | `actor_resolver` | `controller.try(:current_user)` | How to find the acting user. Works with Devise, the Rails generator, or anything exposing `current_user`. |
-| `actor_label_resolver` | `actor.to_label` | The string snapshotted onto every audit row. Rendered once per entry point, so a later rename never rewrites history. |
+| `actor_label_resolver` | `to_audit_label` → `to_label` → name/email → `Class #id` | The string snapshotted onto every audit row. Rendered once per entry point, so a later rename never rewrites history. `to_audit_label` comes first for the same reason it does on [record labels](#making-association-ids-readable-optional) — and it matters more here, because this string is stored rather than resolved at display time. |
 | `unaudited_tables` | a few internals | Tables that legitimately have no trigger, **each with a written reason**. `audit_log:coverage` fails for anything neither audited nor listed here. |
 | `default_excluded_columns` | timestamps, `lock_version`, password and reset-token columns | Columns kept out of every diff. Per-table extras go on the trigger via `--exclude`. |
 | `default_dimensions` | `nil` | `-> { {tenant_id: …, app_version: …} }` — facets recorded onto **every** event, merged under whatever a registry entry declared. Takes no arguments on purpose: it supplies what is true of the unit of work, never of the action. It must not raise; if it does the event is still written without them. See [Dimensions](#dimensions-querying-by-your-own-associations-optional). |

@@ -79,6 +79,10 @@ module AuditLog
 
     # ->(actor) { "Jane Doe <jane@example.com>" }  Rendered once per entry point
     # and snapshotted onto every row. See ActorLabel.
+    #
+    # The default tries `to_audit_label`, then `to_label`, then name/email, then
+    # "Class #id" -- the same head as AuditLog::RecordLabel's chain, so one hook
+    # answers "what should auditors see" wherever a model appears in the log.
     attr_accessor :actor_label_resolver
 
     # ->(type, ids) { {id => label} }  Turns record ids into the labels an auditor
@@ -372,11 +376,29 @@ module AuditLog
 
     private
 
-    # Assumes only what a Devise-shaped User offers. `to_label` is the intended
-    # hook -- define it on the actor model and the audit log renders it verbatim.
-    # The fallbacks exist so an ApiKey or a Machine actor that never heard of
-    # this library still produces something an auditor can read.
+    # Assumes only what a Devise-shaped User offers. `to_audit_label` and
+    # `to_label` are the intended hooks -- define either on the actor model and
+    # the audit log renders it verbatim. The fallbacks exist so an ApiKey or a
+    # Machine actor that never heard of this library still produces something an
+    # auditor can read.
+    #
+    # `to_audit_label` comes first, the same order and for the same reason as
+    # AuditLog::RecordLabel: it lets a model say something to auditors other than
+    # what it says to the rest of the UI. That matters MORE here than it does
+    # there. A record label is resolved live at display time and annotates an id
+    # that stays on the screen beside it; this one is SNAPSHOTTED onto every audit
+    # row at the moment of the change and is the only identity that column will
+    # ever carry. A `to_label` that embeds a customer-facing string, a phone
+    # number or an internal ticket URL is a reasonable everyday label and a poor
+    # thing to freeze across seven years of audit trail, and before this the only
+    # way to separate the two was to replace the resolver wholesale.
+    #
+    # The chains still diverge at the END, and that divergence is the deliberate
+    # one (DESIGN §11.8): RecordLabel's terminates in nil so the feature is opt-in
+    # and an unlabelled cell renders the bare id, while this one must terminate in
+    # something because the actor column would otherwise be blank.
     def default_actor_label(actor)
+      return actor.to_audit_label if actor.respond_to?(:to_audit_label)
       return actor.to_label if actor.respond_to?(:to_label)
 
       name  = actor.try(:name) || actor.try(:full_name)
