@@ -3498,7 +3498,7 @@ The ambient constants — current tenant, deployed version — have no business 
 thousand call sites:
 
 ```ruby
-config.event_dimensions = -> { { tenant_id: Current.tenant&.id, app_version: AppVersion.current } }
+config.default_dimensions = -> { { tenant_id: Current.tenant&.id, app_version: AppVersion.current } }
 ```
 
 Merged *under* the declared keys, so a call site wins on any overlap.
@@ -3510,8 +3510,16 @@ distinction is entirely in where the value is READ FROM, and therefore in what i
 registry reads the *payload*, so its facets differ between two events of the same action; this lambda
 reads *application state*, so its facets are identical for every event in a unit of work. Hand it the
 payload and that distinction collapses. It becomes a registry declaration applied globally with worse
-discoverability, "ambient" stops naming a property and starts naming a convention, and the option
-would have to be renamed `default_dimensions` to stay honest.
+discoverability, and the guarantee below evaporates.
+
+**The name is `default_dimensions` and not `ambient_dimensions`, though ambient is what they are.**
+`config.default_excluded_columns` already establishes both the word and the semantics one feature
+over — its own comment calls it "the floor that applies everywhere", columns excluded from every
+table unless a migration adds more. This is that shape exactly: keys applied to every event unless a
+registry entry adds or overrides one, and *default* is literally accurate rather than approximate,
+because the merge really does let a declared key win. `ambient` names the property more precisely and
+is the right word in this document, but it is a term a reader would have to learn before they could
+use the option, and there is a plain-English name already in the file that costs them nothing.
 
 Two things follow from taking nothing, and neither is available otherwise. It is a **guarantee** that
 two events in one unit of work cannot disagree about the tenant. And a value that cannot depend on
@@ -3535,7 +3543,7 @@ would be a one-way door if it could not be reopened — it can, by accepting mor
 lines on the day it is wanted, and a host with the ubiquitous-key problem has the registry in the
 meantime. A door that can be reopened is not a reason to walk through it now.
 
-**It never re-raises.** A raising `event_dimensions` is caught, logged and the event stored with
+**It never re-raises.** A raising `default_dimensions` is caught, logged and the event stored with
 whatever dimensions were gathered. The precedent split is principled rather than arbitrary:
 `requires:` and `raise_on_error` roll the transaction back because they protect the *trail*;
 `LabelResolver` logs and renders FAILED because it is display (§11.8). Dimensions are a convenience,
@@ -3755,13 +3763,26 @@ Screens declare their facets so the filter can be rendered without the library k
 model:
 
 ```ruby
-config.dimensions = {
+config.dimension_filters = {
   customer_id: { label: "Customer",
                  options: -> { Customer.order(:name).limit(200).pluck(:name, :id) } },
   status:      { label: "Order status", options: -> { %w[draft submitted approved shipped] } },
   app_version: { label: "App version" }   # no options -> free-text input
 }
 ```
+
+**It is `dimension_filters`, and it was nearly `config.dimensions`.** That spelling reads like the
+gem's *declarative* options — `unaudited_tables`, `association_targets`, `bypass_allowlist` — plural
+nouns stating a fact the library then acts on. This one states nothing and acts on nothing: it is
+inert, it decides which filters a screen offers, and forgetting it costs a missing filter that can be
+added later with no effect on a single stored row. Meanwhile the option one line above it, which
+*writes data onto every event permanently and non-retroactively*, would have read like the junior of
+the two. Consequence and appearance inverted — the mistake `correlated_databases` made before it
+became `correlated_connections` (§14), where the name invited a wrong mental model and cost a real
+application a debugging session.
+
+`filters` carries the distinction with no prefix needed: three settings in this feature are named
+`dimensions` and all three record data, one is named `filters` and does not.
 
 `options:` follows `config.actor_picker` exactly, and for the reason that option's own comment gives:
 populate a picker from the host's own table, never from
@@ -3818,3 +3839,139 @@ belongs in the README as well as here.
   of the one function in this library that must never be wrong, and a second thing for
   `Schema.install!` to get right on every upgrade and in every tenant schema (§14). The measurement
   is above; the trade was taken deliberately rather than by default.
+
+### Appendix — the README section, drafted  **[staging; delete when built]**
+
+This is the one place in this document that breaks §22's own rule, deliberately and temporarily. What
+follows is user-facing prose: it belongs in `README.md`, and it cannot go there yet, because a README
+that documents a feature an adopter cannot use is worse than one that documents nothing. It is staged
+here so the wording — which took a pass of its own, mostly spent deciding which rationale survives
+§22's test — is not re-derived from scratch at implementation time.
+
+**Move it into `README.md` when this feature is built, and delete it from here.** That is not a
+convention anybody has to remember. `readme_spec` reads the marker below and fails the moment
+`README.md` carries the heading it names while this block is still present — because two copies of
+the same user documentation drift, which is the failure the generator templates (§21.3) exist to
+prevent, and DESIGN slowly becoming a second README is how it would happen here.
+
+Four points in it are load-bearing rather than descriptive, and an editor should keep them: *declare
+only what you will filter on* (it is the cost control), *not retroactive*, *a conjunction has to fit
+on one row*, and *filed under the value held after the change*. Each is the difference between a
+reader understanding an empty or short result and filing it as a bug.
+
+<!-- README-DRAFT heading="Dimensions: querying by your own associations (optional)" -->
+
+## Dimensions: querying by your own associations (optional)
+
+The audit log answers questions about actors, records and requests. It cannot answer
+*"everything that happened to invoices in department 5"* — `department_id` is yours,
+and this library never sees your models.
+
+Dimensions are facets you attach to audit rows so that it can.
+
+### Declare them beside the trigger
+
+The names are columns on the table being audited:
+
+```ruby
+attach_audit_trigger :invoices, model: "Invoice",
+  dimensions: %i[organization_id customer_id department_id
+                 shipping_location_id payment_provider_id]
+```
+
+Every write to `invoices` now records those five values beside the diff — including
+`update_all`, a database cascade, raw SQL and a console session, because they are read
+from the row by the same trigger that writes the diff.
+
+**Declare only what you will filter on.** Each facet costs index maintenance on every
+write to that table. A value you want to *read* on a screen belongs in the action's
+payload, which is free.
+
+Changing the list is detach-then-attach, the same as changing a table's exclusions.
+
+### Query them
+
+```ruby
+timeline = AuditLog::DimensionTimeline.new(
+  dimensions: { department_id: 5, shipping_location_id: 12, payment_provider_id: 3 },
+  range:      30.days.ago..
+)
+
+page       = paginate(timeline.activity_keys)     # AuditLog::Pagination
+activities = timeline.activities(page.records)
+```
+
+Any combination of the declared facets, in one index scan — you do not add an index per
+combination. The result is the same `Activity` objects a record timeline yields, so
+anything you already render for one works here unchanged.
+
+### Facets that are not columns
+
+A tenant, a deploy version, a tag — values your application has but no audited row
+carries. These attach to **events**, so they need a registered action.
+
+Per action, taken from the payload:
+
+```ruby
+AuditLog::Registry.register "invoice.approved",
+  dimensions: %i[department_id region],
+  requires:   %i[invoice_id],
+  subject:    ->(p) { ["Invoice", p[:invoice_id]] },
+  summary:    ->(p) { "Invoice #{p[:invoice_id]} approved" }
+```
+
+Or on every event, taken from application state:
+
+```ruby
+config.default_dimensions = -> { { tenant_id: Current.tenant&.id, app_version: AppVersion.current } }
+```
+
+Applied to every event, so no call site repeats them; a registry entry declaring the same
+key wins. The lambda takes no arguments on purpose: it supplies what is true of the *unit
+of work*, never of the action. Anything that varies per action belongs in the registry entry, where
+it is visible beside the summary. It must not raise — if it does, the event is still
+written, without them.
+
+### Three things that affect what a filter returns
+
+- **It is not retroactive.** A facet declared today says nothing about yesterday. A filter
+  returns results from that migration forward; older rows do not match.
+- **A conjunction has to fit on one row.** Five facets on `invoices` combine freely.
+  `customer_id` from an order plus `product_id` from a line item matches nothing — no
+  single row carries both. Declare the facet on the table you will filter by.
+- **A record is filed under the value it held *after* the change.** An invoice moving from
+  department 5 to department 9 appears under 9, so department 5's feed shows it up to but
+  not including the move. The move itself is on the invoice's own timeline as an ordinary
+  field change.
+
+### A filter in the auditor UI
+
+Which facets a screen offers. Nothing here affects what is recorded — add it whenever, or
+never. `options:` reads from your own tables, never from the audit log, which cannot list
+them at volume:
+
+```ruby
+config.dimension_filters = {
+  department_id: { label: "Department",
+                   options: -> { Department.order(:name).pluck(:name, :id) } },
+  app_version:   { label: "App version" }   # no options -> free-text input
+}
+```
+
+### Turning it on in an app that already has audit data
+
+New installs get the storage and the index automatically. An existing deployment runs:
+
+```bash
+bin/rails generate audit_log:dimensions
+bin/rails db:migrate
+```
+
+The generated migration builds the facet index one partition at a time with `CONCURRENTLY`,
+so it never takes a lock that blocks audit writes, and it reports each partition as it goes.
+It is safe to re-run if it is interrupted.
+
+Applications that never declare a dimension pay nothing for this feature — the index
+excludes their rows by construction. The measurements are in [DESIGN §23](DESIGN.md).
+
+<!-- /README-DRAFT -->

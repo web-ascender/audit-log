@@ -45,6 +45,27 @@ RSpec.describe "README.md" do
     expect(dupes).to be_empty, "duplicate anchors: #{dupes.join(", ")}"
   end
 
+  # A README section can be DRAFTED in DESIGN.md before the feature it documents
+  # exists: the README must not describe what an adopter cannot use, and wording
+  # that took a pass to get right is worth keeping rather than re-deriving. That
+  # draft is STAGING, never a second home -- two copies of the same user
+  # documentation drift, which is the failure the generator templates exist to
+  # prevent, and it is how DESIGN.md would slowly become a second README.
+  #
+  # So the moment README.md carries the heading a draft names, the draft has to
+  # go. This is that deletion trigger. Without it the duplicate survives silently,
+  # which is exactly the kind of rot the contents-table examples above exist for.
+  it "stages no README draft for a section README.md already carries" do
+    design = Pathname(AuditLog::GEM_ROOT).join("DESIGN.md").read
+    staged = design.scan(/<!-- README-DRAFT heading="([^"]+)" -->/).flatten
+    landed = staged.select { |h| headings.any? { |_, text| text == h } }
+
+    expect(landed).to be_empty,
+      "DESIGN.md still stages a README draft for #{landed.map(&:inspect).join(", ")}, which " \
+      "README.md now carries. Move any remaining wording across and delete the staged block " \
+      "from DESIGN.md -- two copies of the same user documentation drift."
+  end
+
   it "resolves every internal link" do
     linked = body.scan(/\]\(#([^)]+)\)/).flatten.uniq
     expect(linked - slugs).to be_empty,
