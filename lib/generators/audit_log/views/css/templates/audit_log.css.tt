@@ -1,41 +1,54 @@
-/* Styles for the auditor UI the audit_log gem mounts at <%= mount_path %>. */
-/* */
-/* SHIPPED COMMENTED OUT, so this file is a no-op until you decide otherwise. */
-/* The engine's screens carry semantic class names and no stylesheet, because */
-/* CSS pushed into an application nobody asked is worse than none. This is a */
-/* starting point you own outright: it is never re-generated and nothing in */
-/* the gem depends on it existing. */
-/* */
-/* TO TURN IT ON, delete every line that begins with a comment delimiter: */
-/* */
-/*   sed -i.bak -e '/^[/][*]/d' -e '/^[*][/]$/d' app/assets/stylesheets/audit_log.css */
-/* */
-/* (Bracket expressions, because a backslash-escaped comment delimiter inside */
-/* this file would close the very comment it is written in.) */
-/* */
-/* (macOS sed shown; GNU sed takes -i with no argument.) Or enable one section */
-/* at a time by deleting just that section's two delimiter lines. There are no */
-/* comments inside the sections, so nothing nests and nothing half-uncomments. */
-/* */
-/* THEN LINK IT. Nothing loads a stylesheet that is merely present: */
-/*   Propshaft   <%%= stylesheet_link_tag "audit_log" %> in your layout */
-/*   Sprockets   *= require audit_log  in application.css */
-/*   Sass        rename to _audit_log.scss and @use it */
-/* */
-/* Every rule is scoped under .audit-log, the element the engine wraps each of */
-/* its screens in. Nothing here can reach your own .card or .note. */
-/* */
-/* THE DARK MODE SECTION IS SEPARATE ON PURPOSE. Enabling it makes these */
-/* screens follow the READER's system setting rather than your application's, */
-/* which on a light-only app shows as a dark panel inside a light page. Delete */
-/* that one section and the screens stay light for everyone. */
-/* */
-/* Colour is never the only signal: before/after values carry a left border as */
-/* well as a tint, badges carry their own text, and the redaction marker says */
-/* so in words. Keep that if you retheme -- an auditor may be colour blind, and */
-/* these screens are read as evidence. */
+/* Styles for the auditor UI the audit_log gem mounts at <%= mount_path %>.
+   ---------------------------------------------------------------------------
+   SHIPPED COMMENTED OUT, so this file is a no-op until you decide otherwise.
+   The engine's screens carry semantic class names and no stylesheet, because
+   CSS pushed into an application nobody asked for is worse than none. This is a
+   starting point you own outright: it is never re-generated, and nothing in the
+   gem depends on it existing.
 
-/* ===== Palette. Override these 14 and the rest follows. =====
+   TO TURN IT ON: delete the bare `/*` line just below this comment, and the
+   last line of the file. In most editors you can instead select from there to
+   the end and hit the toggle-block-comment key.
+
+   THEN LINK IT -- nothing loads a stylesheet that is merely present:
+     Propshaft   <%%= stylesheet_link_tag "audit_log" %> in your layout
+     Sprockets   *= require audit_log  in application.css
+     Sass        @import "audit_log"; in application.scss -- one line, and
+                 what an importmap app with a dartsass pipeline wants
+
+   WHAT IS IN THERE, in order. There are deliberately no comments inside the
+   block: one would close it early and leave the rest of the stylesheet live, so
+   the map lives up here instead.
+
+     1. Palette          14 custom properties on .audit-log. Every other rule
+                         reads them, so rethemeing is these and not a rewrite.
+     2. Layout           typography, links, the two-column and card grids
+     3. Nav and tabs
+     4. Tables
+     5. Before/after     the red and green of a field-level diff
+     6. Association labels, and the ids they annotate
+     7. Badges           operation, source
+     8. Cards            and the timeline built from them
+     9. Disclosures      collapsed by default on purpose -- DESIGN 11.2b
+    10. Notes            hints, warnings, empty states
+    11. Filters          buttons, export, pagination
+    12. Dark mode        the @media block at the very end
+
+   DARK MODE IS LAST SO IT IS EASY TO DROP. Keeping it makes these screens
+   follow the READER's system setting rather than your application's, which on a
+   light-only app shows as a dark panel inside a light page. Delete that one
+   @media block and the screens stay light for everyone.
+
+   EVERY RULE IS SCOPED under .audit-log, the element the engine wraps each of
+   its screens in, so nothing here can reach your own .card or .note.
+
+   COLOUR IS NEVER THE ONLY SIGNAL: before and after values carry a left border
+   as well as a tint, badges carry their own text, and a redacted payload says
+   so in words. Keep that if you retheme -- an auditor may be colour blind, and
+   these screens are read as evidence.
+*/
+
+/*
 .audit-log {
   --al-fg: #1a1d21;
   --al-fg-soft: #5b6570;
@@ -52,9 +65,7 @@
   --al-radius: 6px;
   --al-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
-*/
 
-/* ===== Layout and typography =====
 .audit-log {
   background: var(--al-bg);
   color: var(--al-fg);
@@ -99,9 +110,7 @@
   font-family: var(--al-mono);
   font-size: 0.9em;
 }
-*/
 
-/* ===== Nav and tabs =====
 .audit-log .audit-nav {
   align-items: baseline;
   border-bottom: 1px solid var(--al-line);
@@ -141,9 +150,7 @@
   gap: 1rem;
   margin-bottom: 1rem;
 }
-*/
 
-/* ===== Tables =====
 .audit-log table {
   border-collapse: collapse;
   font-size: 0.92rem;
@@ -174,9 +181,7 @@
   font-size: 0.88em;
   white-space: nowrap;
 }
-*/
 
-/* ===== Before and after values =====
 .audit-log .diff td.old,
 .audit-log .diff td.new,
 .audit-log td.old,
@@ -221,9 +226,7 @@
   gap: 0.35rem;
   padding: 0.15rem 0;
 }
-*/
 
-/* ===== Association labels, and the ids they annotate =====
 .audit-log .assoc-label { font-weight: 500; }
 
 .audit-log .assoc-id {
@@ -239,9 +242,7 @@
   font-size: 0.85em;
   font-style: italic;
 }
-*/
 
-/* ===== Badges: operation, source, and the rest =====
 .audit-log .badge {
   border: 1px solid var(--al-line);
   border-radius: 999px;
@@ -283,9 +284,7 @@
   font-size: 0.8em;
   padding: 0.05rem 0.35rem;
 }
-*/
 
-/* ===== Cards, and the timeline built from them =====
 .audit-log .card {
   background: var(--al-bg);
   border: 1px solid var(--al-line);
@@ -329,9 +328,7 @@
   border-top: 1px solid var(--al-line);
   padding: 0.35rem 0;
 }
-*/
 
-/* ===== Disclosures. Collapsed is the default on purpose: see DESIGN 11.2b. =====
 .audit-log details {
   margin: 0.4rem 0;
 }
@@ -374,9 +371,7 @@
   margin: 0 0 0.35rem;
   white-space: pre-wrap;
 }
-*/
 
-/* ===== Notes, warnings and empty states =====
 .audit-log .note,
 .audit-log .hint,
 .audit-log .label-note {
@@ -403,9 +398,7 @@
   font-style: italic;
   padding: 1rem 0;
 }
-*/
 
-/* ===== Filters, buttons, export and pagination =====
 .audit-log .date-filter,
 .audit-log .dimension-filter,
 .audit-log .export {
@@ -461,9 +454,7 @@
   gap: 0.75rem;
   margin: 1rem 0;
 }
-*/
 
-/* ===== Dark mode. Its own section; see the note at the top of this file. =====
 @media (prefers-color-scheme: dark) {
   .audit-log {
     --al-fg: #e8eaed;

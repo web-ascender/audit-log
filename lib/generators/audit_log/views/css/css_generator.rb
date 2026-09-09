@@ -20,16 +20,21 @@ module AuditLog
       # WHY COMMENTED OUT RATHER THAN JUST GENERATED. A generated stylesheet that
       # is live the moment it lands is the same imposition one step removed: the
       # host discovers it by seeing their audit screens change. Inert, it is a
-      # proposal. Enabling is one `sed` (printed at the end, and in the file), or
-      # one section at a time.
+      # proposal.
       #
-      # THE FILE HAS NO NESTED COMMENTS, and that is a constraint on the template
-      # rather than a style choice. Each section is one block comment whose title
-      # sits on the opening delimiter, so `/^\/\*/d` + `/^\*\/$/d` leaves valid
-      # CSS behind. A `/* ... */` inside a section would terminate its section
-      # early and leave a page of stylesheet live that the host had not enabled.
-      # `css_generator_spec` enables the file the documented way and parses the
-      # result, so that cannot rot quietly.
+      # ONE EXPLAINER, THEN ONE BLOCK COMMENT ROUND THE WHOLE STYLESHEET, so
+      # enabling is deleting two lines -- or selecting that block and pressing
+      # the editor's toggle-block-comment key. An earlier version wrapped each of
+      # the twelve sections separately, which bought selective enabling nobody
+      # asked for and made the ordinary case a `sed` incantation. The common
+      # gesture wins.
+      #
+      # THE BLOCK THEREFORE CONTAINS NO COMMENTS AT ALL, which is a constraint on
+      # the template rather than a style choice: one comment-closing delimiter
+      # inside it would end the block early and leave the rest of the stylesheet
+      # live, un-enabled and unannounced. The section map lives in the explainer
+      # above it instead. `css_generator_spec` enables the file the documented
+      # way and parses the result, so that cannot rot quietly.
       #
       # CREATE-ONCE AND HOST-OWNED, DESIGN §21.3. Never re-generated, never
       # upgraded, and nothing in the gem may learn whether it exists or whether
@@ -72,12 +77,13 @@ module AuditLog
 
           say "Wrote #{target}, commented out. It changes nothing until you enable it:", :green
           say ""
-          say "  sed -i.bak -e '/^[/][*]/d' -e '/^[*][/]$/d' #{target}"
+          say "  delete the bare comment-opening line under the header, and the file's"
+          say "  last line -- or select that block and toggle the comment in your editor"
           say ""
           say "then load it the way this app loads stylesheets --", :yellow
           say "  Propshaft   <%= stylesheet_link_tag \"audit_log\" %> in your layout"
           say "  Sprockets   *= require audit_log  in application.css"
-          say "  Sass        rename to _audit_log.scss and @use it"
+          say "  Sass        @import \"audit_log\"; in application.scss"
           say ""
           say "Nothing loads it merely for being present, and the gem never checks.", :yellow
         end

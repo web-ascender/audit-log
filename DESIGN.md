@@ -3383,22 +3383,31 @@ host-owned, no gem-side dependency, and no "your stylesheet is out of date" chec
 
 **COMMENTED OUT, because a generated stylesheet that is live on landing is the same imposition one
 step removed.** The host would discover it by seeing their audit screens change. Inert, it is a
-proposal: enabling is one `sed` over the delimiter lines, printed by the generator and repeated in
-the file's own header, or one section at a time. It is the only artifact here whose default state
-is "does nothing", and that is the point of it.
+proposal. It is the only artifact here whose default state is "does nothing", and that is the point
+of it.
 
-**The file therefore has NO NESTED COMMENTS, and that is a constraint rather than a style.** Each
-section is one block comment whose title sits ON the opening delimiter, so deleting every line that
-starts a comment and every line that closes one leaves valid CSS. A `/* ... */` inside a section
-would close it early and leave a page of stylesheet live that nobody enabled; a section title that
-WRAPS onto a second line leaves prose where a selector belongs. Both were made during
-implementation. `css_generator_spec` enables the file the documented way and parses the result,
-which is what caught the second.
+**ONE EXPLAINER, THEN ONE BLOCK COMMENT ROUND THE WHOLE STYLESHEET.** Enabling is deleting two
+lines — the bare opener and the file's last line — or selecting that block and pressing the
+editor's toggle-block-comment key, which is a gesture every editor has. The first version wrapped
+each of the twelve sections separately, on the theory that selective enabling was worth something;
+it bought a capability nobody asked for and made the ordinary case a `sed` incantation with escaped
+delimiters. **The common gesture wins over the flexible one**, and that is worth stating because
+the flexible version looked strictly better on paper.
 
-**The enable instruction uses bracket expressions (`/^[/][*]/d`) and not backslash escapes.** The
-obvious spelling, `/^\/\*/d`, contains the two characters that close a CSS comment, so the
-instruction closed the comment it was written in and left itself live as a syntax error. Measured
-by running it, not reasoned about.
+**The block therefore contains NO COMMENTS AT ALL, which is a constraint rather than a style.** A
+single `*` `/` inside it ends the block early and leaves the rest of the stylesheet live,
+un-enabled and unannounced — the failure mode this whole arrangement exists to avoid, reached from
+the inside. The section map lives in the explainer above instead. Under the old sectioned layout
+the same rule bit twice: an inner comment closed its section, and a section title that WRAPPED onto
+a second line left prose where a selector belonged. `css_generator_spec` enables the file the
+documented way and parses the result, which is what caught the second — and it now also pins that
+there is exactly one wrapping block, since the whole gesture depends on there being one.
+
+**A note on the instruction that no longer appears.** While the enable step was a `sed`, the
+obvious spelling of it — `/^\/\*/d` — contained the two characters that close a CSS comment, so
+the instruction closed the comment it was written in and left itself live as a syntax error. It had
+to be written with bracket expressions. That the instruction was hard to *write inside the file it
+described* was the first sign the mechanism was wrong.
 
 **Every selector is scoped under `.audit-log`, and that wrapper had to be added to the engine's 11
 top-level templates first.** The screens use deliberately generic class names — `.card`, `.note`,

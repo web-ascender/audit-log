@@ -1082,31 +1082,35 @@ The markup carries semantic class names instead.
 app/assets/stylesheets/audit_log.css
 ```
 
-As generated it is a no-op: every rule sits inside a block comment, so the file
-changes nothing until you decide it should. To turn it on, delete the delimiter
-lines — the generator prints this, and so does the file's own header:
+As generated it is a no-op: an explainer, then the whole stylesheet inside one
+block comment. To turn it on, **delete two lines** — the bare `/*` under the
+explainer, and the file's last line. In most editors you can instead select that
+block and hit the toggle-block-comment key.
 
-```bash
-sed -i.bak -e '/^[/][*]/d' -e '/^[*][/]$/d' app/assets/stylesheets/audit_log.css
-```
+Then load it however this app loads stylesheets:
 
-Then load it however this app loads stylesheets — `stylesheet_link_tag
-"audit_log"` under Propshaft, `*= require audit_log` under Sprockets, or rename
-it to `_audit_log.scss` and `@use` it. **Nothing loads it merely for being
-present**, and nothing in the gem ever checks whether it is there or current: it
+| Pipeline | The line |
+|---|---|
+| Propshaft | `<%= stylesheet_link_tag "audit_log" %>` in your layout |
+| Sprockets | `*= require audit_log` in `application.css` |
+| Sass (`dartsass`, `cssbundling`) | `@import "audit_log";` in `application.scss` — one line, and what an importmap app usually wants |
+
+**Nothing loads it merely for being present**, and nothing in the gem ever checks whether it is there or current: it
 is yours the moment it lands, like the [generated activity
 views](#building-an-activity-history-in-your-own-app).
 
-Each section is a separate block comment, so you can enable one at a time — the
-palette, tables, before-and-after values, badges, cards, disclosures, filters.
-Two of them are worth a decision rather than a glance:
+There are deliberately **no comments inside the block** — one would close it
+early and leave the rest of the stylesheet live — so the map of what is in there
+lives in the explainer at the top: palette, layout, nav, tables,
+before-and-after values, association labels, badges, cards, disclosures, notes,
+filters, dark mode. Two of them are worth a decision rather than a glance:
 
 - **The palette.** Fourteen custom properties on `.audit-log`, and every other
   rule reads them. Rethemeing is those fourteen, not a rewrite.
-- **Dark mode.** Its own section, because enabling it makes these screens follow
-  the *reader's* system setting rather than your application's — which on a
-  light-only app shows as a dark panel inside a light page. Delete that section
-  and the screens stay light for everyone.
+- **Dark mode.** The `@media` block at the very end, so it is easy to drop.
+  Keeping it makes these screens follow the *reader's* system setting rather than
+  your application's — which on a light-only app shows as a dark panel inside a
+  light page. Delete that one block and the screens stay light for everyone.
 
 Every selector is scoped under `.audit-log`, the element each screen is wrapped
 in, so nothing here can reach your own `.card` or `.note` — the engine's class

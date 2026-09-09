@@ -1006,15 +1006,18 @@ Do not "fix" these without reading the linked reasoning first.
   seeing their screens change. Inert, it is a proposal. `audit_log:install`
   invokes the same generator rather than re-spelling it, so there is one template
   and one set of instructions.
-- **The file must contain NO NESTED COMMENTS and NO WRAPPED SECTION TITLES.**
-  Each section is one block comment whose title sits ON the `/*` line, because
-  enabling is "delete every line that opens or closes a comment". A `/* ... */`
-  inside a section closes it early and leaves un-enabled CSS live; a title that
-  wraps leaves prose where a selector belongs. Both happened while writing it.
-  `css_generator_spec` enables the file the documented way and parses the result.
-- **The enable instruction uses bracket expressions, never backslash escapes.**
-  `/^\/\*/d` contains the two characters that close a CSS comment, so the
-  instruction closed the comment it was written in. `/^[/][*]/d` does not.
+- **ONE explainer, then ONE block comment round the whole stylesheet.** Enabling
+  is deleting two lines, or one editor keystroke on the selected block. The first
+  version wrapped each of the twelve sections separately — selective enabling
+  nobody asked for, at the cost of making the ordinary case a `sed` with escaped
+  delimiters. Do not re-section it. `css_generator_spec` pins that there is
+  exactly one wrapping block, because the gesture depends on it.
+- **The block must contain NO COMMENTS AT ALL, and no wrapped titles.** One
+  closing delimiter inside it ends the block early and leaves the rest of the
+  stylesheet live, un-enabled and unannounced. The section map lives in the
+  explainer above. Under the old sectioned layout this bit twice — an inner
+  comment, and a section title that wrapped onto a second line leaving prose
+  where a selector belongs.
 - **Every selector is scoped under `.audit-log`, and the 11 top-level templates
   are wrapped in it for exactly that.** The screens use generic class names
   (`.card`, `.note`, `.new`, `.old`, `.grid`), which is harmless until a host

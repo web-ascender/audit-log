@@ -5,6 +5,20 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Changed
+
+- **The starter stylesheet is one block comment now, not twelve.** Enabling it is
+  deleting two lines — the bare opener under the explainer, and the file's last
+  line — or selecting that block and pressing the editor's toggle-comment key.
+  0.6.0 wrapped each section separately, which bought selective enabling nobody
+  asked for and made the ordinary case a `sed` incantation with escaped
+  delimiters. The section map moved into the explainer, since a comment inside
+  the block would close it early. Enabled output is byte-for-byte what it was.
+
+- The generator and the README now show `@import "audit_log";` in
+  `application.scss` as the Sass/importmap way to load it, alongside the
+  Propshaft and Sprockets lines.
+
 ## 0.6.0 — 2026-09-09
 
 No migration, and nothing to do on upgrade. One rendering change reaches rows

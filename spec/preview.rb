@@ -120,9 +120,9 @@ RSpec.describe "preview", type: :request do
     # an adopter who declined it and a poor one of an adopter who did not -- and
     # the starter stylesheet is the only artifact here nobody could otherwise
     # look at before shipping a change to it.
-    css = File.read(AuditLog::GEM_ROOT +
-                    "/lib/generators/audit_log/views/css/templates/audit_log.css.tt")
-      .lines.reject { |l| l.start_with?("/*") || l.chomp == "*/" }.join
+    lines = File.readlines(AuditLog::GEM_ROOT +
+                           "/lib/generators/audit_log/views/css/templates/audit_log.css.tt")
+    css = lines[(lines.rindex { |l| l.chomp == "/*" } + 1)...lines.rindex { |l| l.chomp == "*/" }].join
 
     pages.each do |name, path|
       get path
