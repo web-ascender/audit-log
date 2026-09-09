@@ -5,6 +5,11 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## 0.6.0 — 2026-09-09
+
+No migration, and nothing to do on upgrade. One rendering change reaches rows
+already written, and one reaches rows written from here on — both under Changed.
+
 ### Added
 
 - **A starter stylesheet for the auditor UI, written into the host application
