@@ -1401,7 +1401,7 @@ bin/rails generate audit_log:trigger orders \
 | | |
 |---|---|
 | `--model=Order` | the model name recorded on every `audit_changes` row. Defaults to the table name classified — pass it when they differ, because this string is what every screen filters and groups on. |
-| `--exclude=a b c` | columns kept **out of the diff**, on top of `config.default_excluded_columns` |
+| `--exclude=a b c` | columns kept **out of the diff**, on top of `config.default_excluded_columns`. **Space-separated, not comma-separated** |
 | `--replace` | detach first. Required to change an existing trigger's model or exclusions — see [Re-attaching](#re-attaching-and-changing-a-tables-exclusions). |
 
 **What `--exclude` is for.** The trigger writes a diff of every column that
