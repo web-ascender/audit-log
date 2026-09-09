@@ -172,7 +172,7 @@ end
 Rails.application.config.to_prepare do
   AuditLog::Registry.clear!
 
-  # A registry entry takes three options:
+  # A registry entry takes five options:
   #
   #   summary:      REQUIRED. lambda -> String.
   #                 Describes a SPECIFIC OCCURRENCE. Usually a noun, a verb and
@@ -181,6 +181,26 @@ Rails.application.config.to_prepare do
   #                 Stored on the row (audit_events.summary), rendered at emit
   #                 and frozen -- editing the lambda changes what future rows
   #                 say, never what past ones said.
+  #
+  #   requires:     Optional, recommended. An array of payload keys.
+  #                 e.g. requires: %i[order_id reference customer_name]
+  #                 Raises at emit time when one is missing, so the summary
+  #                 above cannot render a sentence with a hole in it. That
+  #                 matters here more than most guards: a summary is frozen
+  #                 when it is written, so a holed one can never be repaired.
+  #                 It makes the call site's keys and this entry's p[...] reads
+  #                 agree, so a typo on EITHER side fails against it.
+  #                 Checked with `key?` and not the value, so a deliberate
+  #                 `reason: nil` passes where a forgotten `reason:` does not.
+  #                 Extra keys always pass, and are still stored.
+  #                 It runs inside the transaction that emitted the event, so a
+  #                 violation rolls that write back rather than recording it
+  #                 under a sentence that cannot be rendered.
+  #                 Declare what the entry cannot RENDER without, not every key
+  #                 it reads -- a key the summary already treats as optional
+  #                 does not belong here. Omitting the line entirely means no
+  #                 check, which is the escape valve for a rare branch you would
+  #                 rather not have raise in production.
   #
   #   subject:      Optional, recommended. lambda -> [type, id].
   #                 Tracks the model type and id each occurrence was about.
@@ -196,7 +216,16 @@ Rails.application.config.to_prepare do
   #                 Not stored on any row; it lives only in this file, and is
   #                 shown at the top of /audit/actions/<name>.
   #
+  #   dimensions:   Optional. An array of payload keys, lifted onto the event's
+  #                 own indexed `dimensions` column so the log can be filtered
+  #                 by your associations rather than only by record.
+  #                 e.g. dimensions: %i[customer_id]
+  #                 Opt-in per entry, and it needs a migration and a little
+  #                 config besides -- read "Dimensions" in the gem's README
+  #                 before declaring one.
+  #
   # AuditLog::Registry.register "order.submitted",
+  #   requires: %i[order_id reference customer_name],
   #   description: "An order was submitted for fulfillment.",
   #   subject: ->(p) { ["Order", p[:order_id]] },
   #   summary: ->(p) { "Submitted order #{p[:reference]} for #{p[:customer_name]}" }
