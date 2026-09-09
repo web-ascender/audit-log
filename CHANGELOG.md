@@ -5,6 +5,61 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Added
+
+- **A starter stylesheet for the auditor UI, written into the host application
+  commented out.** `audit_log:install` now writes
+  `app/assets/stylesheets/audit_log.css`, and `audit_log:views:css` writes it on
+  its own for an app that skipped it. As generated it is a no-op — every rule
+  sits inside a block comment — so it changes nothing until somebody deletes the
+  delimiter lines, which the generator prints and the file's header repeats.
+  `--skip-css` opts out.
+
+  The engine still ships no CSS of its own and will not: its screens render
+  inside the host's layout, so a stylesheet the gem loaded would arrive uninvited
+  on a page the host designed. This is a proposal the host owns the moment it
+  lands — never re-generated, and nothing in the gem checks whether it exists.
+
+  Sections are separately enableable: palette, layout, nav, tables,
+  before-and-after values, association labels, badges, cards, disclosures, notes,
+  filters, and dark mode. Dark mode is separate on purpose, because enabling it
+  makes the screens follow the reader's system setting rather than the
+  application's. Colour is never the only signal in it. DESIGN §21.4.
+
+- The engine's 11 top-level screens are now wrapped in `<div class="audit-log">`,
+  which is what lets every generated rule be scoped and reach nothing of the
+  host's own. Its class names are otherwise generic enough to collide — `.card`,
+  `.note`, `.new`, `.old`.
+
+### Changed
+
+- **A recorded identity now reads `Order (id: 6064)`, not `Order #6064`.** The
+  `#` prefix is what host applications overwhelmingly use for an identifier of
+  their own — an order number, an invoice number, a ticket reference — so on an
+  audit screen, beside a live-resolved label, a reader could not tell which
+  number the log had actually recorded. The annotation now names itself.
+
+  New `AuditLog::Identity` is the one definition, in three forms: `annotation(id)`
+  where the column has already named the type (`(id: 51)`, unchanged, as diff
+  cells have always rendered it), `for(type, id)` standalone, and
+  `labelled(label, type, id)` → `Grommet 10mm (Product id: 51)`. Every screen,
+  the redact task and both generator templates go through it; the same
+  interpolation had been hand-spelled in seven places, and the Changes tab and
+  the Timeline tab of one record screen had already drifted apart because of it.
+
+  **Two of those sites store rather than render.**
+  `Configuration#default_actor_label` snapshots into the `actor_label` columns,
+  and the `audit.redaction` summary in the install template is frozen at emit
+  time. Rows written before this change keep the spelling they were written with
+  — that is what a snapshot means, and there is deliberately no migration that
+  rewrites them — so an app on the default resolver will see a mixed actor
+  column from here on. The other six render at display time and pick the new
+  spelling up for existing rows immediately.
+
+  A host that generated the optional activity views keeps its own copy of the old
+  heading until it edits it: those files are host-owned and never re-generated.
+  There is deliberately no `config.identity_format`. DESIGN §11.8.
+
 ## 0.5.2 — 2026-09-09
 
 Documentation and reporting only. No behaviour change to either capture layer.

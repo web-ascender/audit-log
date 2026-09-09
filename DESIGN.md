@@ -2673,7 +2673,7 @@ object graph.
    worse than one that labels nothing. `config.association_targets` overrides the
    reflected map for what reflection cannot see, and `false` suppresses a column.
 
-2. **The label chain ends in `nil`, not in `"Product #51"`.** The two chains share
+2. **The label chain ends in `nil`, not in `"Product (id: 51)"`.** The two chains share
    a head and diverge at the tail, and only the tail is a difference of principle.
    Both start `to_audit_label`, then `to_label` — one hook answers "what should an
    auditor see" wherever a model appears in the log, and the argument for trying it
@@ -2712,6 +2712,61 @@ never wrong.
 
 CSV export is deliberately untouched. It is the evidence artifact; the `diff`
 column ships the ids that were recorded, with no display-layer decoration in it.
+
+#### How a recorded identity is spelled — `AuditLog::Identity`  **[added 2026-09-09]**
+
+`Order (id: 6064)`, never `Order #6064`, and `AuditLog::Identity` is the only
+place that decides it.
+
+**Why not `#`.** Host applications overwhelmingly use that sigil for an
+identifier of their *own* — an order number, an invoice number, a ticket
+reference — and often render it beside the record it belongs to. On an audit
+screen the reader then cannot tell which number the log actually recorded, which
+is precisely the confusion the rest of §11.8 is built against: every one of these
+strings sits next to a live-resolved label, and its entire job is to be the part
+that is unmistakably the recorded fact. The fix is not a different bracket but a
+NAME inside the annotation. `#` fails because it is a bare sigil that says
+nothing about what it prefixes; `(id: 51)` says which number it is, and a host
+label containing `(West)` cannot be confused with it.
+
+**Parentheses, not brackets, and that was checked rather than preferred.** This
+UI already spends both delimiters. Parens are what the screens use for an
+annotation the audit UI added rather than data it recorded — `(not found)`,
+`(label unavailable)`, `(unrecorded)`, and the `(id: 51)` above. Square brackets
+are `Redaction::MARKER_PREFIX`, so `[redacted 2026-09-01 per DSR-1182]` renders
+in the same column. Spelling an identity `[id: 51]` would put a routine
+annotation in the erasure delimiter, one row from an actual erasure.
+
+**Three forms, and the diff cell is the general case.** `annotation(id)` where
+the column has already named the type, `for(type, id)` standalone, and
+`labelled(label, type, id)` — `Grommet 10mm (Product id: 51)` — where a live
+label precedes it and the id must survive beside it. The parentheses always hold
+the recorded fact; the type appears inside them only when nothing else on the
+line has said it.
+
+**One definition, because there were seven.** The same type-and-id
+interpolation, spelled by hand each time, appeared in `Change#label`,
+`TouchedRecord#identifier`, `ActorLabel.display`,
+`Configuration#default_actor_label`, `ActorsController`, the redact task and two
+generator templates, and nothing made them agree — the Changes tab and the
+Timeline tab of one record screen drifted apart the first time a single one was
+edited. Same lesson as `ActorLabel.display` itself, whose hand-rolled copy
+dropped a nil branch and took a screen down. `identity_spec` greps `app/` and
+`lib/` for a hand-rolled copy, because a new screen that spells its own is how
+this recurs.
+
+**Two of those callers STORE their result.** `Configuration#default_actor_label`
+snapshots into the `actor_label` columns and a registry `summary:` is frozen at
+emit time, so rows written before the change keep the old spelling and the actor
+column is mixed from here on. That is what a snapshot means (R6) and not a defect
+to repair — do not add a migration that rewrites them. The other six render at
+display time, so existing rows pick the new spelling up immediately.
+
+**There is deliberately no `config.identity_format`.** A host could set it back
+to `#`, which is the ambiguity this removes, and two applications would then
+spell the same recorded fact differently in a log meant to be read the same way
+everywhere. If it ever has to be configurable, `Identity` is where it goes —
+`default_dimensions`' posture about widening later.
 
 ---
 
@@ -3315,6 +3370,57 @@ cannot find each produce a MANUAL note with the exact lines instead of an edit. 
 usual one: a wrong ivar does not raise. It renders an **empty feed**, which reads as "the audit log
 has no data for this record" — the quiet under-report this entire library is built against, reached
 through a generator that reported success.
+
+### 21.4 `audit_log:views:css`, and why a stylesheet arrives switched off  **[added 2026-09-09]**
+
+**The engine ships no CSS, which is a consequence of `parent_controller` rather than a gap.** Its
+screens render inside the HOST's layout — that is the whole point of inheriting from the host's
+`ApplicationController` — so any stylesheet the gem loaded would arrive uninvited on a page
+somebody else designed, and would be fought rather than adopted. The screens carry semantic class
+names and nothing else. An application that wants them styled starts from this generator's output
+and owns the result, §21.3's boundary applied to a third kind of generated file: create-once,
+host-owned, no gem-side dependency, and no "your stylesheet is out of date" check.
+
+**COMMENTED OUT, because a generated stylesheet that is live on landing is the same imposition one
+step removed.** The host would discover it by seeing their audit screens change. Inert, it is a
+proposal: enabling is one `sed` over the delimiter lines, printed by the generator and repeated in
+the file's own header, or one section at a time. It is the only artifact here whose default state
+is "does nothing", and that is the point of it.
+
+**The file therefore has NO NESTED COMMENTS, and that is a constraint rather than a style.** Each
+section is one block comment whose title sits ON the opening delimiter, so deleting every line that
+starts a comment and every line that closes one leaves valid CSS. A `/* ... */` inside a section
+would close it early and leave a page of stylesheet live that nobody enabled; a section title that
+WRAPS onto a second line leaves prose where a selector belongs. Both were made during
+implementation. `css_generator_spec` enables the file the documented way and parses the result,
+which is what caught the second.
+
+**The enable instruction uses bracket expressions (`/^[/][*]/d`) and not backslash escapes.** The
+obvious spelling, `/^\/\*/d`, contains the two characters that close a CSS comment, so the
+instruction closed the comment it was written in and left itself live as a syntax error. Measured
+by running it, not reasoned about.
+
+**Every selector is scoped under `.audit-log`, and that wrapper had to be added to the engine's 11
+top-level templates first.** The screens use deliberately generic class names — `.card`, `.note`,
+`.new`, `.old`, `.grid`, `.summary` — which is fine while nothing styles them and a live footgun
+the moment a host uncomments a stylesheet that targets them bare. The wrapper is the engine's own
+markup, so adding it costs no host anything.
+
+**`.grid` is the engine's class for a data TABLE, not for CSS grid**, and the first draft's
+`display: grid` on it broke every table on every screen into two columns. That was found by
+rendering the preview screens and looking at them, which is now what `spec/preview.rb` inlines the
+enabled stylesheet for. A stylesheet nobody has looked at is not a starting point.
+
+**Dark mode is its own section for a reason that only shows up rendered.** A palette that flips the
+foreground without also setting a background paints light text onto a light host page. The section
+sets both, so the audit region is internally consistent in either scheme — and it stays separate,
+because enabling it makes these screens follow the READER's system setting rather than the
+application's, which on a light-only app is a dark panel inside a light page. That is a decision
+somebody should make deliberately, so it is deletable in one gesture and the header says so.
+
+**Colour is never the only signal.** Before and after values carry a left border as well as a tint,
+badges carry their own text, and a redacted payload says so in words. These screens are read as
+evidence, and an auditor may be colour blind.
 
 ---
 

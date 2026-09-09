@@ -1,3 +1,4 @@
+<div class="audit-log">
 <%= render "audit_log/shared/nav" %>
 <h1>One action</h1>
 <p class="mono small"><%= @request_id %></p>
@@ -43,3 +44,4 @@
     <%= render "audit_log/shared/event_rows", events: @caused %>
   </section>
 <% end %>
+</div>

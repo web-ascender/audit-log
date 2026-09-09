@@ -114,11 +114,25 @@ RSpec.describe "preview", type: :request do
       # exists to prove the library needs nothing from a host app but config.
     }
 
+    # The generator's stylesheet, ENABLED the way its own header says to enable
+    # it, inlined into each preview. The engine ships no CSS and these screens
+    # render inside a host's layout, so an unstyled preview is a fair picture of
+    # an adopter who declined it and a poor one of an adopter who did not -- and
+    # the starter stylesheet is the only artifact here nobody could otherwise
+    # look at before shipping a change to it.
+    css = File.read(AuditLog::GEM_ROOT +
+                    "/lib/generators/audit_log/views/css/templates/audit_log.css.tt")
+      .lines.reject { |l| l.start_with?("/*") || l.chomp == "*/" }.join
+
     pages.each do |name, path|
       get path
       puts format("%-10s %-52s %s", name, path, response.status)
       next unless response.status == 200
-      File.write(Rails.root.join("public", "_preview_#{name}.html"), response.body)
+
+      html = "<!doctype html><meta charset=\"utf-8\">" \
+             "<style>body{font:14px/1.45 system-ui,sans-serif;margin:2rem;}\n#{css}</style>" +
+             response.body
+      File.write(Rails.root.join("public", "_preview_#{name}.html"), html)
     end
   end
 end

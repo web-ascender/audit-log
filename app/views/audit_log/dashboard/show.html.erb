@@ -1,3 +1,4 @@
+<div class="audit-log">
 <%= render "audit_log/shared/nav" %>
 <h1>Audit overview</h1>
 <%= render "audit_log/shared/date_filter", url: root_path %>
@@ -75,3 +76,4 @@
      Postgres prune everything outside the range.</p>
   <p class="mono small"><%= @partitions.join(" · ") %></p>
 </section>
+</div>

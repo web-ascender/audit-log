@@ -1,3 +1,4 @@
+<div class="audit-log">
 <%= render "audit_log/shared/nav" %>
 <h1>By record type</h1>
 <%= render "audit_log/shared/date_filter", url: records_path %>
@@ -14,3 +15,4 @@
     <% if @record_types.empty? %><tr><td colspan="2" class="empty">No changes in this range.</td></tr><% end %>
   </tbody>
 </table>
+</div>

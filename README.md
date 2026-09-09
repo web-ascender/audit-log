@@ -48,6 +48,7 @@ the authority on *why* any of this is shaped the way it is.
   - [Five things to know](#five-things-to-know)
   - [Bounding it](#bounding-it)
   - [What the timeline covers](#what-the-timeline-covers)
+- [Styling the auditor UI (optional)](#styling-the-auditor-ui-optional)
 - [Making association ids readable (optional)](#making-association-ids-readable-optional)
   - [The four things a cell can say](#the-four-things-a-cell-can-say)
   - [Configuring the label lookup](#configuring-the-label-lookup)
@@ -343,12 +344,13 @@ could not do, and two of these need a decision from you.
 | `ApplicationJob` | `include AuditLog::JobContext` | The entire job-side integration. |
 | `config/routes.rb` | `mount AuditLog::Engine => "/audit"` | Gate it. `config.authorize` is a no-op by default. |
 | `.claude/skills/audit-log/SKILL.md` | a pointer to this gem's own docs, for coding agents | Yours to edit, never regenerated. [Documentation for coding agents](#documentation-for-coding-agents). |
+| `app/assets/stylesheets/audit_log.css` | a starter stylesheet for `/audit`, **commented out** | Inert until you enable it, which is one `sed` the generator prints. The engine ships no CSS on purpose. [Styling the auditor UI](#styling-the-auditor-ui-optional). |
 | `spec/audit_log/coverage_spec.rb` | three lines, using a shared example | The forcing function. Shares `AuditLog::Coverage` with the rake task, so the two cannot disagree about what counts as covered. Do not weaken it to make a build pass. |
 
 Re-running is safe: every step detects work already done and reports `skip`
 rather than injecting twice. Flags: `--mount-at=/audit`, `--skip-migration`,
 `--skip-routes`, `--skip-controller`, `--skip-job`, `--skip-spec`,
-`--skip-skill`.
+`--skip-skill`, `--skip-css`.
 
 ### What a model needs
 
@@ -976,7 +978,7 @@ frozen at emit time. `kind` tells you which you are holding; register more actio
 and more entries become `:narrative`.
 
 **Never drop the id from a `TouchedRecord`.** `to_s` renders
-`Grommet 10mm (Product #51)` on purpose: the label is resolved live, the id is
+`Grommet 10mm (Product id: 51)` on purpose: the label is resolved live, the id is
 what the log recorded. Showing only the label lets a rename rewrite what your
 timeline says happened.
 
@@ -1065,6 +1067,54 @@ fixes.
 
 The engine's own **Timeline** tab is rendered from these same objects, so the
 contract cannot drift from what the auditor UI does.
+
+## Styling the auditor UI (optional)
+
+The screens the engine mounts at `/audit` ship **unstyled**, and that is not an
+oversight. They render inside *your* layout — that is what
+`config.parent_controller` is for — so a stylesheet the gem loaded would arrive
+uninvited on a page you designed, and you would spend your time overriding it.
+The markup carries semantic class names instead.
+
+`audit_log:install` writes a starting point, **commented out**:
+
+```
+app/assets/stylesheets/audit_log.css
+```
+
+As generated it is a no-op: every rule sits inside a block comment, so the file
+changes nothing until you decide it should. To turn it on, delete the delimiter
+lines — the generator prints this, and so does the file's own header:
+
+```bash
+sed -i.bak -e '/^[/][*]/d' -e '/^[*][/]$/d' app/assets/stylesheets/audit_log.css
+```
+
+Then load it however this app loads stylesheets — `stylesheet_link_tag
+"audit_log"` under Propshaft, `*= require audit_log` under Sprockets, or rename
+it to `_audit_log.scss` and `@use` it. **Nothing loads it merely for being
+present**, and nothing in the gem ever checks whether it is there or current: it
+is yours the moment it lands, like the [generated activity
+views](#building-an-activity-history-in-your-own-app).
+
+Each section is a separate block comment, so you can enable one at a time — the
+palette, tables, before-and-after values, badges, cards, disclosures, filters.
+Two of them are worth a decision rather than a glance:
+
+- **The palette.** Fourteen custom properties on `.audit-log`, and every other
+  rule reads them. Rethemeing is those fourteen, not a rewrite.
+- **Dark mode.** Its own section, because enabling it makes these screens follow
+  the *reader's* system setting rather than your application's — which on a
+  light-only app shows as a dark panel inside a light page. Delete that section
+  and the screens stay light for everyone.
+
+Every selector is scoped under `.audit-log`, the element each screen is wrapped
+in, so nothing here can reach your own `.card` or `.note` — the engine's class
+names are deliberately generic and would otherwise collide. Colour is never the
+only signal: before and after values carry a left border as well as a tint,
+badges carry their own text, and a redacted payload says so in words. Keep that
+if you retheme. An auditor may be colour blind, and these screens are read as
+evidence.
 
 ## Making association ids readable (optional)
 
@@ -1335,7 +1385,7 @@ knowing anything about any of them.
 |---|---|---|
 | `authorize` | **no-op** | Gates the auditor UI at `/audit`. The default lets *everyone* in, which is right for a demo and wrong for you. Raise or redirect. |
 | `actor_resolver` | `controller.try(:current_user)` | How to find the acting user. Works with Devise, the Rails generator, or anything exposing `current_user`. |
-| `actor_label_resolver` | `to_audit_label` → `to_label` → name/email → `Class #id` | The string snapshotted onto every audit row. Rendered once per entry point, so a later rename never rewrites history. `to_audit_label` comes first for the same reason it does on [record labels](#making-association-ids-readable-optional) — and it matters more here, because this string is stored rather than resolved at display time. |
+| `actor_label_resolver` | `to_audit_label` → `to_label` → name/email → `Class (id: n)` | The string snapshotted onto every audit row. Rendered once per entry point, so a later rename never rewrites history. `to_audit_label` comes first for the same reason it does on [record labels](#making-association-ids-readable-optional) — and it matters more here, because this string is stored rather than resolved at display time. |
 | `unaudited_tables` | a few internals | Tables that legitimately have no trigger, **each with a written reason**. `audit_log:coverage` fails for anything neither audited nor listed here. |
 | `default_excluded_columns` | timestamps, `lock_version`, password and reset-token columns | Columns kept out of every diff. Per-table extras go on the trigger via `--exclude`. |
 | `default_dimensions` | `nil` | `-> { {tenant_id: …, app_version: …} }` — facets recorded onto **every** event, merged under whatever a registry entry declared. Takes no arguments on purpose: it supplies what is true of the unit of work, never of the action. It must not raise; if it does the event is still written without them. See [Dimensions](#dimensions-querying-by-your-own-associations-optional). |
@@ -1386,6 +1436,7 @@ below are those with decisions in them.
 | `audit_log:trigger TABLE --model=Model` | a migration with one `attach_audit_trigger` line | once per audited table |
 | `audit_log:trigger TABLE --replace` | detach-then-attach, to change a table's model or exclusions | when those change |
 | `audit_log:views:activity Model [Model...]` | controller, concern, helper, views, route, locale, stylesheet — and wires each model's show page | once, then again per new model |
+| `audit_log:views:css` | a starter stylesheet for the auditor UI, written commented out | `audit_log:install` runs it; separately if you skipped it or deleted the file |
 | `audit_log:dimensions` | retrofits the `dimensions` column, re-installs the trigger function, and builds the facet index one partition at a time with `CONCURRENTLY` | only on an app installed before dimensions existed |
 | `audit_log:disable --reason=...` | a reversible migration detaching every audit trigger, keeping the tables and rows | to stop capture, or before removing the gem — see [Stopping auditing](#stopping-auditing-and-starting-again) |
 | `audit_log:enable` | rebuilds the attach lines from the marker, when the disable migration is gone | recovery only; `db:migrate:down` is the ordinary way back |

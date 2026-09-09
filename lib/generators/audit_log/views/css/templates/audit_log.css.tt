@@ -1,0 +1,483 @@
+/* Styles for the auditor UI the audit_log gem mounts at <%= mount_path %>. */
+/* */
+/* SHIPPED COMMENTED OUT, so this file is a no-op until you decide otherwise. */
+/* The engine's screens carry semantic class names and no stylesheet, because */
+/* CSS pushed into an application nobody asked is worse than none. This is a */
+/* starting point you own outright: it is never re-generated and nothing in */
+/* the gem depends on it existing. */
+/* */
+/* TO TURN IT ON, delete every line that begins with a comment delimiter: */
+/* */
+/*   sed -i.bak -e '/^[/][*]/d' -e '/^[*][/]$/d' app/assets/stylesheets/audit_log.css */
+/* */
+/* (Bracket expressions, because a backslash-escaped comment delimiter inside */
+/* this file would close the very comment it is written in.) */
+/* */
+/* (macOS sed shown; GNU sed takes -i with no argument.) Or enable one section */
+/* at a time by deleting just that section's two delimiter lines. There are no */
+/* comments inside the sections, so nothing nests and nothing half-uncomments. */
+/* */
+/* THEN LINK IT. Nothing loads a stylesheet that is merely present: */
+/*   Propshaft   <%%= stylesheet_link_tag "audit_log" %> in your layout */
+/*   Sprockets   *= require audit_log  in application.css */
+/*   Sass        rename to _audit_log.scss and @use it */
+/* */
+/* Every rule is scoped under .audit-log, the element the engine wraps each of */
+/* its screens in. Nothing here can reach your own .card or .note. */
+/* */
+/* THE DARK MODE SECTION IS SEPARATE ON PURPOSE. Enabling it makes these */
+/* screens follow the READER's system setting rather than your application's, */
+/* which on a light-only app shows as a dark panel inside a light page. Delete */
+/* that one section and the screens stay light for everyone. */
+/* */
+/* Colour is never the only signal: before/after values carry a left border as */
+/* well as a tint, badges carry their own text, and the redaction marker says */
+/* so in words. Keep that if you retheme -- an auditor may be colour blind, and */
+/* these screens are read as evidence. */
+
+/* ===== Palette. Override these 14 and the rest follows. =====
+.audit-log {
+  --al-fg: #1a1d21;
+  --al-fg-soft: #5b6570;
+  --al-bg: #ffffff;
+  --al-bg-soft: #f6f7f9;
+  --al-line: #dfe3e8;
+  --al-accent: #2b5cd9;
+  --al-added-bg: #e7f6ec;
+  --al-added-line: #2e7d46;
+  --al-removed-bg: #fdecec;
+  --al-removed-line: #b3261e;
+  --al-warn-bg: #fff6e0;
+  --al-warn-line: #a8660a;
+  --al-radius: 6px;
+  --al-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+*/
+
+/* ===== Layout and typography =====
+.audit-log {
+  background: var(--al-bg);
+  color: var(--al-fg);
+  line-height: 1.45;
+  max-width: 100rem;
+}
+
+.audit-log h1 {
+  font-size: 1.35rem;
+  font-weight: 600;
+  margin: 1rem 0 0.75rem;
+}
+
+.audit-log h2 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin: 1.5rem 0 0.5rem;
+}
+
+.audit-log .two-col,
+.audit-log .cards {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+}
+
+.audit-log a {
+  color: var(--al-accent);
+  text-decoration-color: color-mix(in srgb, var(--al-accent) 40%, transparent);
+  text-underline-offset: 2px;
+}
+
+.audit-log a:hover { text-decoration-color: currentColor; }
+
+.audit-log .small { font-size: 0.85em; }
+.audit-log .muted { color: var(--al-fg-soft); }
+.audit-log .nowrap { white-space: nowrap; }
+.audit-log .num { font-variant-numeric: tabular-nums; text-align: right; }
+.audit-log .mono,
+.audit-log .req,
+.audit-log code {
+  font-family: var(--al-mono);
+  font-size: 0.9em;
+}
+*/
+
+/* ===== Nav and tabs =====
+.audit-log .audit-nav {
+  align-items: baseline;
+  border-bottom: 1px solid var(--al-line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  padding-bottom: 0.5rem;
+}
+
+.audit-log .audit-brand {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin-right: 0.5rem;
+}
+
+.audit-log .audit-nav a,
+.audit-log .tabs a {
+  border-bottom: 2px solid transparent;
+  color: var(--al-fg-soft);
+  padding-bottom: 0.35rem;
+  text-decoration: none;
+}
+
+.audit-log .audit-nav a:hover,
+.audit-log .tabs a:hover { color: var(--al-fg); }
+
+.audit-log .audit-nav a.on,
+.audit-log .tabs a.on {
+  border-bottom-color: var(--al-accent);
+  color: var(--al-fg);
+  font-weight: 600;
+}
+
+.audit-log .tabs {
+  border-bottom: 1px solid var(--al-line);
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+*/
+
+/* ===== Tables =====
+.audit-log table {
+  border-collapse: collapse;
+  font-size: 0.92rem;
+  width: 100%;
+}
+
+.audit-log th {
+  border-bottom: 1px solid var(--al-line);
+  color: var(--al-fg-soft);
+  font-weight: 600;
+  padding: 0.5rem 0.6rem;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.audit-log td {
+  border-bottom: 1px solid var(--al-line);
+  padding: 0.5rem 0.6rem;
+  vertical-align: top;
+}
+
+.audit-log tbody tr:hover { background: var(--al-bg-soft); }
+.audit-log table.compact td,
+.audit-log table.compact th { padding: 0.3rem 0.5rem; }
+.audit-log .fname,
+.audit-log .field-name {
+  font-family: var(--al-mono);
+  font-size: 0.88em;
+  white-space: nowrap;
+}
+*/
+
+/* ===== Before and after values =====
+.audit-log .diff td.old,
+.audit-log .diff td.new,
+.audit-log td.old,
+.audit-log td.new {
+  border-radius: var(--al-radius);
+  padding-left: 0.5rem;
+  word-break: break-word;
+}
+
+.audit-log td.old,
+.audit-log .fields .old {
+  background: var(--al-removed-bg);
+  border-left: 3px solid var(--al-removed-line);
+}
+
+.audit-log td.new,
+.audit-log .fields .new {
+  background: var(--al-added-bg);
+  border-left: 3px solid var(--al-added-line);
+}
+
+.audit-log .arrow {
+  color: var(--al-fg-soft);
+  padding: 0 0.4rem;
+}
+
+.audit-log .nil-value,
+.audit-log .derived {
+  color: var(--al-fg-soft);
+  font-style: italic;
+}
+
+.audit-log .fields {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+}
+
+.audit-log .fields li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0.15rem 0;
+}
+*/
+
+/* ===== Association labels, and the ids they annotate =====
+.audit-log .assoc-label { font-weight: 500; }
+
+.audit-log .assoc-id {
+  color: var(--al-fg-soft);
+  margin-left: 0.15rem;
+  font-family: var(--al-mono);
+  font-size: 0.85em;
+}
+
+.audit-log .assoc-missing,
+.audit-log .assoc-failed {
+  color: var(--al-warn-line);
+  font-size: 0.85em;
+  font-style: italic;
+}
+*/
+
+/* ===== Badges: operation, source, and the rest =====
+.audit-log .badge {
+  border: 1px solid var(--al-line);
+  border-radius: 999px;
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0.05rem 0.5rem;
+  white-space: nowrap;
+}
+
+.audit-log .badge.op-insert {
+  background: var(--al-added-bg);
+  border-color: var(--al-added-line);
+  color: var(--al-added-line);
+}
+
+.audit-log .badge.op-delete {
+  background: var(--al-removed-bg);
+  border-color: var(--al-removed-line);
+  color: var(--al-removed-line);
+}
+
+.audit-log .badge.op-update {
+  background: var(--al-bg-soft);
+  color: var(--al-fg-soft);
+}
+
+.audit-log .badge.source-web { color: var(--al-accent); }
+.audit-log .badge.source-api { color: var(--al-accent); }
+.audit-log .badge.source-job { color: var(--al-warn-line); }
+.audit-log .badge.source-console { color: var(--al-removed-line); }
+.audit-log .badge.source-system { color: var(--al-fg-soft); }
+
+.audit-log .col-chip {
+  background: var(--al-bg-soft);
+  border-radius: var(--al-radius);
+  font-family: var(--al-mono);
+  font-size: 0.8em;
+  padding: 0.05rem 0.35rem;
+}
+*/
+
+/* ===== Cards, and the timeline built from them =====
+.audit-log .card {
+  background: var(--al-bg);
+  border: 1px solid var(--al-line);
+  border-radius: var(--al-radius);
+  padding: 0.75rem 0.9rem;
+}
+
+.audit-log .timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.audit-log .activity {
+  border-left: 3px solid var(--al-line);
+  margin-bottom: 0.75rem;
+  padding: 0.1rem 0 0.6rem 0.9rem;
+}
+
+.audit-log .activity.kind-narrative { border-left-color: var(--al-accent); }
+.audit-log .activity.redacted { background: var(--al-warn-bg); }
+
+.audit-log .headline {
+  font-weight: 600;
+  margin: 0 0 0.2rem;
+}
+
+.audit-log .meta,
+.audit-log .who {
+  color: var(--al-fg-soft);
+  font-size: 0.85rem;
+}
+
+.audit-log .record-list {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+}
+
+.audit-log .record-list li {
+  border-top: 1px solid var(--al-line);
+  padding: 0.35rem 0;
+}
+*/
+
+/* ===== Disclosures. Collapsed is the default on purpose: see DESIGN 11.2b. =====
+.audit-log details {
+  margin: 0.4rem 0;
+}
+
+.audit-log details > summary {
+  color: var(--al-fg-soft);
+  cursor: pointer;
+  font-size: 0.85rem;
+  list-style: none;
+  padding: 0.15rem 0;
+  user-select: none;
+}
+
+.audit-log details > summary::-webkit-details-marker { display: none; }
+
+.audit-log details > summary::before {
+  content: "\25B8";
+  display: inline-block;
+  margin-right: 0.35rem;
+  transition: transform 0.12s ease-in-out;
+}
+
+.audit-log details[open] > summary::before { transform: rotate(90deg); }
+.audit-log details > summary:hover { color: var(--al-fg); }
+
+.audit-log details.touched-fields > summary { font-size: 0.8rem; }
+
+.audit-log .payload {
+  margin: 0.3rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.audit-log .payload dt {
+  color: var(--al-fg-soft);
+  font-family: var(--al-mono);
+  font-size: 0.8em;
+}
+
+.audit-log .payload dd {
+  margin: 0 0 0.35rem;
+  white-space: pre-wrap;
+}
+*/
+
+/* ===== Notes, warnings and empty states =====
+.audit-log .note,
+.audit-log .hint,
+.audit-log .label-note {
+  background: var(--al-bg-soft);
+  border-left: 3px solid var(--al-line);
+  border-radius: var(--al-radius);
+  color: var(--al-fg-soft);
+  font-size: 0.85rem;
+  margin: 0.5rem 0;
+  padding: 0.45rem 0.7rem;
+}
+
+.audit-log .warn,
+.audit-log .redaction-note {
+  background: var(--al-warn-bg);
+  border-left-color: var(--al-warn-line);
+  color: var(--al-warn-line);
+}
+
+.audit-log .ok { color: var(--al-added-line); }
+
+.audit-log .empty {
+  color: var(--al-fg-soft);
+  font-style: italic;
+  padding: 1rem 0;
+}
+*/
+
+/* ===== Filters, buttons, export and pagination =====
+.audit-log .date-filter,
+.audit-log .dimension-filter,
+.audit-log .export {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+}
+
+.audit-log label {
+  color: var(--al-fg-soft);
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.audit-log input,
+.audit-log select {
+  background: var(--al-bg);
+  border: 1px solid var(--al-line);
+  border-radius: var(--al-radius);
+  color: inherit;
+  font: inherit;
+  padding: 0.3rem 0.45rem;
+}
+
+.audit-log .button,
+.audit-log button,
+.audit-log input[type="submit"] {
+  background: var(--al-bg-soft);
+  border: 1px solid var(--al-line);
+  border-radius: var(--al-radius);
+  cursor: pointer;
+  font: inherit;
+  padding: 0.35rem 0.8rem;
+  text-decoration: none;
+}
+
+.audit-log .button:hover,
+.audit-log button:hover { border-color: var(--al-accent); }
+
+.audit-log .clear,
+.audit-log .csv {
+  color: var(--al-accent);
+  font-size: 0.85rem;
+}
+
+.audit-log .pagination {
+  display: flex;
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+*/
+
+/* ===== Dark mode. Its own section; see the note at the top of this file. =====
+@media (prefers-color-scheme: dark) {
+  .audit-log {
+    --al-fg: #e8eaed;
+    --al-fg-soft: #9aa4af;
+    --al-bg: #16181c;
+    --al-bg-soft: #1f2228;
+    --al-line: #333840;
+    --al-accent: #7aa2f7;
+    --al-added-bg: #14301f;
+    --al-added-line: #4cc47f;
+    --al-removed-bg: #351a1a;
+    --al-removed-line: #f2867d;
+    --al-warn-bg: #33270f;
+    --al-warn-line: #e0b063;
+  }
+}
+*/

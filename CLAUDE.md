@@ -88,7 +88,7 @@ about the host app, add a config attribute — do not reach for the constant.
 
 It assumes only that the host app exposes `current_user` in controller scope and
 that the actor produces a label (`to_audit_label`, else `to_label`, else a
-name/email pair, else `Class #id`). Both are resolved through config.
+name/email pair, else `Class (id: n)`). Both are resolved through config.
 
 `README.md` is the extraction guide and the design-decision record.
 Update it when you change behaviour.
@@ -310,18 +310,45 @@ Do not "fix" these without reading the linked reasoning first.
   parenthesis is the id. Pinned on both sides now:
   `association_labels_spec` on the engine's, `activity_generator_spec` on the
   template's.
-- **`AuditLog::RecordLabel`'s chain ends in `nil`, not in `"Product #51"`** — the
+- **A recorded identity is spelled `Order (id: 6064)`, never `Order #6064`, and
+  `AuditLog::Identity` is the ONE place that decides it.** The `#` went because
+  host apps overwhelmingly use it for an identifier of their own — an order
+  number, an invoice number, a ticket reference — so on an audit screen the
+  reader cannot tell which number the log recorded, next to a live-resolved label
+  whose whole job is to not be mistaken for the recorded fact. What fixes it is
+  the NAME inside the annotation, not the bracket: `#` is a bare sigil that says
+  nothing about what it prefixes, while a host label containing `(West)` can
+  never be confused with `(id: 51)`. **Parens rather than brackets was checked,
+  not preferred** — this UI already spends both. Parens are what the screens use
+  for an annotation the audit UI added rather than data it recorded
+  (`(not found)`, `(label unavailable)`, `(unrecorded)`); `[` is
+  `Redaction::MARKER_PREFIX`, so `[redacted 2026-09-01 per …]` renders in the
+  same column and `[id: 51]` would put a routine annotation in the erasure
+  delimiter. Three forms, and the diff cell is the general case:
+  `annotation(id)` where the column already named the type, `for(type, id)`
+  standalone, `labelled(label, type, id)` → `Grommet 10mm (Product id: 51)`.
+  **Two callers STORE their result** — `Configuration#default_actor_label`
+  snapshots into `actor_label` and a registry `summary:` is frozen at emit time —
+  so old rows keep the old spelling and the actor column is mixed from here on.
+  That is what a snapshot means; do NOT add a migration that rewrites them. There
+  is deliberately no `config.identity_format`: a host could set it back to `#`.
+  It exists as a module because the same interpolation was hand-spelled in seven
+  places and nothing made them agree — the Changes tab and the Timeline tab of
+  one record screen drifted apart the first time a single one was edited, which
+  is the `ActorLabel.display` lesson again. `identity_spec` greps `app/` and
+  `lib/` for a hand-rolled copy. DESIGN §11.8.
+- **`AuditLog::RecordLabel`'s chain ends in `nil`, not in `"Product (id: 51)"`** — the
   other place it deliberately differs from `ActorLabel`, whose chain must end in
   something because its column would otherwise be blank. Here the id renders
   unconditionally, so a model with no hook must produce no label and leave the cell
   byte-identical to before the feature existed. That nil ending *is* the opt-in.
   The chain is `to_audit_label` → `to_label` → a deliberately overridden `to_s`
   — **the same head `Configuration#default_actor_label` uses**, and only the tail
-  differs (that default ends in `Class #id` because the actor column would
+  differs (that default ends in `Class (id: n)` because the actor column would
   otherwise be blank),
   and **there is deliberately no `name`/`title` column sniffing** — guessing which
   column reads as a label is how a screen confidently captions an id with the wrong
-  string. Adding a sniffing fallback, or a `"Type #id"` terminal, both look like
+  string. Adding a sniffing fallback, or a `"Type (id: n)"` terminal, both look like
   improvements and are the two ways to break this.
 - **Foreign-key discovery is `belongs_to` reflection, never a naming convention.**
   `orders.created_by_id` points at `User`; de-suffixing and classifying the column
@@ -438,7 +465,7 @@ Do not "fix" these without reading the linked reasoning first.
   is reading. Silence is the opt-out. It serves actors too — an actor is a record,
   so there is deliberately no second `actor_url` lambda.
 - **`TouchedRecord#to_s` keeps the id and must go on doing so.** `Grommet 10mm
-  (Product #51)`, never `Grommet 10mm`. The label is resolved live from current
+  (Product id: 51)`, never `Grommet 10mm`. The label is resolved live from current
   state; the id is what the log recorded (DESIGN §11.8). A host building a pretty
   timeline will want to drop it, which is exactly why the pretty method is the
   one that keeps it.
@@ -968,6 +995,43 @@ Do not "fix" these without reading the linked reasoning first.
   audit tables. The README names the asymmetry so nobody discovers which one they
   ran.
 
+### The starter stylesheet (DESIGN §21.4)
+
+- **The engine ships NO CSS, and that follows from `parent_controller` rather
+  than being a gap.** Its screens render inside the HOST's layout, so a
+  stylesheet the gem loaded would arrive uninvited on somebody else's page. Do
+  not add one, and do not add an asset the engine links.
+- **`audit_log:views:css` writes the starter stylesheet COMMENTED OUT.** Live on
+  landing is the same imposition one step removed — the host would find out by
+  seeing their screens change. Inert, it is a proposal. `audit_log:install`
+  invokes the same generator rather than re-spelling it, so there is one template
+  and one set of instructions.
+- **The file must contain NO NESTED COMMENTS and NO WRAPPED SECTION TITLES.**
+  Each section is one block comment whose title sits ON the `/*` line, because
+  enabling is "delete every line that opens or closes a comment". A `/* ... */`
+  inside a section closes it early and leaves un-enabled CSS live; a title that
+  wraps leaves prose where a selector belongs. Both happened while writing it.
+  `css_generator_spec` enables the file the documented way and parses the result.
+- **The enable instruction uses bracket expressions, never backslash escapes.**
+  `/^\/\*/d` contains the two characters that close a CSS comment, so the
+  instruction closed the comment it was written in. `/^[/][*]/d` does not.
+- **Every selector is scoped under `.audit-log`, and the 11 top-level templates
+  are wrapped in it for exactly that.** The screens use generic class names
+  (`.card`, `.note`, `.new`, `.old`, `.grid`), which is harmless until a host
+  uncomments a stylesheet targeting them bare. Do not remove the wrapper, and do
+  not add an unscoped rule — the spec fails on one.
+- **`.grid` is the engine's class for a data TABLE, not for CSS grid.** The first
+  draft gave it `display: grid` and broke every table on every screen. Found by
+  rendering the previews and looking; `spec/preview.rb` now inlines the enabled
+  stylesheet so the next such bug is visible too.
+- **Dark mode is a SEPARATE section and sets a background as well as a
+  foreground.** Flipping only the foreground paints light text onto a light host
+  page. Separate because enabling it makes the screens follow the reader's system
+  setting rather than the app's, which on a light-only app is a dark panel in a
+  light page.
+- **Colour is never the only signal** — a left border as well as a tint, badges
+  that carry their own text, a redaction that says so in words.
+
 ### Documentation for coding agents (DESIGN §24)
 
 - **`llms.txt` is in `spec.files` and `CLAUDE.md` is deliberately not, and both
@@ -1013,7 +1077,7 @@ browsable results. `config.page_size` is the only knob.
 ## The activity generator
 
 **`DESIGN.md` §21 is the authority on the three generators it covers**; §21.3 is
-this one. The fourth, `audit_log:dimensions`, is a retrofit path and its reasoning
+this one and §21.4 is `audit_log:views:css`, the other thing under `views:`. The fourth, `audit_log:dimensions`, is a retrofit path and its reasoning
 lives in §23 with the rest of that feature; the fifth and sixth,
 `audit_log:disable` and `audit_log:enable`, live in §25 with theirs. `audit_log:install`'s agent-skill step
 is §24's, not §21's — it is a documentation-distribution decision that happens to be
@@ -1252,6 +1316,8 @@ property from different angles — **that nothing goes missing without saying so
 | `archive_spec` | a partition is dropped without a verified export |
 | `redaction_spec` | redaction removes structure, not just values |
 | `association_labels_spec` | a label replaces a stored id, or a failed lookup reads as an absent one |
+| `css_generator_spec` | the starter stylesheet stops being inert as shipped, stops being valid CSS once enabled, or grows a rule that would reach past `.audit-log` into the host's own markup |
+| `identity_spec` | a screen hand-spells a recorded identity, so two tabs describe one fact differently — or the `#` that a host app uses for its own numbering comes back |
 | `readme_spec` | the README's contents table drifts from its headings, an internal link dangles, a rake task exists that the docs never mention — **nested ones included; the old two-space regex checked 6 of 13 and skipped every retention task** — or `llms.txt` routes into a heading that is gone, cites a dead `§n`, or falls out of `spec.files` |
 | `record_timeline_spec` | an unsubjected action vanishes from a record's narrative, or a capped section does not admit it is capped |
 | `timeline_spec` | the published host-facing contract changes shape, a unit of work is dropped or repeated across pages, an event that wrote no change row falls off the timeline, or `headline` starts inventing sentences |

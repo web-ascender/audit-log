@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rails/generators"
+require_relative "../views/css/css_generator"
 require "rails/generators/migration"
 require "rails/generators/active_record"
 
@@ -32,6 +33,7 @@ module AuditLog
       class_option :skip_job,        type: :boolean, default: false
       class_option :skip_spec,       type: :boolean, default: false
       class_option :skip_skill,      type: :boolean, default: false
+      class_option :skip_css,        type: :boolean, default: false
 
       ORDER_WARNING = <<~TEXT
         ControllerContext registers a before_action. If it runs before your
@@ -210,6 +212,24 @@ module AuditLog
         return skip("#{path} already exists — left alone") if file_exists?(path)
 
         template "skill.md", path
+      end
+
+      # ---------------------------------------------------------------- step 10
+      # A starting stylesheet for the auditor UI, written COMMENTED OUT. The
+      # engine deliberately ships no CSS -- its screens render inside the host's
+      # layout, so a stylesheet the gem loaded would arrive uninvited on a page
+      # somebody else designed. Inert, it is a proposal rather than an
+      # imposition, and enabling it is one deletion of the delimiter lines.
+      #
+      # Delegated rather than re-spelled: `audit_log:views:css` is the same
+      # generator a host runs later, so there is one template and one set of
+      # instructions. Its own create-once check makes a second install run leave
+      # an edited stylesheet alone.
+      def create_stylesheet
+        return if options[:skip_css]
+
+        invoke AuditLog::Generators::Views::CssGenerator,
+               [], path: "app/assets/stylesheets", mount_path: options[:mount_at]
       end
 
       # ---------------------------------------------------------------- report

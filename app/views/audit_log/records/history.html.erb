@@ -1,3 +1,4 @@
+<div class="audit-log">
 <%= render "audit_log/shared/nav" %>
 <h1><%= AuditLog::Identity.for(@record_type, @record_id) %></h1>
 
@@ -100,3 +101,4 @@
 <% end %>
 
 <p class="export"><%= audit_csv_link %> <span class="hint">the rows above, unpaginated, for the same filters and date range</span></p>
+</div>
