@@ -5,6 +5,42 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## 0.5.2 — 2026-09-09
+
+Documentation and reporting only. No behaviour change to either capture layer.
+
+### Changed
+
+- **`audit_log:coverage` leads its finding with a count, and sorts the tables.**
+  `23 untracked tables: ...` rather than `Untracked tables: ...`, alphabetically
+  rather than in catalog order. Both are for the reader of a CI log, where that
+  list is the part that scrolls: shown from the tail, a forty-table wall reads as
+  a handful of findings, and creation order is not what somebody scanning for the
+  table they just added is using.
+
+  The sort is in `AuditLog::Coverage#missing`, so the rake task, the
+  capture-disabled report and any host calling `missing` directly share it. The
+  count is spelled in the shared example in `audit_log/rspec` too — that message
+  is a second rendering of the same finding, and this class exists so the two
+  cannot disagree.
+
+- **The install template's `unaudited_tables` block carries commented examples**
+  for Active Storage, Ahoy, PaperTrail's `versions` and the PostGIS reference
+  tables (`us_lex`, `us_gaz`, `us_rules`, `spatial_ref_sys`).
+
+  They stay commented, and they stay in the host's initializer rather than
+  becoming gem defaults. The four defaults are tables no application could want
+  audited; `active_storage_attachments` records who attached which file to which
+  record, which is a real auditor question in a document-heavy app, and a default
+  exemption would mean coverage never asks it again — silently, in every adopting
+  app. That is the one thing the forcing function exists to prevent, so the group
+  carries a note saying so.
+
+- **`--exclude` is documented as space-separated** in the `audit_log:trigger`
+  options table. It is a Thor `type: :array`, so `--exclude=a,b` arrives as one
+  column name `a,b`, matches nothing, and leaves both columns in the diff while
+  the generator reports success.
+
 ## 0.5.1 — 2026-09-01
 
 ### Changed
