@@ -79,6 +79,28 @@ AuditLog.configure do |config|
   # through connects_to is never seen by the primary connection.
   config.unaudited_tables.merge!(
     # "sessions" => "session store; churn with no compliance value",
+    #
+    # Ahoy, if this app tracks analytics. Visits and events are views rather
+    # than changes.
+    # "ahoy_events" => "analytics event stream; high churn, no compliance value",
+    # "ahoy_visits" => "analytics visit log; high churn, no compliance value",
+    #
+    # Active Storage. Uncomment the ones this app genuinely has no question
+    # about -- and think about `active_storage_attachments` before you do: it
+    # records who attached which file to which record, which is a real auditor
+    # question in a document-heavy app.
+    # "active_storage_blobs"           => "uploaded file metadata; no user decision recorded",
+    # "active_storage_attachments"     => "attachment join rows; no compliance value in this app",
+    # "active_storage_variant_records" => "derived image variants; no user decision recorded",
+    #
+    # PaperTrail
+    # "versions" => "PaperTrail's own log; auditing an audit log recurses",
+    #
+    # PostGIS
+    # "us_lex"          => "US Lex tables; external reference data",
+    # "us_gaz"          => "US Gazetteer tables; external reference data",
+    # "us_rules"        => "US Rules tables; external reference data",
+    # "spatial_ref_sys" => "Spatial reference system table; external reference data",
   )
 
   # LEAVE THIS ALONE unless this app has more than one database. The default is

@@ -4188,7 +4188,7 @@ written.
 
 ### Coverage learns a third state
 
-Without it, a disabled audit log fails coverage with *"Untracked tables: orders, products, … Add
+Without it, a disabled audit log fails coverage with *"23 untracked tables: orders, products, … Add
 `attach_audit_trigger` to a migration"* — true, useless, and the wrong repair. It sends somebody to
 re-attach table by table, and `rails generate audit_log:trigger orders` **succeeds** while capture is
 disabled (attach only collides with an existing trigger, and there is none), so the repair

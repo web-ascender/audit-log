@@ -268,7 +268,7 @@ RSpec.describe AuditLog::Capture do
   end
 
   # THE THIRD STATE. Without it a disabled audit log fails coverage with
-  # "Untracked tables: ... Add attach_audit_trigger to a migration" -- true,
+  # "23 untracked tables: ... Add attach_audit_trigger to a migration" -- true,
   # useless, and the wrong repair, since `audit_log:trigger` SUCCEEDS while
   # capture is disabled and leaves the marker standing over a schema that no
   # longer matches it.

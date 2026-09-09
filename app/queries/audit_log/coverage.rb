@@ -64,7 +64,7 @@ module AuditLog
     # THE THIRD STATE: capture deliberately disabled, per the marker
     # AuditLog::Capture stamps. DESIGN §25.
     #
-    # Without this, a disabled audit log fails coverage with "Untracked tables:
+    # Without this, a disabled audit log fails coverage with "23 untracked tables:
     # orders, products, ... Add attach_audit_trigger to a migration" -- which is
     # true, useless, and actively misleading. It sends somebody to re-attach one
     # table at a time, and `rails generate audit_log:trigger orders` SUCCEEDS
@@ -85,8 +85,13 @@ module AuditLog
     end
 
     # The finding: a table that is neither audited nor exempted.
+    #
+    # SORTED, because `@connection.tables` comes back in catalog order -- roughly
+    # the order the tables were created, which is information nobody reading this
+    # list is using. Somebody scanning forty names for the one they just added,
+    # or diffing two CI runs, wants them alphabetical.
     def missing
-      @connection.tables - audited_tables - exempt_tables - partition_tables
+      (@connection.tables - audited_tables - exempt_tables - partition_tables).sort
     end
 
     # An exemption for a table that has since been dropped. Not cosmetic -- a
@@ -120,7 +125,7 @@ module AuditLog
         lines << "  disabled at: #{capture_marker["disabled_at"] || "(unrecorded)"}"
         lines << "  reason:      #{capture_marker["reason"] || "(unrecorded)"}"
         lines << "  tables:      #{Array(capture_marker["triggers"]).size} detached"
-        lines << "  now untracked: #{missing.join(", ")}" if missing.any?
+        lines << "  now untracked: #{missing.size} - #{missing.join(", ")}" if missing.any?
         lines << ""
         lines << "  This is a deliberate state, not a missing migration, so those tables"
         lines << "  need no attach_audit_trigger -- they need capture resumed:"
@@ -131,7 +136,9 @@ module AuditLog
         lines << "  the honest options are to resume capture or to accept a red check"
         lines << "  for as long as the pause lasts. Do not skip the spec."
       elsif missing.any?
-        lines << "Untracked tables: #{missing.join(", ")}"
+        # The count leads, because the list is the part that scrolls: a CI log
+        # showing the tail of a forty-table wall reads as a handful of findings.
+        lines << "#{missing.size} untracked #{"table".pluralize(missing.size)}: #{missing.join(", ")}"
         lines << "  Add attach_audit_trigger to a migration, or add the table to"
         lines << "  AuditLog.config.unaudited_tables with a written reason."
       end

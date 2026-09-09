@@ -45,7 +45,7 @@ RSpec.shared_examples "an app with complete audit coverage" do
 
   it "audits every table that has not been explicitly exempted" do
     expect(audit_coverage.missing).to be_empty, <<~MSG
-      Untracked tables: #{audit_coverage.missing.join(", ")}
+      #{audit_coverage.missing.size} untracked #{"table".pluralize(audit_coverage.missing.size)}: #{audit_coverage.missing.join(", ")}
 
       Every table is either audited or exempted, with no third option. Either:
         * add `attach_audit_trigger :table, model: "Model"` in a migration

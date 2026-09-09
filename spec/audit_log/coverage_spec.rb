@@ -29,9 +29,21 @@ RSpec.describe AuditLog::Coverage do
 
     expect(coverage.missing).to include("widgets")
     expect(coverage).not_to be_ok
-    expect(coverage.report).to include("widgets").and include("attach_audit_trigger")
+    # The count LEADS the list. A forty-table wall scrolls, and a CI log showing
+    # only its tail reads as a handful of findings.
+    expect(coverage.report).to include("1 untracked table: widgets").and include("attach_audit_trigger")
   ensure
     ActiveRecord::Base.connection.drop_table(:widgets, if_exists: true)
+  end
+
+  # Catalog order is creation order, which nobody scanning the list is using.
+  it "reports untracked tables alphabetically" do
+    %i[zebras aardvarks].each { |t| ActiveRecord::Base.connection.create_table(t) { |x| x.string :name } }
+
+    expect(coverage.missing).to eq(%w[aardvarks zebras])
+    expect(coverage.report).to include("2 untracked tables: aardvarks, zebras")
+  ensure
+    %i[zebras aardvarks].each { |t| ActiveRecord::Base.connection.drop_table(t, if_exists: true) }
   end
 
   it "reports an exemption whose table has been dropped" do
