@@ -40,7 +40,7 @@ module AuditLog
       # for an actor with no activity in this window.
       @actor_label = (@events || @records).first&.actor_display ||
         AuditLog::ActorLabel.for(AuditLog.config.actor_finder.call(@actor_type, @actor_id)) ||
-        "#{@actor_type} ##{@actor_id}"
+        AuditLog::Identity.for(@actor_type, @actor_id)
     end
   end
 end

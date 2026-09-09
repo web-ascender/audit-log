@@ -58,12 +58,11 @@ module AuditLog
       def deleted? = operations.include?(AuditLog::Change::DELETE)
       def created? = operations.include?(AuditLog::Change::INSERT)
 
-      # "Product #51" -- what the log recorded, always available.
-      def identifier = "#{type} ##{id}"
+      # "Product (id: 51)" -- what the log recorded, always available.
+      def identifier = AuditLog::Identity.for(type, id)
 
-      def to_s
-        label ? "#{label} (#{identifier})" : identifier
-      end
+      # "Grommet 10mm (Product id: 51)". The id is never dropped -- DESIGN §11.8.
+      def to_s = AuditLog::Identity.labelled(label, type, id)
 
       # nil unless the host app configured config.record_url. Deliberately not
       # guessed from the class name: this library does not know the host's

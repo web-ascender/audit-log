@@ -1,6 +1,6 @@
 <div class="<%= css(:page_head) %>">
   <h1>
-    <%%= @record ? @record.to_s : "#{@record_type} ##{@record_id}" %>
+    <%%= @record ? @record.to_s : AuditLog::Identity.for(@record_type, @record_id) %>
     <span class="<%= css(:badge) %>">history</span>
   </h1>
   <div class="<%= css(:actions) %>">

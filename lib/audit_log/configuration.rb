@@ -406,7 +406,7 @@ module AuditLog
       return "#{name} <#{email}>" if name && email
       return name || email if name || email
 
-      "#{actor.class.name} ##{actor.id}"
+      Identity.for(actor.class.name, actor.id)
     end
   end
 end

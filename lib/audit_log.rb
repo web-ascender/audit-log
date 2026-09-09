@@ -40,6 +40,7 @@ module AuditLog
     Current:           "audit_log/current",
     DimensionIndex:    "audit_log/dimension_index",
     EventSubscriber:   "audit_log/event_subscriber",
+    Identity:          "audit_log/identity",
     JobContext:        "audit_log/job_context",
     MigrationHelpers:  "audit_log/migration_helpers",
     Pagination:        "audit_log/pagination",

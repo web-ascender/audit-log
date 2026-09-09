@@ -84,7 +84,7 @@ RSpec.describe AuditLog::Redaction do
       }.to change { AuditLog::Event.for_action("audit.redaction").count }.by(1)
 
       event = AuditLog::Event.for_action("audit.redaction").newest_first.first
-      expect(event.summary).to include("DSR-1182").and include("Customer ##{@customer.id}")
+      expect(event.summary).to include("DSR-1182").and include("Customer (id: #{@customer.id})")
       expect(event.summary).to include("Mei Chen")
       expect(event.summary).not_to include("jane@private.example")
     end

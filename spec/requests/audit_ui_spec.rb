@@ -151,7 +151,7 @@ RSpec.describe "the auditor UI", type: :request do
     it "renders one record's full history" do
       get audit.record_history_path(record_type: "Order", record_id: @order.id)
       expect(response).to have_http_status(:ok)
-      expect(response.body).to include("Order ##{@order.id}")
+      expect(response.body).to include("Order (id: #{@order.id})")
     end
 
     # The change rows are the compliance-grade answer, so they stay the landing
@@ -223,7 +223,7 @@ RSpec.describe "the auditor UI", type: :request do
       get audit.record_history_path(record_type: "Order", record_id: @order.id, view: "timeline")
 
       touched = response.parsed_body.css("ul.record-list li")
-                        .find { |li| li.text.include?("LineItem #") }
+                        .find { |li| li.text.include?("LineItem id:") }
       expect(touched).not_to be_nil
 
       values = touched.at_css("details.touched-fields")

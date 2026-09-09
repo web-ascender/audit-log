@@ -215,7 +215,7 @@ Rails.application.config.to_prepare do
     subject: ->(p) { [p[:target_type], p[:target_id]] },
     summary: lambda { |p|
       scope = Array(p[:columns]).presence&.join(", ") || "all recorded values"
-      "Redacted #{scope} for #{p[:target_type]} ##{p[:target_id]} " \
+      "Redacted #{scope} for #{AuditLog::Identity.for(p[:target_type], p[:target_id])} " \
         "(#{p[:reason]}), by #{p[:redacted_by] || "System"}"
     }
 

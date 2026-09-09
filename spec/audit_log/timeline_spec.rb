@@ -295,8 +295,8 @@ RSpec.describe AuditLog::Timeline do
       end
 
       touched = page_of(order).first.also_touched.first
-      expect(touched.to_s).to include("##{touched.id}")
-      expect(touched.identifier).to eq("#{touched.type} ##{touched.id}")
+      expect(touched.to_s).to include("id: #{touched.id}")
+      expect(touched.identifier).to eq("#{touched.type} (id: #{touched.id})")
     end
 
     it "links through config.record_url, and to nothing when the host set none" do

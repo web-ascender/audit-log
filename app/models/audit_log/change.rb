@@ -61,8 +61,6 @@ module AuditLog
           .sort_by { |col, _, _| col }
     end
 
-    def label
-      "#{record_type} ##{record_id}"
-    end
+    def label = AuditLog::Identity.for(record_type, record_id)
   end
 end

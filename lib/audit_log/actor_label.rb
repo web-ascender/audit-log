@@ -32,7 +32,7 @@ module AuditLog
     # re-spelled the chain, dropped the nil branch, and raised on the first
     # actorless action to reach the screen.
     def self.display(actor_type, actor_id, actor_label = nil)
-      actor_label.presence || (actor_type ? "#{actor_type} ##{actor_id}" : "System")
+      actor_label.presence || (actor_type ? Identity.for(actor_type, actor_id) : "System")
     end
 
     # Is there an actor to link TO? A NULL actor has no activity page, because it

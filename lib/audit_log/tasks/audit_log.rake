@@ -273,7 +273,8 @@ namespace :audit_log do
     columns  = ENV["FIELDS"].to_s.split(",").map(&:strip).presence
 
     preview = AuditLog::Redaction.preview(record_type: type, record_id: id)
-    puts "#{type} ##{id}: #{preview[:changes]} change row(s), #{preview[:events]} event row(s)."
+    puts "#{AuditLog::Identity.for(type, id)}: #{preview[:changes]} change row(s), " \
+         "#{preview[:events]} event row(s)."
     puts "Columns recorded: #{preview[:columns].join(", ").presence || "none"}"
     puts "Would redact: #{columns&.join(", ") || "every recorded value"}"
 

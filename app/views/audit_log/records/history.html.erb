@@ -1,5 +1,5 @@
 <%= render "audit_log/shared/nav" %>
-<h1><%= @record_type %> #<%= @record_id %></h1>
+<h1><%= AuditLog::Identity.for(@record_type, @record_id) %></h1>
 
 <div class="tabs">
   <%= link_to "Changes", record_history_path(record_type: @record_type, record_id: @record_id, view: "changes"),

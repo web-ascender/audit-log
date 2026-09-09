@@ -52,13 +52,13 @@ RSpec.describe AuditLog::ActorLabel do
     # The deliberate divergence from RecordLabel, whose chain ends in nil so an
     # un-opted-in model leaves the cell byte-identical. Here the label IS the
     # column, so it must terminate in something an auditor can read.
-    it "ends in Class #id rather than nil, unlike RecordLabel" do
+    it "ends in a bare identity rather than nil, unlike RecordLabel" do
       klass = Class.new do
         def self.name = "ApiKey"
         def id = 7
       end
 
-      expect(default_label_for(klass.new)).to eq("ApiKey #7")
+      expect(default_label_for(klass.new)).to eq("ApiKey (id: 7)")
       expect(AuditLog::RecordLabel.for(klass.new)).to be_nil
     end
   end
@@ -100,7 +100,7 @@ RSpec.describe AuditLog::ActorLabel do
     end
 
     it "falls back to the bare identifier when no label was snapshotted" do
-      expect(described_class.display("User", 1, nil)).to eq("User #1")
+      expect(described_class.display("User", 1, nil)).to eq("User (id: 1)")
     end
 
     it "renders a NULL actor as System" do

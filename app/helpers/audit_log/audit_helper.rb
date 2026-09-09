@@ -74,7 +74,7 @@ module AuditLog
       else
         safe_join([
           tag.span(truncate(label.to_s, length: 120), class: "assoc-label"),
-          tag.span("(id: #{value})", class: "assoc-id")
+          tag.span(AuditLog::Identity.annotation(value), class: "assoc-id")
         ], " ")
       end
     end
