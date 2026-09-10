@@ -1551,6 +1551,50 @@ and that works on all fifteen of `spec/dummy`'s entries — but it under-detects
 `p[:a] + 1`. Sound as a suggestion for `audit_log:reconcile` to report, unsound as the enforcement
 basis. Left open.
 
+### Payload keys name their type — `order_id`, never `id`  **[added 2026-09-10]**
+
+Every example in this document, in the README and in the install template spells the subject's own id
+`order_id` / `customer_id` / `invoice_id` — including on an action whose subject **is** that record.
+`spec/dummy`'s `customer.created` reads `p[:customer_id]`, not `p[:id]`, and declares that same key as
+its facet. That was consistent by habit and stated nowhere, so an adopting app reasonably wrote `id:`
+on the action about its own aggregate root and `job_id:` only on the child action that referenced one.
+Three things follow from the short spelling, and two of them are silent.
+
+**A bare `id` cannot be a facet, so a record's own events fall off its own facet feed.**
+`AuditLog::DimensionTimeline` replaces **both** predicates with the containment test — there is no
+`subject_type = ?` leg in it, because it was not asked about a record. So
+`/audit/dimensions?d[job_id]=17487` is answered entirely by `dimensions @> '{"job_id":"17487"}'`, and
+an entry whose payload key is `id` cannot declare that facet at all: `dimensions: %i[id]` records
+`{"id":"17487"}`, which no `job_id` containment will ever match. The record's own narrative is then
+missing from the one screen that exists to gather everything about it, while a host-rendered timeline
+built on `Timeline` — which does have a record leg — shows it. Two screens describing one record's
+history and disagreeing about what is in it: the `ActorLabel.display` divergence (§11.8) and the
+Changes-tab/Timeline-tab drift that produced `AuditLog::Identity`, arriving a third time through a
+payload key.
+
+**`metadata` is read, not only queried.** `shared/_event_payload` renders it untruncated through
+`audit_metadata_value` precisely because it is the structured evidence behind a frozen sentence. A
+reader on `/audit/actions/job.updated` sees `id: 17487` beside `number: "117487"` and cannot tell
+which of the two numbers the log recorded. That is the problem `AuditLog::Identity` was extracted to
+solve one column over, and its answer was to put the **type name inside the annotation** — `Order
+(id: 6064)` rather than `#6064` — rather than to choose a different bracket. A payload key is the
+same annotation one level down, and it takes the same answer.
+
+**A payload is frozen at emit time, and `id` is the one key that can never be disambiguated later.**
+§11.8 already refuses a migration that rewrites the recorded `#` spelling, for the reason a snapshot
+exists at all. A key named for its type can still be read years later against a schema that has moved
+on; `id` cannot, and there is no repair.
+
+The rule is therefore: **every id in a payload names its type, and `subject:` reads a prefixed key.**
+It costs six characters and it removes the question at the only moment anybody asks it.
+
+**Not enforced at runtime, and that is the §23 line rather than an omission.** A naming convention is
+not an invariant: a bare `id` renders, stores and queries perfectly, and only reads worse. The
+migration-time column check earns its exception because a mistyped facet records nothing *forever*
+and never says why; this costs a reader a moment. What `payload_contract_spec` does pin is the
+reference app's own entries and the shipped install template — four documents stating a convention
+with nothing checking them is how one of them comes to demonstrate the opposite.
+
 ### Actor labels
 
 ```ruby

@@ -100,7 +100,7 @@ Update it when you change behaviour.
 | Ruby | **>= 3.3** — the floor is `SecureRandom.uuid_v7` (DESIGN §2.1), not a preference. 3.3.0 exactly also cannot run Rails 8.1, for a reason of Rails' own. Developed on 4.0.6. |
 | Rails | **`~> 8.0`** — floor 8.0 (DESIGN §2.2), and a real ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. Developed on 8.1.3.1. |
 | PostgreSQL | **>= 16.** Developed on 18.6, port 5438 — not the workspace default 5437. CI runs 16 and 18; DESIGN §20 is the authority and says the design "targets PG 16 and requires nothing newer". Verified: the whole suite passes on 16.13. |
-| Tests | RSpec against `spec/dummy` (508 examples), on every push via GitHub Actions — six legs: Ruby 3.3/4.0.6 × Rails 8.0/latest × PG 16/18 |
+| Tests | RSpec against `spec/dummy` (553 examples), on every push via GitHub Actions — six legs: Ruby 3.3/4.0.6 × Rails 8.0/latest × PG 16/18 |
 | Runtime deps | `rails`, `csv` (export). **`pg` and `pagy` deliberately are not** — the host app picks its own `pg` build, and its own pagination gem. `AuditLog::Pagination` is this library's own keyset pager precisely so a `pagy` constraint does not propagate into the host. |
 
 ```bash
@@ -231,6 +231,29 @@ Do not "fix" these without reading the linked reasoning first.
   without, not every key it reads: `audit.redaction` reads `columns` and requires
   it not, because `Array(p[:columns]).presence || "all recorded values"` has
   already decided it is optional. DESIGN §7.
+- **Every id key in an event payload NAMES ITS TYPE — `order_id:`, never a bare
+  `id:`** — including on an action whose subject IS that record; `spec/dummy`'s
+  `customer.created` reads `p[:customer_id]` and declares that same key as its
+  facet. It was consistent by habit and stated nowhere until 2026-09-10, so an
+  adopting app wrote `id:` on the action about its own aggregate root and
+  `job_id:` only on the child action. Three consequences, two silent:
+  `DimensionTimeline` replaces BOTH predicates with the containment test and has
+  no `subject_type` leg, so a bare `id` cannot be declared as a facet at all
+  (`dimensions: %i[id]` writes `{"id":…}`) and the record's own events vanish
+  from its own facet feed while a `Timeline`-backed screen still shows them — the
+  `ActorLabel.display` divergence a third time; `metadata` renders as evidence,
+  where `id: 17487` beside `number: "117487"` does not say which number was
+  recorded, which is `Identity`'s "the NAME inside the annotation, not the
+  bracket" one level down; and a payload is frozen at emit time, so `id` is the
+  one key that can never be disambiguated later. **Deliberately not enforced at
+  runtime** — a convention, not an invariant, and §23's line: the migration-time
+  facet-column check earns its exception because a typo there records nothing
+  forever, while this only reads worse. `payload_contract_spec` pins the
+  reference app's entries AND the shipped install template, because four
+  documents stating a convention with nothing checking them is how one comes to
+  demonstrate the opposite. It is deliberately NOT in the generated
+  `SKILL.md` — that is a pointer carrying architectural invariants only, and
+  this is API detail (§24). DESIGN §7.
 - **`spec/dummy` declares `requires:` on fourteen entries and leaves
   `order.deleted` undeclared ON PURPOSE.** An app where every entry declares one
   leaves the library's "unchecked without it" claim untested, and `order.deleted`
@@ -1356,7 +1379,7 @@ one. Do not reintroduce it.
 ## Testing
 
 ```bash
-bundle exec rspec                         # 508 examples, against spec/dummy
+bundle exec rspec                         # 553 examples, against spec/dummy
 bundle exec rspec spec/audit_log          # the library proper
 bundle exec rspec spec/requests           # the auditor UI and the CSV export
 bundle exec rspec spec/preview.rb         # dev tool: renders 19 screens to spec/dummy/public/

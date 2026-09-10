@@ -136,4 +136,50 @@ RSpec.describe "the registry payload contract" do
       end
     end
   end
+
+  # THE NAMING CONVENTION -- every id key in a payload names its type,
+  # `order_id:` and never a bare `id:`, including on an action whose subject IS
+  # that record. DESIGN §7 carries the three consequences; the short version is
+  # that a bare `id` cannot be declared as a dimension, so the record's own
+  # events fall off its own facet feed while a record timeline still shows them.
+  #
+  # DELIBERATELY NOT ENFORCED AT RUNTIME, and these examples are not a step
+  # toward it: a bare `id` renders, stores and queries perfectly and only reads
+  # worse, which makes it a convention rather than an invariant. §23's line --
+  # the migration-time facet-column check earns its exception because a typo
+  # there records nothing forever and never says why.
+  #
+  # What IS checkable is that the library never demonstrates the opposite. Four
+  # documents state the rule (README "Payload rules", DESIGN §7, CLAUDE.md,
+  # llms.txt) and the two files below are the ones an adopter COPIES FROM -- the
+  # reference app they read and the initializer the install generator writes into
+  # their repository. Those are what rot silently.
+  describe "payload key naming (DESIGN §7)" do
+    it "declares no bare :id in any entry's requires: or dimensions:" do
+      offenders = AuditLog::Registry.entries.values.select { |entry|
+        Array(entry.requires).include?(:id) || Array(entry.dimensions).include?(:id)
+      }.map(&:action)
+
+      expect(offenders).to be_empty,
+        "these entries declare a bare :id payload key -- name it for its type " \
+        "(order_id, customer_id), DESIGN §7: #{offenders.join(", ")}"
+    end
+
+    # `p[:id]` and not `%i[id]`, because the README and the install template both
+    # spell the counter-example on purpose while warning against it. This greps
+    # the two files whose examples get copied, never the prose that explains them.
+    it "reads no bare p[:id] in the dummy app or the shipped install template" do
+      root  = Pathname(AuditLog::GEM_ROOT)
+      files = [root.join("spec/dummy/config/initializers/audit_log.rb"),
+               root.join("lib/generators/audit_log/install/templates/initializer.rb.tt")]
+
+      files.each { |f| expect(f).to exist }
+      offenders = files.select { |f| f.read.match?(/\bp\[:id\]/) }
+                       .map { |f| f.relative_path_from(root).to_s }
+
+      expect(offenders).to be_empty,
+        "a payload key must name its type -- p[:order_id], not p[:id], DESIGN §7: " \
+        "#{offenders.join(", ")}"
+    end
+  end
 end

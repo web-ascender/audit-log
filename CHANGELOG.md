@@ -5,6 +5,26 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Documentation
+
+- **A stated naming convention for event payloads: every id key names its type —
+  `order_id:`, never a bare `id:`** — including on an action whose subject *is*
+  that record. Every example in the README, the install template and the
+  reference app already spelled it that way; the rule itself was written down
+  nowhere, so an adopting app reasonably used `id:` for its own subject and a
+  prefixed key only for references. A bare `id` cannot be declared as a
+  dimension (`dimensions: %i[id]` records `{"id": "…"}`, which no `order_id`
+  filter matches), so the record's own events drop off its own facet feed while a
+  record timeline still shows them; it also renders as the evidence behind the
+  summary, where `id: 4821` beside `number: "SO-4821"` does not say which number
+  was recorded. Payloads are frozen at emit time, so neither is repairable
+  afterwards.
+
+  Nothing is enforced at runtime and no stored row changes — an existing `id:`
+  key goes on working. Renaming one is a payload change: put the key in
+  `requires:` and a call site you miss raises inside its own transaction rather
+  than quietly storing a NULL subject. README "Payload rules", `DESIGN.md` §7.
+
 ## 0.6.2 — 2026-09-10
 
 Timestamps on the auditor screens. Nothing about capture, storage or the schema

@@ -224,6 +224,26 @@ Rails.application.config.to_prepare do
   #                 config besides -- read "Dimensions" in the gem's README
   #                 before declaring one.
   #
+  # ONE NAMING RULE, WORTH FOLLOWING FROM THE FIRST ENTRY: every id key in a
+  # payload NAMES ITS TYPE -- `order_id:`, never a bare `id:` -- including on an
+  # action whose subject IS that record, and `subject:` reads the prefixed key.
+  # It costs six characters and closes three holes, two of them silent:
+  #
+  #   * A bare `id` cannot be declared as a dimension. `dimensions: %i[id]`
+  #     records {"id": "4821"}, which no `order_id` filter will ever match, so
+  #     the record's own events drop off its own facet feed while a record
+  #     timeline still shows them -- two screens disagreeing about one history.
+  #   * `metadata` renders on the action screen as the evidence behind the
+  #     sentence, and `id: 4821` beside `number: "SO-4821"` does not say which
+  #     of the two numbers the log recorded.
+  #   * A payload is frozen at emit time, so neither of those is repairable
+  #     afterwards. Renaming the key changes what future rows carry, never what
+  #     past ones do.
+  #
+  # Put the key in `requires:` too and the rename is loud rather than silent: a
+  # call site you missed raises inside its own transaction instead of quietly
+  # storing a NULL subject.
+  #
   # AuditLog::Registry.register "order.submitted",
   #   requires: %i[order_id reference customer_name],
   #   description: "An order was submitted for fulfillment.",

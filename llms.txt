@@ -36,6 +36,10 @@ lines and are not meant to be read end to end.
 - **Record a business action as a sentence** —
   [Registering and emitting events](README.md#registering-and-emitting-events).
   `AuditLog.notify` with no `AuditLog::Registry.register` entry is a **silent no-op**.
+  Name every id key in a payload for its type — `order_id:`, never a bare `id:`, even on an
+  action whose subject *is* that record: a bare `id` cannot be declared as a dimension, so
+  the record's own events drop off its own facet feed while a record timeline still shows
+  them, and a payload is frozen at emit time. DESIGN §7.
 - **Read one record's history** —
   [Reading one record's history](README.md#reading-one-records-history).
 - **Put a history on the app's own pages** —

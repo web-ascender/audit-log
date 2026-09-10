@@ -425,7 +425,9 @@ rows say and never what past rows said — a copy edit must not alter the
 historical record.
 
 **`subject:`** names the record the action was about — a pointer, not prose;
-nothing renders it as text. It is what puts the action on that record's history
+nothing renders it as text. Read a **prefixed** payload key — `p[:order_id]`, not
+`p[:id]`, even here where the subject is the order (see
+[Payload rules](#payload-rules)). It is what puts the action on that record's history
 screen, and what a later erasure request follows, so **set it on any entry whose
 summary could carry personal data**, or that erasure will not reach it. Omit it
 only for an action with no single subject, such as a bulk price change; those
@@ -681,6 +683,14 @@ clicked a button, which is not what happened.
 - **Pass primitives — ids, strings, numbers, arrays.** The payload is stored
   verbatim in the `metadata` jsonb column. Passing an Active Record object
   serialises every one of its attributes into the audit log, PII included.
+- **Name every id key for its type — `order_id:`, never `id:`** — including on an
+  action whose subject *is* that record. A bare `id` cannot be declared as a
+  dimension: `dimensions: %i[id]` records `{"id": "17487"}`, which no `job_id`
+  filter matches, so the record's own events drop off its own facet feed while a
+  record timeline still shows them — two screens disagreeing about one history.
+  It also renders as evidence, where `id: 17487` beside `number: "117487"` does
+  not say which number the log recorded. Payloads are frozen at emit time, so
+  neither is repairable afterwards. [`DESIGN.md`](DESIGN.md) §7.
 - **Include what the sentence needs plus the evidence behind it**, and nothing
   else. `metadata` renders on the action screen as the structured backing for
   the summary.
