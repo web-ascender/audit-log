@@ -19,6 +19,17 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
   `application.scss` as the Sass/importmap way to load it, alongside the
   Propshaft and Sprockets lines.
 
+- **The starter stylesheet is now the reference app's, ported and scoped.** The
+  first version was written from the class inventory; `../audit-log-demo`'s
+  hand-written `application.css` had been arrived at by rendering these screens
+  and fixing what broke, and looked considerably better. It brings a warmer
+  palette, `table.grid` as a bordered panel with small-caps headers, coloured
+  before/after text in place of tinted cells, and a timeline rail whose dot
+  carries `kind`. Five of its rules look odd and are load-bearing — the
+  `display: contents` field grid chief among them — and the explainer at the top
+  of the file says which and why. Fifteen custom properties, a dark palette to
+  match, and two breakpoints. DESIGN §21.4.
+
 ## 0.6.0 — 2026-09-09
 
 No migration, and nothing to do on upgrade. One rendering change reaches rows

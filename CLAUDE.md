@@ -1032,8 +1032,24 @@ Do not "fix" these without reading the linked reasoning first.
   page. Separate because enabling it makes the screens follow the reader's system
   setting rather than the app's, which on a light-only app is a dark panel in a
   light page.
-- **Colour is never the only signal** — a left border as well as a tint, badges
-  that carry their own text, a redaction that says so in words.
+- **Colour is never the only signal** — an ABSENCE reads muted rather than red,
+  because "there was nothing here" is not a before-or-after fact and colouring it
+  as a loss reports a field that never had a value as one that lost one. Badges
+  carry their own text; a redaction says so in words.
+- **The CSS is `../audit-log-demo`'s `application.css`, ported and scoped** — no
+  framework, no Tailwind; it was arrived at by rendering these screens and fixing
+  what broke. Five rules in it look odd and are load-bearing, and the explainer
+  lists them because the block cannot hold comments: the `display: contents`
+  field grid, its repeat inside `.record-list` (an equal-specificity rule above
+  it wins on source order otherwise), the un-hung third-level summary, the
+  border-drawn triangle, and the rail dot that carries `kind`.
+- **The reference app still has its own unscoped copy, and that is a known
+  duplication.** It styles that app's own pages with most of the same rules, so
+  the two can drift — the failure the activity templates' arrangement exists to
+  prevent. The fix is the same one: have the demo enable the generated file for
+  `/audit` and keep only its own pages' rules in `application.css`. Not done yet;
+  do not "fix" it by copying the template over that file wholesale, which would
+  take the demo's own pages down with it.
 
 ### Documentation for coding agents (DESIGN §24)
 

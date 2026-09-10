@@ -3427,9 +3427,28 @@ because enabling it makes these screens follow the READER's system setting rathe
 application's, which on a light-only app is a dark panel inside a light page. That is a decision
 somebody should make deliberately, so it is deletable in one gesture and the header says so.
 
-**Colour is never the only signal.** Before and after values carry a left border as well as a tint,
-badges carry their own text, and a redacted payload says so in words. These screens are read as
-evidence, and an auditor may be colour blind.
+**Colour is never the only signal.** An absence reads muted rather than red — "there was nothing
+here" is not a before-or-after fact, and colouring it as a loss reports a field that never had a
+value as one that lost one. Badges carry their own text, and a redacted payload says so in words.
+These screens are read as evidence, and an auditor may be colour blind.
+
+**The CSS is the reference app's, ported and scoped.** `../audit-log-demo` had a hand-written
+`application.css` — no framework, no Tailwind — arrived at by rendering these screens and fixing
+what broke, and it was visibly better than the first draft shipped here. Five of its rules look odd
+and are load-bearing: `.fields` as a grid whose `<li>` is `display: contents` so all four columns
+size against every row, the repeat of that inside `.record-list` where an equal-specificity rule
+above it would otherwise win on source order, the un-hung summary at the third disclosure level
+(left at the outer default the deepest triangle hangs further left than the row it belongs to and
+the nesting reads inside out), the disclosure triangle drawn with borders because a glyph renders as
+a speck at that size, and the rail dot that is the only thing carrying `kind`. The explainer lists
+all five, since the block cannot hold comments.
+
+**That leaves a duplication worth naming.** The reference app still has its own unscoped copy, and
+it styles its own pages with most of the same rules, so the two can drift — the failure §21.3's
+"the templates ARE the reference app's files" arrangement exists to prevent. The resolution is the
+same one: that app enables the generated file for `/audit` and keeps in `application.css` only what
+its own pages need. Until it does, this is two hand-maintained copies and is recorded as such
+rather than left to be rediscovered.
 
 ---
 

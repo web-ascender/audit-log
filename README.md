@@ -1099,14 +1099,18 @@ Then load it however this app loads stylesheets:
 is yours the moment it lands, like the [generated activity
 views](#building-an-activity-history-in-your-own-app).
 
-There are deliberately **no comments inside the block** — one would close it
-early and leave the rest of the stylesheet live — so the map of what is in there
-lives in the explainer at the top: palette, layout, nav, tables,
-before-and-after values, association labels, badges, cards, disclosures, notes,
-filters, dark mode. Two of them are worth a decision rather than a glance:
+The stylesheet is the [reference app](#demo-rails-app)'s own, ported and scoped
+— it was arrived at by rendering these screens and fixing what broke, so five of
+its rules look odd and are load-bearing. The explainer at the top says which and
+why, because there are deliberately **no comments inside the block**: one would
+close it early and leave the rest of the stylesheet live. That explainer also
+carries the map of what is in there — palette, frame, text helpers, tables,
+badges, diffs, association labels, nav, filters, cards, payload, timeline,
+responsive, dark mode. Two of those are worth a decision rather than a glance:
 
-- **The palette.** Fourteen custom properties on `.audit-log`, and every other
-  rule reads them. Rethemeing is those fourteen, not a rewrite.
+- **The palette.** Fifteen custom properties on `.audit-log` — fourteen colours
+  and a font stack — and every other rule reads them. Rethemeing is those, not a
+  rewrite.
 - **Dark mode.** The `@media` block at the very end, so it is easy to drop.
   Keeping it makes these screens follow the *reader's* system setting rather than
   your application's — which on a light-only app shows as a dark panel inside a
@@ -1114,8 +1118,11 @@ filters, dark mode. Two of them are worth a decision rather than a glance:
 
 Every selector is scoped under `.audit-log`, the element each screen is wrapped
 in, so nothing here can reach your own `.card` or `.note` — the engine's class
-names are deliberately generic and would otherwise collide. Colour is never the
-only signal: before and after values carry a left border as well as a tint,
+names are deliberately generic and would otherwise collide. Four properties on
+that element — `background`, `max-width`, `margin` and `padding` — are the first
+thing to change if your layout already provides a frame: they are there so the
+screens look finished with no help from you, which means they paint a panel your
+page did not ask for. Colour is never the only signal: before and after values carry a left border as well as a tint,
 badges carry their own text, and a redacted payload says so in words. Keep that
 if you retheme. An auditor may be colour blind, and these screens are read as
 evidence.

@@ -20,19 +20,46 @@
    block: one would close it early and leave the rest of the stylesheet live, so
    the map lives up here instead.
 
-     1. Palette          14 custom properties on .audit-log. Every other rule
-                         reads them, so rethemeing is these and not a rewrite.
-     2. Layout           typography, links, the two-column and card grids
-     3. Nav and tabs
-     4. Tables
-     5. Before/after     the red and green of a field-level diff
-     6. Association labels, and the ids they annotate
-     7. Badges           operation, source
-     8. Cards            and the timeline built from them
-     9. Disclosures      collapsed by default on purpose -- DESIGN 11.2b
-    10. Notes            hints, warnings, empty states
-    11. Filters          buttons, export, pagination
-    12. Dark mode        the @media block at the very end
+     1. Palette          15 custom properties on .audit-log -- 14 colours and a
+                         font stack. Every other rule reads them, so rethemeing
+                         is these and not a rewrite.
+     2. Frame            typography, links, and the width of the audit region
+     3. Text helpers     notes, hints, monospace, numerics
+     4. Tables           table.grid, the bordered panel the browse screens use
+     5. Badges           operation, source, out-of-band
+     6. Diffs            table.diff, and the red and green of a field change
+     7. Association labels, and the ids they annotate
+     8. Nav and tabs
+     9. Filters          date and dimension, inputs, buttons
+    10. Cards            the dashboard tiles and its two-column split
+    11. Payload          the dl an event's metadata renders into
+    12. Timeline         the ?view=timeline rail, its cards and disclosures
+    13. Responsive       two breakpoints
+    14. Dark mode        the @media block at the very end
+
+   FIVE RULES LOOK ODD AND ARE NOT. They were arrived at by rendering these
+   screens and fixing what broke, so they are worth keeping if you rework this:
+
+     .timeline .fields is a GRID and its <li> is `display: contents`, so every
+       child of an <li> is a grid cell and all four columns size against every
+       row. Per-row layout leaves arrows out of line and a short value marooned
+       across half a card. A helper returning two elements for one cell shifts
+       every later column -- valid markup, correct values, scrambled page.
+     .timeline .record-list .fields li repeats that `display: contents` because
+       the .record-list li rule above it matches the same elements at the SAME
+       specificity, so source order alone decides, and without the repeat every
+       cell re-flows into one flex line.
+     .timeline .record-list details drops the -7px hanging summary the outer two
+       disclosure levels use. Left at that default the deepest triangle hangs
+       further LEFT than the record row it belongs to and the nesting reads
+       inside out.
+     The disclosure triangle is drawn with BORDERS rather than a glyph. At this
+       size a character renders as a speck in the system stack; a border
+       triangle is crisp at any size and needs no font coverage.
+     .timeline .activity::before is the rail dot, and it is the only thing
+       carrying `kind`: a registered action gets the accent fill, a change with
+       no narrative gets a hollow one. A sentence this library composed from
+       column names must never look like one the registry froze at emit time.
 
    DARK MODE IS LAST SO IT IS EASY TO DROP. Keeping it makes these screens
    follow the READER's system setting rather than your application's, which on a
@@ -40,435 +67,497 @@
    @media block and the screens stay light for everyone.
 
    EVERY RULE IS SCOPED under .audit-log, the element the engine wraps each of
-   its screens in, so nothing here can reach your own .card or .note.
+   its screens in, so nothing here can reach your own .card or .note. The four
+   properties on that element -- background, max-width, margin and padding --
+   are the first thing to change if your layout already provides a frame: they
+   are there so the screens look finished with no help from the host, which
+   means they paint a panel your page did not ask for.
 
-   COLOUR IS NEVER THE ONLY SIGNAL: before and after values carry a left border
-   as well as a tint, badges carry their own text, and a redacted payload says
-   so in words. Keep that if you retheme -- an auditor may be colour blind, and
-   these screens are read as evidence.
+   COLOUR IS NEVER THE ONLY SIGNAL: a before value is muted when it is an
+   absence rather than red, badges carry their own text, and a redacted payload
+   says so in words. Keep that if you retheme -- an auditor may be colour blind,
+   and these screens are read as evidence.
 */
 
 /*
 .audit-log {
-  --al-fg: #1a1d21;
-  --al-fg-soft: #5b6570;
-  --al-bg: #ffffff;
-  --al-bg-soft: #f6f7f9;
-  --al-line: #dfe3e8;
-  --al-accent: #2b5cd9;
-  --al-added-bg: #e7f6ec;
-  --al-added-line: #2e7d46;
-  --al-removed-bg: #fdecec;
-  --al-removed-line: #b3261e;
-  --al-warn-bg: #fff6e0;
-  --al-warn-line: #a8660a;
-  --al-radius: 6px;
-  --al-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --al-bg: #f7f7f5;
+  --al-panel: #fff;
+  --al-ink: #1b1b19;
+  --al-muted: #6b6b64;
+  --al-line: #e2e2dc;
+  --al-line-soft: #f0f0ec;
+  --al-well: #fbfbf9;
+  --al-accent: #2f5d50;
+  --al-warn: #9a5b13;
+  --al-warn-line: #ecd9bd;
+  --al-warn-bg: #fdf7ee;
+  --al-insert: #2f6b3f;
+  --al-update: #2b5478;
+  --al-delete: #a33a2a;
+  --al-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
 }
 
 .audit-log {
   background: var(--al-bg);
-  color: var(--al-fg);
-  line-height: 1.45;
-  max-width: 100rem;
+  color: var(--al-ink);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  margin-inline: auto;
+  max-width: 74rem;
+  padding: 4px 20px 40px;
 }
 
-.audit-log h1 {
-  font-size: 1.35rem;
-  font-weight: 600;
-  margin: 1rem 0 0.75rem;
-}
+.audit-log *,
+.audit-log *::before,
+.audit-log *::after { box-sizing: border-box; }
+
+.audit-log h1 { font-size: 22px; margin: 0 0 4px; }
 
 .audit-log h2 {
-  font-size: 1.05rem;
-  font-weight: 600;
-  margin: 1.5rem 0 0.5rem;
+  color: var(--al-muted);
+  font-size: 15px;
+  letter-spacing: .06em;
+  margin: 28px 0 8px;
+  text-transform: uppercase;
 }
 
-.audit-log .two-col,
-.audit-log .cards {
-  display: grid;
-  gap: 1rem;
-  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+.audit-log a { color: var(--al-accent); text-decoration: none; }
+.audit-log a:hover { text-decoration: underline; }
+
+.audit-log .note {
+  color: var(--al-muted);
+  font-size: 13px;
+  margin: 4px 0 14px;
+  max-width: 78ch;
 }
 
-.audit-log a {
-  color: var(--al-accent);
-  text-decoration-color: color-mix(in srgb, var(--al-accent) 40%, transparent);
-  text-underline-offset: 2px;
-}
-
-.audit-log a:hover { text-decoration-color: currentColor; }
-
-.audit-log .small { font-size: 0.85em; }
-.audit-log .muted { color: var(--al-fg-soft); }
+.audit-log .hint { color: var(--al-muted); font-size: 12px; }
+.audit-log .small { font-size: 12px; }
+.audit-log .muted { color: var(--al-muted); }
 .audit-log .nowrap { white-space: nowrap; }
 .audit-log .num { font-variant-numeric: tabular-nums; text-align: right; }
+
 .audit-log .mono,
 .audit-log .req,
-.audit-log code {
-  font-family: var(--al-mono);
-  font-size: 0.9em;
+.audit-log code { font-family: var(--al-mono); font-size: 12.5px; }
+
+.audit-log table.grid {
+  background: var(--al-panel);
+  border: 1px solid var(--al-line);
+  border-collapse: collapse;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  overflow: hidden;
+  width: 100%;
 }
+
+.audit-log table.grid th {
+  background: var(--al-well);
+  border-bottom: 1px solid var(--al-line);
+  color: var(--al-muted);
+  font-size: 11px;
+  letter-spacing: .06em;
+  padding: 8px 10px;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.audit-log table.grid td {
+  border-bottom: 1px solid var(--al-line-soft);
+  padding: 8px 10px;
+  vertical-align: top;
+}
+
+.audit-log table.grid tr:last-child td { border-bottom: none; }
+
+.audit-log table.grid.compact td,
+.audit-log table.grid.compact th { font-size: 13px; padding: 5px 10px; }
+
+.audit-log td.empty { color: var(--al-muted); font-style: italic; }
+.audit-log td.empty.ok { color: var(--al-insert); font-style: normal; }
+
+.audit-log tr.detail td {
+  background: var(--al-well);
+  border-bottom: 1px solid var(--al-line-soft);
+  padding-top: 0;
+}
+
+.audit-log tr.out-of-band-row td { background: #fffaf2; }
+.audit-log summary { color: var(--al-muted); cursor: pointer; font-size: 12px; }
+
+.audit-log .badge {
+  background: var(--al-well);
+  border: 1px solid var(--al-line);
+  border-radius: 10px;
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+.audit-log .badge.op-insert { background: #f2f8f3; border-color: #c8dfcd; color: var(--al-insert); }
+.audit-log .badge.op-update { background: #f2f6fa; border-color: #c8d6e2; color: var(--al-update); }
+.audit-log .badge.op-delete { background: #fdf3f1; border-color: #e6cdc8; color: var(--al-delete); }
+
+.audit-log .badge.warn,
+.audit-log .badge.out-of-band {
+  background: var(--al-warn-bg);
+  border-color: var(--al-warn-line);
+  color: var(--al-warn);
+}
+
+.audit-log .badge.source-web,
+.audit-log .badge.source-api { color: var(--al-update); }
+.audit-log .badge.source-job { color: var(--al-warn); }
+.audit-log .badge.source-system,
+.audit-log .badge.source-console { color: var(--al-delete); }
+
+.audit-log .col-chip { background: #f1f1ec; border-radius: 4px; padding: 1px 5px; }
+
+.audit-log table.diff { border-collapse: collapse; margin: 6px 0 10px; width: 100%; }
+
+.audit-log table.diff td {
+  border-bottom: 1px solid #f2f2ee;
+  font-size: 13px;
+  padding: 3px 8px;
+}
+
+.audit-log table.diff .field-name {
+  color: var(--al-muted);
+  font-family: var(--al-mono);
+  font-size: 12px;
+  width: 22%;
+}
+
+.audit-log table.diff .old { color: var(--al-delete); width: 34%; }
+.audit-log table.diff .new { color: var(--al-insert); width: 34%; }
+.audit-log table.diff .arrow { color: var(--al-muted); text-align: center; width: 4%; }
+.audit-log .nil-value { color: var(--al-muted); font-style: italic; }
+
+.audit-log .assoc-id {
+  color: var(--al-muted);
+  font-family: var(--al-mono);
+  font-size: 11px;
+}
+
+.audit-log .assoc-missing,
+.audit-log .assoc-failed {
+  color: var(--al-warn);
+  font-size: 11px;
+  font-style: italic;
+}
+
+.audit-log .label-note { margin: 4px 0 10px; }
 
 .audit-log .audit-nav {
   align-items: baseline;
   border-bottom: 1px solid var(--al-line);
   display: flex;
   flex-wrap: wrap;
-  gap: 1rem;
-  padding-bottom: 0.5rem;
+  gap: 14px;
+  margin-bottom: 18px;
+  padding: 8px 0 14px;
 }
 
-.audit-log .audit-brand {
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  margin-right: 0.5rem;
-}
-
-.audit-log .audit-nav a,
-.audit-log .tabs a {
-  border-bottom: 2px solid transparent;
-  color: var(--al-fg-soft);
-  padding-bottom: 0.35rem;
-  text-decoration: none;
-}
-
-.audit-log .audit-nav a:hover,
-.audit-log .tabs a:hover { color: var(--al-fg); }
+.audit-log .audit-nav .audit-brand { font-weight: 700; margin-right: 6px; }
 
 .audit-log .audit-nav a.on,
-.audit-log .tabs a.on {
-  border-bottom-color: var(--al-accent);
-  color: var(--al-fg);
-  font-weight: 600;
-}
+.audit-log .tabs a.on { color: var(--al-ink); font-weight: 700; }
 
-.audit-log .tabs {
-  border-bottom: 1px solid var(--al-line);
-  display: flex;
-  gap: 1rem;
-  margin-bottom: 1rem;
-}
-
-.audit-log table {
-  border-collapse: collapse;
-  font-size: 0.92rem;
-  width: 100%;
-}
-
-.audit-log th {
-  border-bottom: 1px solid var(--al-line);
-  color: var(--al-fg-soft);
-  font-weight: 600;
-  padding: 0.5rem 0.6rem;
-  text-align: left;
-  white-space: nowrap;
-}
-
-.audit-log td {
-  border-bottom: 1px solid var(--al-line);
-  padding: 0.5rem 0.6rem;
-  vertical-align: top;
-}
-
-.audit-log tbody tr:hover { background: var(--al-bg-soft); }
-.audit-log table.compact td,
-.audit-log table.compact th { padding: 0.3rem 0.5rem; }
-.audit-log .fname,
-.audit-log .field-name {
-  font-family: var(--al-mono);
-  font-size: 0.88em;
-  white-space: nowrap;
-}
-
-.audit-log .diff td.old,
-.audit-log .diff td.new,
-.audit-log td.old,
-.audit-log td.new {
-  border-radius: var(--al-radius);
-  padding-left: 0.5rem;
-  word-break: break-word;
-}
-
-.audit-log td.old,
-.audit-log .fields .old {
-  background: var(--al-removed-bg);
-  border-left: 3px solid var(--al-removed-line);
-}
-
-.audit-log td.new,
-.audit-log .fields .new {
-  background: var(--al-added-bg);
-  border-left: 3px solid var(--al-added-line);
-}
-
-.audit-log .arrow {
-  color: var(--al-fg-soft);
-  padding: 0 0.4rem;
-}
-
-.audit-log .nil-value,
-.audit-log .derived {
-  color: var(--al-fg-soft);
-  font-style: italic;
-}
-
-.audit-log .fields {
-  list-style: none;
-  margin: 0.4rem 0 0;
-  padding: 0;
-}
-
-.audit-log .fields li {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-  padding: 0.15rem 0;
-}
-
-.audit-log .assoc-label { font-weight: 500; }
-
-.audit-log .assoc-id {
-  color: var(--al-fg-soft);
-  margin-left: 0.15rem;
-  font-family: var(--al-mono);
-  font-size: 0.85em;
-}
-
-.audit-log .assoc-missing,
-.audit-log .assoc-failed {
-  color: var(--al-warn-line);
-  font-size: 0.85em;
-  font-style: italic;
-}
-
-.audit-log .badge {
-  border: 1px solid var(--al-line);
-  border-radius: 999px;
-  display: inline-block;
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  padding: 0.05rem 0.5rem;
-  white-space: nowrap;
-}
-
-.audit-log .badge.op-insert {
-  background: var(--al-added-bg);
-  border-color: var(--al-added-line);
-  color: var(--al-added-line);
-}
-
-.audit-log .badge.op-delete {
-  background: var(--al-removed-bg);
-  border-color: var(--al-removed-line);
-  color: var(--al-removed-line);
-}
-
-.audit-log .badge.op-update {
-  background: var(--al-bg-soft);
-  color: var(--al-fg-soft);
-}
-
-.audit-log .badge.source-web { color: var(--al-accent); }
-.audit-log .badge.source-api { color: var(--al-accent); }
-.audit-log .badge.source-job { color: var(--al-warn-line); }
-.audit-log .badge.source-console { color: var(--al-removed-line); }
-.audit-log .badge.source-system { color: var(--al-fg-soft); }
-
-.audit-log .col-chip {
-  background: var(--al-bg-soft);
-  border-radius: var(--al-radius);
-  font-family: var(--al-mono);
-  font-size: 0.8em;
-  padding: 0.05rem 0.35rem;
-}
-
-.audit-log .card {
-  background: var(--al-bg);
-  border: 1px solid var(--al-line);
-  border-radius: var(--al-radius);
-  padding: 0.75rem 0.9rem;
-}
-
-.audit-log .timeline {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.audit-log .activity {
-  border-left: 3px solid var(--al-line);
-  margin-bottom: 0.75rem;
-  padding: 0.1rem 0 0.6rem 0.9rem;
-}
-
-.audit-log .activity.kind-narrative { border-left-color: var(--al-accent); }
-.audit-log .activity.redacted { background: var(--al-warn-bg); }
-
-.audit-log .headline {
-  font-weight: 600;
-  margin: 0 0 0.2rem;
-}
-
-.audit-log .meta,
-.audit-log .who {
-  color: var(--al-fg-soft);
-  font-size: 0.85rem;
-}
-
-.audit-log .record-list {
-  list-style: none;
-  margin: 0.4rem 0 0;
-  padding: 0;
-}
-
-.audit-log .record-list li {
-  border-top: 1px solid var(--al-line);
-  padding: 0.35rem 0;
-}
-
-.audit-log details {
-  margin: 0.4rem 0;
-}
-
-.audit-log details > summary {
-  color: var(--al-fg-soft);
-  cursor: pointer;
-  font-size: 0.85rem;
-  list-style: none;
-  padding: 0.15rem 0;
-  user-select: none;
-}
-
-.audit-log details > summary::-webkit-details-marker { display: none; }
-
-.audit-log details > summary::before {
-  content: "\25B8";
-  display: inline-block;
-  margin-right: 0.35rem;
-  transition: transform 0.12s ease-in-out;
-}
-
-.audit-log details[open] > summary::before { transform: rotate(90deg); }
-.audit-log details > summary:hover { color: var(--al-fg); }
-
-.audit-log details.touched-fields > summary { font-size: 0.8rem; }
-
-.audit-log .payload {
-  margin: 0.3rem 0 0;
-  overflow-wrap: anywhere;
-}
-
-.audit-log .payload dt {
-  color: var(--al-fg-soft);
-  font-family: var(--al-mono);
-  font-size: 0.8em;
-}
-
-.audit-log .payload dd {
-  margin: 0 0 0.35rem;
-  white-space: pre-wrap;
-}
-
-.audit-log .note,
-.audit-log .hint,
-.audit-log .label-note {
-  background: var(--al-bg-soft);
-  border-left: 3px solid var(--al-line);
-  border-radius: var(--al-radius);
-  color: var(--al-fg-soft);
-  font-size: 0.85rem;
-  margin: 0.5rem 0;
-  padding: 0.45rem 0.7rem;
-}
-
-.audit-log .warn,
-.audit-log .redaction-note {
-  background: var(--al-warn-bg);
-  border-left-color: var(--al-warn-line);
-  color: var(--al-warn-line);
-}
-
-.audit-log .ok { color: var(--al-added-line); }
-
-.audit-log .empty {
-  color: var(--al-fg-soft);
-  font-style: italic;
-  padding: 1rem 0;
-}
+.audit-log .tabs { display: flex; gap: 14px; margin: 10px 0 14px; }
 
 .audit-log .date-filter,
-.audit-log .dimension-filter,
-.audit-log .export {
-  align-items: end;
+.audit-log .dimension-filter {
+  align-items: center;
+  background: var(--al-panel);
+  border: 1px solid var(--al-line);
+  border-radius: 8px;
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
-  margin: 0.75rem 0;
+  font-size: 13px;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
 }
 
-.audit-log label {
-  color: var(--al-fg-soft);
-  display: block;
-  font-size: 0.78rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-}
+.audit-log .date-filter label,
+.audit-log .dimension-filter label { color: var(--al-muted); }
+.audit-log .date-filter label.chk { color: var(--al-ink); }
 
 .audit-log input,
 .audit-log select {
-  background: var(--al-bg);
+  background: #fff;
   border: 1px solid var(--al-line);
-  border-radius: var(--al-radius);
-  color: inherit;
+  border-radius: 5px;
+  color: var(--al-ink);
   font: inherit;
-  padding: 0.3rem 0.45rem;
+  font-size: 13px;
+  padding: 5px 7px;
 }
 
 .audit-log .button,
 .audit-log button,
 .audit-log input[type="submit"] {
-  background: var(--al-bg-soft);
+  background: var(--al-panel);
   border: 1px solid var(--al-line);
-  border-radius: var(--al-radius);
+  border-radius: 6px;
+  color: var(--al-ink);
   cursor: pointer;
-  font: inherit;
-  padding: 0.35rem 0.8rem;
-  text-decoration: none;
+  display: inline-block;
+  font-size: 13px;
+  padding: 6px 12px;
 }
 
 .audit-log .button:hover,
-.audit-log button:hover { border-color: var(--al-accent); }
+.audit-log button:hover { border-color: var(--al-accent); text-decoration: none; }
 
-.audit-log .clear,
-.audit-log .csv {
-  color: var(--al-accent);
-  font-size: 0.85rem;
+.audit-log .cards {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  margin-bottom: 20px;
 }
 
+.audit-log .card {
+  background: var(--al-panel);
+  border: 1px solid var(--al-line);
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.audit-log .card.warn { background: #fdf9f3; border-color: var(--al-warn-line); }
+
+.audit-log .card .n {
+  display: block;
+  font-size: 26px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.audit-log .card .l { color: var(--al-muted); font-size: 12px; }
+.audit-log .two-col { display: grid; gap: 20px; grid-template-columns: 1fr 1fr; }
+
+.audit-log dl.payload {
+  display: grid;
+  font-size: 13px;
+  gap: 3px 12px;
+  grid-template-columns: minmax(90px, 160px) 1fr;
+  margin: 6px 0 4px;
+}
+
+.audit-log dl.payload dt { color: var(--al-muted); }
+.audit-log dl.payload dd { margin: 0; overflow-wrap: anywhere; }
+
+.audit-log .redaction-note {
+  border-left: 2px solid var(--al-warn-line);
+  color: var(--al-warn);
+  font-size: 12px;
+  margin: 6px 0;
+  max-width: 78ch;
+  padding-left: 8px;
+}
+
+.audit-log .record-list { font-size: 13px; margin: 6px 0 0; padding-left: 18px; }
+.audit-log .record-list li { margin-bottom: 3px; }
+
 .audit-log .pagination {
+  align-items: center;
   display: flex;
-  gap: 0.75rem;
+  gap: .75rem;
   margin: 1rem 0;
+}
+
+.audit-log .export { margin: 1rem 0; }
+.audit-log .export .hint { margin-left: .5rem; }
+
+.audit-log .timeline {
+  border-left: 1px solid var(--al-line);
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0 0 0 24px;
+}
+
+.audit-log .timeline > li { position: relative; }
+
+.audit-log .timeline .activity {
+  background: var(--al-panel);
+  border: 1px solid var(--al-line);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  padding: 11px 14px 12px;
+}
+
+.audit-log .timeline .activity::before {
+  background: var(--al-panel);
+  border: 2px solid var(--al-line);
+  border-radius: 50%;
+  content: "";
+  height: 9px;
+  left: -29px;
+  position: absolute;
+  top: 14px;
+  width: 9px;
+}
+
+.audit-log .timeline .activity.kind-narrative::before {
+  background: var(--al-accent);
+  border-color: var(--al-accent);
+}
+
+.audit-log .timeline .activity.redacted { background: #fdfaf5; border-color: var(--al-warn-line); }
+
+.audit-log .timeline .meta {
+  align-items: center;
+  color: var(--al-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.audit-log .timeline .meta time { font-variant-numeric: tabular-nums; }
+.audit-log .timeline .meta .req { font-size: 11px; margin-left: auto; }
+
+.audit-log .timeline .headline { font-size: 14.5px; line-height: 1.45; margin: 0 0 3px; }
+.audit-log .timeline .headline .summary.derived { color: var(--al-muted); }
+.audit-log .timeline .who { color: var(--al-muted); font-size: 12px; margin: 0; }
+
+.audit-log .timeline .fields {
+  align-items: baseline;
+  border-top: 1px solid var(--al-line-soft);
+  display: grid;
+  font-size: 13px;
+  gap: 3px 10px;
+  grid-template-columns: minmax(84px, 150px) minmax(0, max-content) 16px minmax(0, 1fr);
+  list-style: none;
+  margin: 9px 0 0;
+  padding: 8px 0 0;
+}
+
+.audit-log .timeline .fields li { display: contents; }
+
+.audit-log .timeline .fields .fname {
+  color: var(--al-muted);
+  font-family: var(--al-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.audit-log .timeline .fields .old { color: var(--al-delete); overflow-wrap: anywhere; }
+.audit-log .timeline .fields .new { color: var(--al-insert); overflow-wrap: anywhere; }
+.audit-log .timeline .fields .arrow { color: var(--al-muted); text-align: center; }
+
+.audit-log .timeline details { font-size: 13px; margin-top: 7px; }
+.audit-log .timeline details + details { margin-top: 5px; }
+
+.audit-log .timeline details > summary {
+  align-items: center;
+  border-radius: 5px;
+  display: flex;
+  gap: 6px;
+  list-style: none;
+  margin-left: -7px;
+  padding: 3px 7px;
+  user-select: none;
+  width: fit-content;
+}
+
+.audit-log .timeline details > summary::-webkit-details-marker { display: none; }
+
+.audit-log .timeline details > summary::before {
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid var(--al-muted);
+  border-top: 4px solid transparent;
+  content: "";
+  flex: none;
+  height: 0;
+  transition: transform .12s ease;
+  width: 0;
+}
+
+.audit-log .timeline details[open] > summary::before { transform: rotate(90deg); }
+.audit-log .timeline details > summary:hover { background: #f4f4f0; color: var(--al-ink); }
+.audit-log .timeline details[open] > summary { color: var(--al-ink); }
+
+.audit-log .timeline details > *:not(summary) {
+  background: var(--al-well);
+  border: 1px solid var(--al-line-soft);
+  border-radius: 6px;
+  margin: 5px 0 2px;
+  padding: 8px 10px;
+}
+
+.audit-log .timeline details dl.payload {
+  font-size: 12.5px;
+  grid-template-columns: minmax(90px, 170px) 1fr;
+}
+
+.audit-log .timeline .record-list { list-style: none; margin: 5px 0 2px; padding-left: 0; }
+
+.audit-log .timeline .record-list li {
+  align-items: baseline;
+  border-bottom: 1px solid #f4f4f0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.audit-log .timeline .record-list li:last-child { border-bottom: none; }
+.audit-log .timeline .record-list .col-chip { font-size: 11.5px; }
+
+.audit-log .timeline .record-list details.touched-fields {
+  flex: 1 1 100%;
+  margin: 2px 0 4px 18px;
+  min-width: 0;
+}
+
+.audit-log .timeline .record-list details.touched-fields > summary { margin-left: 0; }
+.audit-log .timeline .record-list .fields li { display: contents; }
+
+.audit-log .timeline .redaction-note { font-size: 12.5px; margin: 8px 0 2px; }
+.audit-log .timeline li.empty { color: var(--al-muted); font-style: italic; padding: 10px 0; }
+
+@media (max-width: 780px) {
+  .audit-log .two-col { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 700px) {
+  .audit-log .timeline .fields { gap: 1px; grid-template-columns: 1fr; }
+  .audit-log .timeline .fields .arrow { display: none; }
+  .audit-log .timeline .meta .req { margin-left: 0; }
 }
 
 @media (prefers-color-scheme: dark) {
   .audit-log {
-    --al-fg: #e8eaed;
-    --al-fg-soft: #9aa4af;
-    --al-bg: #16181c;
-    --al-bg-soft: #1f2228;
-    --al-line: #333840;
-    --al-accent: #7aa2f7;
-    --al-added-bg: #14301f;
-    --al-added-line: #4cc47f;
-    --al-removed-bg: #351a1a;
-    --al-removed-line: #f2867d;
-    --al-warn-bg: #33270f;
-    --al-warn-line: #e0b063;
+    --al-bg: #17181a;
+    --al-panel: #1e2022;
+    --al-ink: #e9e9e4;
+    --al-muted: #9a9a92;
+    --al-line: #33353a;
+    --al-line-soft: #282a2d;
+    --al-well: #232528;
+    --al-accent: #7fbfa8;
+    --al-warn: #d9a55e;
+    --al-warn-line: #4a3a20;
+    --al-warn-bg: #2a2317;
+    --al-insert: #74c78c;
+    --al-update: #7fb0dc;
+    --al-delete: #e3897b;
   }
+
+  .audit-log input,
+  .audit-log select { background: var(--al-panel); }
+  .audit-log tr.out-of-band-row td { background: #2a2317; }
+  .audit-log .col-chip { background: #2b2d31; }
+  .audit-log table.diff td { border-bottom-color: var(--al-line-soft); }
+  .audit-log .badge.op-insert { background: #1b2a1f; border-color: #2f4a37; }
+  .audit-log .badge.op-update { background: #1a2530; border-color: #2f4356; }
+  .audit-log .badge.op-delete { background: #2e1d1a; border-color: #563430; }
+  .audit-log .card.warn,
+  .audit-log .timeline .activity.redacted { background: #2a2317; }
+  .audit-log .timeline details > summary:hover { background: #2b2d31; }
+  .audit-log .timeline .record-list li { border-bottom-color: var(--al-line-soft); }
 }
 */

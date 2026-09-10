@@ -36,6 +36,19 @@ module AuditLog
       # above it instead. `css_generator_spec` enables the file the documented
       # way and parses the result, so that cannot rot quietly.
       #
+      # THE CSS IS THE REFERENCE APP'S, ported. `../audit-log-demo` arrived at it
+      # by rendering these screens and fixing what broke, which is why five of its
+      # rules look odd and are load-bearing -- the `display: contents` field grid,
+      # its repeat inside .record-list, the un-hung third-level summary, the
+      # border-drawn triangle, and the rail dot that carries `kind`. The
+      # explainer lists them, because the block cannot hold comments.
+      #
+      # THAT APP STILL HAS ITS OWN COPY, unscoped, in its application.css, and it
+      # styles its own pages with most of the same rules. Until it enables this
+      # generated file and prunes what only serves /audit, these are two
+      # hand-maintained copies -- the failure the activity templates exist to
+      # avoid. Recorded here rather than left to be rediscovered.
+      #
       # CREATE-ONCE AND HOST-OWNED, DESIGN §21.3. Never re-generated, never
       # upgraded, and nothing in the gem may learn whether it exists or whether
       # it is current -- that would turn owned code back into managed code.
