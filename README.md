@@ -1172,8 +1172,19 @@ above is American field order on a 24-hour clock. The engine rejects a malformed
 tag at boot, and a tag the reader's browser dislikes anyway falls back to their
 own locale rather than to no conversion at all.
 
-It reaches only the browser rendering. The server-side fallback stays
-`2026-09-10 13:06 UTC` — the same for every reader, in every language.
+**The two settings answer different questions and neither overrides the other.**
+`display_time_zone` decides *which zone*; `timestamp_locale` decides *whose
+conventions*. `:viewer` with `"en-GB"` gives a reader in New York
+`10 Sep 2026, 09:06 EDT` — their zone, British conventions.
+
+The one combination that does nothing is `:utc` with a locale: `:utc` renders no
+script, so the locale reaches nobody and every reader sees the canonical
+`2026-09-10 13:06 UTC`. The engine logs a warning saying exactly that rather than
+ignoring you silently — and warns rather than refusing to boot, because flipping
+to `:utc` for a compliance review is legitimate and shouldn't need a second edit.
+
+Either way the server-side fallback stays `2026-09-10 13:06 UTC` — the same for
+every reader, in every language.
 
 **The recorded instant is always one hover away.** `datetime` and `title` carry
 the stored value at microsecond precision whatever the visible text says, so a

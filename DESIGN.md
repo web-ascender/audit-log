@@ -439,6 +439,15 @@ assumed. The FIELD SET stays the library's: date, year, time and zone name are a
 The server fallback is untouched by it and stays `2026-09-10 13:06 UTC` — the same for every
 reader, in every language.
 
+**The two settings are orthogonal, and the one inert pair says so.** `display_time_zone` is
+which zone; `timestamp_locale` is whose conventions; `:viewer` with a locale is the supported pair
+and neither overrides the other. But the locale reaches a reader only through the script, and `:utc`
+renders no script — so a locale set beside `:utc` is inert. That WARNS rather than raising, the same
+split `verify_correlated_connections!` makes: nothing is hidden (the timestamps are correct,
+canonical, and identical for every reader, which is what `:utc` asks for), and flipping to `:utc`
+for a compliance review is legitimate, so refusing to boot until somebody also deletes a cosmetic
+line would be the worse trade.
+
 Two failure paths, both closed. A malformed tag is rejected at boot — `en_US` with an underscore is
 the one that matters, since Ruby and Rails both spell locales that way and `Intl` throws on it in
 the reader's browser where nobody is watching. And a tag that is syntactically fine but unknown to

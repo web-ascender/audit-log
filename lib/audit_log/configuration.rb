@@ -438,13 +438,34 @@ module AuditLog
           "Timestamps would silently fall back to UTC for every reader."
       end
 
-      return if @timestamp_locale.nil? || LOCALE_TAG.match?(@timestamp_locale.to_s)
+      unless @timestamp_locale.nil? || LOCALE_TAG.match?(@timestamp_locale.to_s)
+        raise ArgumentError,
+          "AuditLog.config.timestamp_locale is #{@timestamp_locale.inspect}, which is not a " \
+          "BCP-47 language tag. Intl rejects it in the reader's browser, where the failure is " \
+          "an audit screen quietly keeping UTC. Try \"en-US\", \"en-GB\", or nil for the " \
+          "reader's own locale."
+      end
 
-      raise ArgumentError,
-        "AuditLog.config.timestamp_locale is #{@timestamp_locale.inspect}, which is not a " \
-        "BCP-47 language tag. Intl rejects it in the reader's browser, where the failure is " \
-        "an audit screen quietly keeping UTC. Try \"en-US\", \"en-GB\", or nil for the " \
-        "reader's own locale."
+      # THE ONE COMBINATION THAT DOES NOTHING. The locale reaches a reader only
+      # through the script, and `:utc` renders no script -- so a locale set
+      # alongside it is inert. The two settings are otherwise orthogonal: the
+      # zone is one question and the conventions are another, and `:viewer` plus
+      # a locale is the fully supported pair.
+      #
+      # WARNS rather than raises, the same split verify_correlated_connections!
+      # makes. Nothing is hidden here: the timestamps are correct, canonical and
+      # identical for every reader, which is what `:utc` asks for. And flipping
+      # to `:utc` for a compliance review is legitimate -- refusing to boot until
+      # somebody also deletes a cosmetic line would be a worse trade than saying
+      # so once.
+      return unless @display_time_zone == :utc && @timestamp_locale
+
+      Rails.logger&.warn(
+        "[AuditLog] config.timestamp_locale is #{@timestamp_locale.inspect} but " \
+        "config.display_time_zone is :utc, which renders no script -- so the locale reaches " \
+        "nobody and every reader sees the canonical \"2026-09-10 13:06 UTC\" form. Set " \
+        "display_time_zone to :viewer for the locale to apply, or drop the locale."
+      )
     end
 
     private

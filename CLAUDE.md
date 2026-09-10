@@ -618,6 +618,14 @@ Do not "fix" these without reading the linked reasoning first.
   browser — and a syntactically valid tag some browser dislikes falls back to the
   READER's locale, never to no conversion, which would look like the feature was
   off. Do not add `timestamp_format`.
+- **The two time settings are ORTHOGONAL, and the one inert pair warns.**
+  `display_time_zone` is which zone, `timestamp_locale` is whose conventions, and
+  `:viewer` + a locale is the supported pair — neither overrides the other. A
+  locale beside `:utc` is inert, because `:utc` renders no script; it WARNS
+  rather than raising, the same split `verify_correlated_connections!` makes,
+  because nothing is hidden (the timestamps are correct, canonical and identical
+  for everyone, which is what `:utc` asked for) and flipping to `:utc` for a
+  compliance review should not need a second edit to boot.
 - **`AuditLog::DateRange` is deliberately NOT UTC** — it builds bounds in
   `Time.zone` because a date filter is a human's calendar day. The cost is that an
   app-zone range crosses a UTC month boundary and touches one extra partition. A

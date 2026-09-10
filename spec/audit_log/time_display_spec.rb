@@ -127,8 +127,40 @@ RSpec.describe "timestamp display" do
       end
     end
 
+    # The two settings answer different questions -- which ZONE, and whose
+    # CONVENTIONS -- so neither overrides the other and `:viewer` plus a locale
+    # is the supported pair. The exception is the one combination that does
+    # nothing, below.
+    it "is orthogonal to display_time_zone rather than competing with it" do
+      with_display_zone(:viewer) do
+        with_locale("en-GB") do
+          rendered = audit_time(instant)
+
+          expect(rendered).to include(%(data-audit-time="local"))
+          expect { AuditLog.config.verify_display_time_zone! }.not_to raise_error
+        end
+      end
+    end
+
+    # `:utc` renders no script, so a locale set beside it reaches nobody. It
+    # warns rather than raising: nothing is hidden, and flipping to :utc for a
+    # compliance review should not need a second edit to boot.
+    it "says so when it is set alongside :utc, where it can reach nobody" do
+      expect(Rails.logger).to receive(:warn).with(/timestamp_locale.*display_time_zone is :utc/m)
+
+      with_display_zone(:utc) do
+        with_locale("en-GB") { AuditLog.config.verify_display_time_zone! }
+      end
+    end
+
+    it "says nothing when :utc is set on its own" do
+      expect(Rails.logger).not_to receive(:warn)
+
+      with_display_zone(:utc) { AuditLog.config.verify_display_time_zone! }
+    end
+
     # It reaches the browser, and the SERVER text is untouched by it -- that
-    # fallback is deliberately unambiguous in every locale, month as a name.
+    # fallback is ISO-ordered and language-neutral for every reader.
     it "changes nothing about the server-rendered timestamp" do
       with_locale("en-US") do
         expect(audit_time(instant)).to include("2026-09-10 13:06 UTC")
