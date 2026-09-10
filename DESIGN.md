@@ -416,6 +416,27 @@ The format is now the library's own, and three properties are load-bearing:
    only account of when something happened. The CSV export is untouched — it is the evidence
    artifact and has no display layer at all.
 
+**`config.timestamp_locale` is a BCP-47 tag and NOT a format string, and refusing the format
+string is the decision.** A host wanting American rather than international ordering is a real and
+reasonable ask — but `config.timestamp_format = "%H:%M"` reintroduces, with the library's blessing,
+the exact bug reported above, and `"%d/%m/%Y %H:%M"` drops the zone label. Both silently. That is
+`retention_action`'s argument in a new place: a flippable default is weaker than an absent option,
+because a default can be flipped and nothing reports it.
+
+A locale tag gives the same control and cannot express "no year". It also drives
+`Intl.DateTimeFormat` natively, so ONE setting governs the rendering readers actually see, and the
+unicode extensions cover the combinations a house style wants without a second knob —
+`"en-US-u-hc-h23"` is American field order on a 24-hour clock, verified in a browser rather than
+assumed. The FIELD SET stays the library's: date, year, time and zone name are always all present.
+The server fallback is untouched by it and stays `10 Sep 2026 13:06 UTC`, unambiguous in every
+locale because the month is a name rather than a number.
+
+Two failure paths, both closed. A malformed tag is rejected at boot — `en_US` with an underscore is
+the one that matters, since Ruby and Rails both spell locales that way and `Intl` throws on it in
+the reader's browser where nobody is watching. And a tag that is syntactically fine but unknown to
+a particular browser falls back to the reader's own locale, not to no conversion: bailing out there
+would leave every timestamp in UTC and look like the feature was switched off.
+
 `config.display_time_zone` takes `:viewer` or `:utc` and **refuses to boot on anything else**, for
 the reason `correlated_connections` does: a typo like `:local` falling through to UTC for every
 reader is invisible. The application's own `Time.zone` is deliberately not a third option — it is

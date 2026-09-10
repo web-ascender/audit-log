@@ -12,9 +12,18 @@
   precision and `title` keeps it visible on hover, so the stored fact survives
   whatever the display says.
 
-  24-hour, deliberately, even where the reader's locale would choose am/pm: a
-  misread hour on an audit trail is a misread fact. Everything else -- month
-  name, field order, digit shape -- follows their locale.
+  THE FIELD SET IS THE LIBRARY'S; the CONVENTIONS are not. Date, year, time and
+  zone name are always all present, because that is what the display bug fixed in
+  §4 was about. Field order, month name, digit shape and the 12-or-24-hour clock
+  come from `config.timestamp_locale`, or from the reader's own locale when that
+  is nil. A host wanting a fixed clock as well as a fixed order spells it in the
+  tag -- "en-US-u-hc-h23" is American order on a 24-hour clock.
+
+  A BAD TAG FALLS BACK TO THE READER'S LOCALE, not to nothing. `Intl` throws
+  RangeError on a malformed tag, and bailing out there would leave every
+  timestamp in UTC with nothing said -- so the second `try` is the difference
+  between a wrong setting looking wrong and looking like this feature is off.
+  Configuration#verify_display_time_zone! rejects the obvious typos at boot.
 
   `nonce: true` supplies the host's CSP nonce when it has a policy and omits the
   attribute when it does not. Without it, an app with a strict policy loses the
@@ -29,14 +38,17 @@
 %>
 <%= javascript_tag nonce: true do %>
   (function () {
-    var f;
+    var opts = {
+      day: "2-digit", month: "short", year: "numeric",
+      hour: "2-digit", minute: "2-digit", timeZoneName: "short"
+    };
+    var locale = <%= AuditLog.config.timestamp_locale.to_json.html_safe %>, f;
+
     try {
-      f = new Intl.DateTimeFormat(undefined, {
-        day: "2-digit", month: "short", year: "numeric",
-        hour: "2-digit", minute: "2-digit", hour12: false,
-        timeZoneName: "short"
-      });
-    } catch (e) { return; }
+      f = new Intl.DateTimeFormat(locale || undefined, opts);
+    } catch (e) {
+      try { f = new Intl.DateTimeFormat(undefined, opts); } catch (e2) { return; }
+    }
 
     function run() {
       var nodes = document.querySelectorAll('time[data-audit-time="local"]');

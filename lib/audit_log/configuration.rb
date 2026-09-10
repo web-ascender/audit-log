@@ -249,6 +249,32 @@ module AuditLog
     # calendar day (DESIGN §11).
     attr_accessor :display_time_zone
 
+    # Which locale's CONVENTIONS the reader-local timestamp follows -- field
+    # order, month name, digit shape, and the 12-or-24-hour clock.
+    #
+    #   nil        the reader's own locale (default). An American reader sees
+    #              "Sep 10, 2026, 1:06 PM EDT"; a British one sees
+    #              "10 Sep 2026, 18:06 GMT+1".
+    #   "en-US"    that house style for every reader, wherever they are.
+    #   "en-GB"    day-month-year, 24-hour.
+    #
+    # A BCP-47 TAG AND NOT A FORMAT STRING, deliberately. A strftime string is
+    # what this library just stopped taking from the host's I18n: it can drop the
+    # year, or the zone label, and nothing reports it -- the two failures §4's
+    # display section exists to have fixed. A locale tag says "American or
+    # international" precisely, drives Intl.DateTimeFormat natively, and cannot
+    # express "no year".
+    #
+    # The unicode extensions cover the combinations a house style actually wants:
+    # "en-US-u-hc-h23" is American field order on a 24-hour clock. The FIELD SET
+    # is the library's either way -- date, year, time and zone name are always
+    # all present.
+    #
+    # Only reaches the browser rendering. The server-side fallback stays
+    # "10 Sep 2026 13:06 UTC", which is deliberately unambiguous in every locale
+    # because the month is a name rather than a number.
+    attr_accessor :timestamp_locale
+
     # Rows per page on the auditor screens. Keyset-paginated, so this is a
     # rendering choice with no cost curve behind it -- there is no OFFSET to
     # grow and no count to compute. See AuditLog::Pagination.
@@ -374,6 +400,7 @@ module AuditLog
       @default_dimensions       = nil
       @dimension_filters        = {}
       @display_time_zone        = :viewer
+      @timestamp_locale         = nil
       @page_size                = 50
       @partition_months_ahead   = 3
       @drill_down_slack         = 24.hours
@@ -392,17 +419,32 @@ module AuditLog
 
     DISPLAY_TIME_ZONES = %i[viewer utc].freeze
 
+    # Language, optional script/region/variants, optional -u- extensions -- whose
+    # singleton subtag is ONE character, which is why the length floor is 1 and
+    # not 2. Not a full BCP-47 parse: enough to catch the typo that matters,
+    # `en_US` with an underscore, which Ruby and Rails both spell that way and
+    # Intl rejects in the reader's browser where nobody is watching.
+    LOCALE_TAG = /\A[a-z]{2,3}(-[A-Za-z0-9]{1,8})*\z/
+
     # Refuses to boot on a value that matches nothing, for the same reason
     # verify_correlated_connections! does: the alternative is a typo like
     # `:local` falling through to UTC for everyone, silently, on screens whose
     # whole job is to not under-report.
     def verify_display_time_zone!
-      return if DISPLAY_TIME_ZONES.include?(@display_time_zone)
+      unless DISPLAY_TIME_ZONES.include?(@display_time_zone)
+        raise ArgumentError,
+          "AuditLog.config.display_time_zone is #{@display_time_zone.inspect}, " \
+          "which is not one of #{DISPLAY_TIME_ZONES.map(&:inspect).join(" or ")}. " \
+          "Timestamps would silently fall back to UTC for every reader."
+      end
+
+      return if @timestamp_locale.nil? || LOCALE_TAG.match?(@timestamp_locale.to_s)
 
       raise ArgumentError,
-        "AuditLog.config.display_time_zone is #{@display_time_zone.inspect}, " \
-        "which is not one of #{DISPLAY_TIME_ZONES.map(&:inspect).join(" or ")}. " \
-        "Timestamps would silently fall back to UTC for every reader."
+        "AuditLog.config.timestamp_locale is #{@timestamp_locale.inspect}, which is not a " \
+        "BCP-47 language tag. Intl rejects it in the reader's browser, where the failure is " \
+        "an audit screen quietly keeping UTC. Try \"en-US\", \"en-GB\", or nil for the " \
+        "reader's own locale."
     end
 
     private

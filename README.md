@@ -1146,6 +1146,32 @@ Policy that rejects it, the screen still shows a complete labelled UTC timestamp
 `config.display_time_zone = :utc` for UTC everywhere and no script; the engine
 refuses to boot on any other value rather than falling back silently.
 
+**The conventions are yours; the field set is not.** Date, year, time and zone
+are always all present — that is the point of the section above. Field order,
+month name, digit shape and the 12-or-24-hour clock come from the reader's own
+locale by default, or from `config.timestamp_locale` when you want one house
+style for everyone:
+
+```ruby
+config.timestamp_locale = nil                # the reader's own locale (default)
+config.timestamp_locale = "en-US"            # Sep 10, 2026, 1:06 PM EDT
+config.timestamp_locale = "en-GB"            # 10 Sep 2026, 18:06 GMT+1
+config.timestamp_locale = "en-US-u-hc-h23"   # Sep 10, 2026, 13:06 EDT
+```
+
+It is a **BCP-47 language tag and not a format string**, deliberately: a
+`strftime` string is what this library just stopped taking from your I18n, and it
+can drop the year or the zone label with nothing reporting it. A locale tag says
+"American or international" precisely and cannot express "no year". The unicode
+extensions cover the combinations a house style actually wants — the `-u-hc-h23`
+above is American field order on a 24-hour clock. The engine rejects a malformed
+tag at boot, and a tag the reader's browser dislikes anyway falls back to their
+own locale rather than to no conversion at all.
+
+It reaches only the browser rendering. The server-side fallback stays `10 Sep
+2026 13:06 UTC`, which is unambiguous in every locale because the month is a name
+rather than a number.
+
 **The recorded instant is always one hover away.** `datetime` and `title` carry
 the stored value at microsecond precision whatever the visible text says, so a
 display in someone's local zone never becomes the only version of when something
@@ -1440,6 +1466,7 @@ knowing anything about any of them.
 | `parent_controller` | `"ApplicationController"` | What the engine's controllers inherit, which is how they pick up your layout and authentication. |
 | `record_url` | `nil` | `->(type, id)` returning a path in **your** app, for a history you render yourself. nil means labels render unlinked, ids intact — it will not guess a route. |
 | `display_time_zone` | `:viewer` | Which zone the auditor screens **show** a timestamp in — `:viewer` for the reader's own, resolved in their browser, or `:utc` for everyone. Stored values are always UTC either way and nothing here can change that. The zone is always named on screen, and `title`/`datetime` carry the exact recorded instant whatever the visible text says. See [Timestamps](#timestamps). |
+| `timestamp_locale` | `nil` | Whose **conventions** the reader-local timestamp follows — field order, month name, 12-or-24-hour clock. `nil` is the reader's own locale; `"en-US"` is that house style for everyone. A **BCP-47 tag, not a format string**, so it cannot drop the year or the zone. `"en-US-u-hc-h23"` is American order on a 24-hour clock. See [Timestamps](#timestamps). |
 | `page_size` | `50` | Rows per page on the auditor screens. Keyset-paginated, so there is no cost curve behind it. |
 | `actor_picker` | `[]` | Populates the actor search on `/audit/actors`. Source it from your users table, not from the log. |
 | `actor_finder` | `type.constantize.find_by(id:)` | Looks up an actor for display when the log holds no snapshot. |

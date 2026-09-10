@@ -600,6 +600,20 @@ Do not "fix" these without reading the linked reasoning first.
   anything else (`correlated_connections`' argument: `:local` would fall through
   to UTC for everyone, silently). There is deliberately no `:app` value — the
   host's `Time.zone` is neither the reader's zone nor the recorded one. DESIGN §4.
+- **`config.timestamp_locale` is a BCP-47 TAG, never a format string, and that
+  refusal is the decision.** American-vs-international is a fair ask, but
+  `timestamp_format = "%H:%M"` reintroduces the reported bug with the library's
+  blessing and `"%d/%m/%Y %H:%M"` drops the zone — both silently, which is
+  `retention_action`'s argument again. A tag gives the same control, cannot
+  express "no year", drives `Intl` natively so one setting governs what readers
+  see, and the unicode extensions remove the need for a second knob:
+  `"en-US-u-hc-h23"` is American order on a 24-hour clock (verified in a browser,
+  not assumed). The FIELD SET stays ours; only the conventions are the host's.
+  A malformed tag is refused at BOOT — `en_US` is the typo that matters, since
+  Ruby and Rails spell locales that way and `Intl` throws on it in the reader's
+  browser — and a syntactically valid tag some browser dislikes falls back to the
+  READER's locale, never to no conversion, which would look like the feature was
+  off. Do not add `timestamp_format`.
 - **`AuditLog::DateRange` is deliberately NOT UTC** — it builds bounds in
   `Time.zone` because a date filter is a human's calendar day. The cost is that an
   app-zone range crosses a UTC month boundary and touches one extra partition. A

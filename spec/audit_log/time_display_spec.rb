@@ -91,6 +91,53 @@ RSpec.describe "timestamp display" do
     end
   end
 
+  # A BCP-47 tag and not a format string, deliberately: a strftime string is what
+  # this library just stopped taking from the host's I18n, and it can drop the
+  # year or the zone label with nothing reporting it. A locale tag cannot express
+  # "no year", which is the point.
+  describe "config.timestamp_locale" do
+    it "defaults to the reader's own locale" do
+      expect(AuditLog.config.timestamp_locale).to be_nil
+      expect { AuditLog.config.verify_display_time_zone! }.not_to raise_error
+    end
+
+    it "accepts a language tag, a region, and the unicode extensions a house style needs" do
+      ["en", "en-US", "en-GB", "fr-CA", "en-US-u-hc-h23", "de-DE-u-ca-gregory"].each do |tag|
+        with_locale(tag) do
+          expect { AuditLog.config.verify_display_time_zone! }.not_to raise_error
+        end
+      end
+    end
+
+    # `en_US` is the typo that matters: Ruby and Rails both spell locales that
+    # way, Intl rejects it, and the rejection happens in the reader's browser
+    # where nobody is watching.
+    it "refuses the underscore spelling, and anything else Intl would throw on" do
+      ["en_US", "english", "e", "en--US", "en US"].each do |tag|
+        with_locale(tag) do
+          expect { AuditLog.config.verify_display_time_zone! }
+            .to raise_error(ArgumentError, /BCP-47/), "accepted #{tag.inspect}"
+        end
+      end
+    end
+
+    # It reaches the browser, and the SERVER text is untouched by it -- that
+    # fallback is deliberately unambiguous in every locale, month as a name.
+    it "changes nothing about the server-rendered timestamp" do
+      with_locale("en-US") do
+        expect(audit_time(instant)).to include("10 Sep 2026 13:06 UTC")
+      end
+    end
+  end
+
+  def with_locale(tag)
+    original = AuditLog.config.timestamp_locale
+    AuditLog.config.timestamp_locale = tag
+    yield
+  ensure
+    AuditLog.config.timestamp_locale = original
+  end
+
   def with_display_zone(zone)
     original = AuditLog.config.display_time_zone
     AuditLog.config.display_time_zone = zone

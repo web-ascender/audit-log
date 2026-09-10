@@ -30,6 +30,19 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
   whatever the visible text says, so a local rendering never becomes the only
   account of when something happened. The CSV export is untouched.
 
+- **`config.timestamp_locale`** — whose *conventions* the reader-local timestamp
+  follows: field order, month name, and the 12-or-24-hour clock. `nil` (default)
+  is the reader's own locale; `"en-US"` is that house style for every reader;
+  `"en-US-u-hc-h23"` is American field order on a 24-hour clock.
+
+  A **BCP-47 tag and not a format string**, deliberately. A `strftime` string is
+  what this release stopped taking from your I18n, and it can drop the year or
+  the zone label with nothing reporting it. A locale tag gives the same control,
+  cannot express "no year", and drives `Intl` natively. The field set stays the
+  library's — date, year, time and zone are always all present. A malformed tag
+  is refused at boot; one a particular browser dislikes falls back to the
+  reader's own locale rather than to no conversion.
+
 - **`config.display_time_zone`** — `:viewer` (default) or `:utc`. The engine
   refuses to boot on any other value rather than falling back to UTC silently.
   The application's own `Time.zone` is deliberately not an option: it is neither
