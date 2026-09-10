@@ -1133,9 +1133,13 @@ evidence.
 Every timestamp on the auditor screens is rendered by one helper, and three
 things about it are deliberate.
 
-**The zone is always named.** `10 Sep 2026 13:06 UTC`, not `10 Sep 13:06`. An
-unlabelled timestamp on an audit screen is ambiguous, and two readers seeing
-different unlabelled numbers is worse than everyone seeing UTC.
+**The zone is always named, and the date is ISO-ordered.**
+`2026-09-10 13:06 UTC`. An unlabelled timestamp on an audit screen is ambiguous,
+and two readers seeing different unlabelled numbers is worse than everyone seeing
+UTC. Year-month-day rather than a month name because `Sep` is *English*, and this
+is the one rendering a reader with no JavaScript ever sees — a language
+dependency there would be the coupling this library removed, in the other
+direction.
 
 **The reader's own zone by default, through their browser.** The server renders
 UTC; a small inline script re-renders each `<time>` in the reader's zone using
@@ -1168,9 +1172,8 @@ above is American field order on a 24-hour clock. The engine rejects a malformed
 tag at boot, and a tag the reader's browser dislikes anyway falls back to their
 own locale rather than to no conversion at all.
 
-It reaches only the browser rendering. The server-side fallback stays `10 Sep
-2026 13:06 UTC`, which is unambiguous in every locale because the month is a name
-rather than a number.
+It reaches only the browser rendering. The server-side fallback stays
+`2026-09-10 13:06 UTC` — the same for every reader, in every language.
 
 **The recorded instant is always one hover away.** `datetime` and `title` carry
 the stored value at microsecond precision whatever the visible text says, so a

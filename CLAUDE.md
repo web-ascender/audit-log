@@ -587,8 +587,12 @@ Do not "fix" these without reading the linked reasoning first.
   coupling, reached through a helper. A real install had set it to a time-only
   format and got audit screens with NO DATE; Rails' own default omits the YEAR on
   a log kept seven years. Three properties are load-bearing now: **the zone is
-  always named** (two readers seeing different unlabelled numbers is worse than
-  everyone seeing UTC); **the reader's zone is progressive enhancement, in that
+  always named and the date is ISO-ordered** — `2026-09-10 13:06 UTC` (two
+  readers seeing different unlabelled numbers is worse than everyone seeing UTC,
+  and `%d %b %Y` swapped day/month ambiguity for a LANGUAGE, since `Sep` is
+  English, on the one rendering a no-JS reader ever sees; a space and `UTC`
+  rather than `T` and `Z` because auditors read these screens too, and
+  `datetime` keeps the machine form); **the reader's zone is progressive enhancement, in that
   direction** — the server renders UTC and a ~25-line inline script re-renders
   through `Intl.DateTimeFormat`, so no JS, a blocked script or a hostile CSP
   leaves a complete timestamp rather than a blank column, and rendering an empty

@@ -20,18 +20,24 @@ RSpec.describe "timestamp display" do
   let(:instant) { Time.utc(2026, 9, 10, 13, 6, 15, 123_456) }
 
   it "names the date, the year and the zone" do
+    expect(audit_time(instant)).to include("2026-09-10 13:06 UTC")
+  end
+
+  # A month NAME would be unambiguous about which number is the day and would
+  # reintroduce a language -- `Sep` is English -- on the one rendering a reader
+  # with no JavaScript ever sees. Year-month-day is ambiguous to nobody.
+  it "orders the date numerically rather than naming the month" do
     rendered = audit_time(instant)
 
-    expect(rendered).to include("10 Sep 2026")
-    expect(rendered).to include("13:06")
-    expect(rendered).to include("UTC")
+    expect(rendered).not_to include("Sep")
+    expect(rendered).to match(/2026-09-10/)
   end
 
   # The one that broke a real app. A host's own formatting choice must not reach
   # these screens, in either direction.
   it "ignores the host's time.formats.short entirely" do
     with_translations("time.formats.short" => "%H:%M") do
-      expect(audit_time(instant)).to include("10 Sep 2026")
+      expect(audit_time(instant)).to include("2026-09-10")
     end
 
     with_translations("time.formats.short" => "nonsense") do
@@ -125,7 +131,7 @@ RSpec.describe "timestamp display" do
     # fallback is deliberately unambiguous in every locale, month as a name.
     it "changes nothing about the server-rendered timestamp" do
       with_locale("en-US") do
-        expect(audit_time(instant)).to include("10 Sep 2026 13:06 UTC")
+        expect(audit_time(instant)).to include("2026-09-10 13:06 UTC")
       end
     end
   end

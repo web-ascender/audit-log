@@ -271,8 +271,8 @@ module AuditLog
     # all present.
     #
     # Only reaches the browser rendering. The server-side fallback stays
-    # "10 Sep 2026 13:06 UTC", which is deliberately unambiguous in every locale
-    # because the month is a name rather than a number.
+    # "2026-09-10 13:06 UTC" -- ISO-ordered and language-neutral, so it reads the
+    # same for every reader whatever this is set to.
     attr_accessor :timestamp_locale
 
     # Rows per page on the auditor screens. Keyset-paginated, so this is a

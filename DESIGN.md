@@ -400,9 +400,17 @@ out of it, both real:
 
 The format is now the library's own, and three properties are load-bearing:
 
-1. **The zone is always named.** `10 Sep 2026 13:06 UTC`. An unlabelled timestamp on an audit
-   screen is ambiguous, and two readers seeing different unlabelled numbers is strictly worse than
-   everyone seeing UTC.
+1. **The zone is always named, and the date is ISO-ordered.** `2026-09-10 13:06 UTC`. An
+   unlabelled timestamp on an audit screen is ambiguous, and two readers seeing different
+   unlabelled numbers is strictly worse than everyone seeing UTC. The first draft of this used
+   `%d %b %Y` on the reasoning that a month NAME cannot be misread as a day — true, and it
+   substitutes a LANGUAGE for that ambiguity, since `Sep` is English. On the one rendering a reader
+   with no JavaScript ever sees, that is the coupling this section exists to have removed, pointing
+   the other way. Year-month-day is ambiguous to nobody, sorts the way it reads, and matches the
+   order of the `datetime` attribute beside it. A space and the word `UTC` rather than `T` and `Z`,
+   because RFC 3339 §5.6 permits the space and these screens are read by auditors as well as
+   engineers: `Z` is precise and is also jargon. The machine-readable form is `datetime`'s job, and
+   it keeps `Z`.
 2. **The reader's own zone by default, resolved in their browser, as progressive enhancement.** The
    server renders UTC; a ~25-line inline script re-renders each `<time>` through
    `Intl.DateTimeFormat`. That direction matters — with no JavaScript, a blocked script or a CSP
@@ -428,8 +436,8 @@ A locale tag gives the same control and cannot express "no year". It also drives
 unicode extensions cover the combinations a house style wants without a second knob —
 `"en-US-u-hc-h23"` is American field order on a 24-hour clock, verified in a browser rather than
 assumed. The FIELD SET stays the library's: date, year, time and zone name are always all present.
-The server fallback is untouched by it and stays `10 Sep 2026 13:06 UTC`, unambiguous in every
-locale because the month is a name rather than a number.
+The server fallback is untouched by it and stays `2026-09-10 13:06 UTC` — the same for every
+reader, in every language.
 
 Two failure paths, both closed. A malformed tag is rejected at boot — `en_US` with an underscore is
 the one that matters, since Ruby and Rails both spell locales that way and `Intl` throws on it in

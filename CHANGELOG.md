@@ -14,7 +14,8 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
   I18n keys. An app that had set that key to a time-only format got audit screens
   with no date at all, and Rails' own default (`%d %b %H:%M`) omits the year on a
   log kept for seven years. The format is the library's own now, and the zone is
-  always named: `10 Sep 2026 13:06 UTC`.
+  always named, and the date is ISO-ordered so it reads the same in every
+  language: `2026-09-10 13:06 UTC`.
 
 ### Added
 

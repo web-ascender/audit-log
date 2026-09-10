@@ -36,7 +36,20 @@ module AuditLog
     # than everyone seeing UTC. `title` and `datetime` carry the exact recorded
     # instant at microsecond precision whatever the visible text says, so the
     # stored fact is always one hover away.
-    UTC_FORMAT = "%d %b %Y %H:%M UTC"
+    #
+    # ISO ORDER, AND NOT `%d %b %Y`. A month NAME is unambiguous about which
+    # number is the day and reintroduces a language: `Sep` is English, on the
+    # only rendering a reader with no JavaScript ever sees. This library had just
+    # finished removing its dependence on the host's locale config and should not
+    # acquire one in the other direction. Year-month-day is ambiguous to nobody
+    # and readable by everybody, sorts the way it reads, and is the same order the
+    # `datetime` attribute beside it carries.
+    #
+    # A SPACE AND THE WORD "UTC", not `T` and `Z`. RFC 3339 §5.6 allows the space
+    # by agreement, and these screens are read by auditors as well as engineers:
+    # `Z` is precise and is also jargon, where `UTC` is the thing itself. The
+    # machine-readable form is the `datetime` attribute's job and it keeps `Z`.
+    UTC_FORMAT = "%Y-%m-%d %H:%M UTC"
 
     def audit_time(time)
       return "" if time.blank?
