@@ -1520,6 +1520,17 @@ gating the column behind the opt-in migration — and each reads like an obvious
 improvement without the reason it lost. The costs in it are measured, not
 estimated.
 
+**One thing is at an EARLIER stage than this section takes, and it is parked
+rather than lost.** `doc/related-timeline.md` sketches a `RelatedTimeline` — one
+record's timeline widened to the records that name it through a facet, for a
+host app's "everything that happened to this Job" feed. It is a proposal: no
+DESIGN section, no terse entries here, nothing built. It is filed there and not
+in `DESIGN.md` precisely because it has not earned a `§n` yet, and a pointer
+into a section that does not exist is worse than the paragraph it replaced.
+`doc/` is not in `spec.files`, so nothing there ships to a host app. Read that
+file before designing this feature from scratch — the recording half is already
+live in `../ngen-ipc`, which constrains the shape.
+
 When something else reaches the same stage, this section is where it goes, and the
 two rules that governed §23 apply to it: the terse entries move into the
 deliberate-decisions list, and a staged README appendix moves into `README.md`
