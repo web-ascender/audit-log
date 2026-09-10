@@ -5,6 +5,13 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## 0.6.2 — 2026-09-10
+
+Timestamps on the auditor screens. Nothing about capture, storage or the schema
+changes, and stored values remain UTC by construction — this is entirely about
+what a screen shows. An application on the defaults gets the fix and the
+reader-local rendering with no configuration.
+
 ### Fixed
 
 - **Timestamps on the auditor screens showed no date in some applications, and
