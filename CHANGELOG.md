@@ -5,6 +5,13 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## 0.6.3 — 2026-09-10
+
+A documentation release. No behaviour changes, no schema changes, and no stored
+row is affected — an existing payload key goes on working exactly as it did. What
+changed is that a convention every example in this repository already followed is
+now written down, and pinned by a spec so those examples cannot drift from it.
+
 ### Documentation
 
 - **A stated naming convention for event payloads: every id key names its type —
