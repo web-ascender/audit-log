@@ -385,6 +385,44 @@ The two ways to break it, both of which the spec catches:
 Related but separate: partition **boundaries** are also UTC, for different
 reasons — see below.
 
+#### Displaying one is a different question, and was answered wrong  **[added 2026-09-10]**
+
+Storage is settled above. What a *screen* shows was, until this was written, `l(time, format:
+:short)` — which reads the HOST application's `time.formats.short`. So the format of every
+timestamp in the auditor UI was decided by one of the host's I18n keys, which is the coupling the
+whole design forbids, arrived at through a helper rather than a constant. Two silent failures came
+out of it, both real:
+
+- **An app that had set that key to a time-only format got audit screens with no DATE at all.**
+  Reported from a live install.
+- **Rails' own default omits the year** (`"%d %b %H:%M"`), on a log whose default retention horizon
+  is seven years.
+
+The format is now the library's own, and three properties are load-bearing:
+
+1. **The zone is always named.** `10 Sep 2026 13:06 UTC`. An unlabelled timestamp on an audit
+   screen is ambiguous, and two readers seeing different unlabelled numbers is strictly worse than
+   everyone seeing UTC.
+2. **The reader's own zone by default, resolved in their browser, as progressive enhancement.** The
+   server renders UTC; a ~25-line inline script re-renders each `<time>` through
+   `Intl.DateTimeFormat`. That direction matters — with no JavaScript, a blocked script or a CSP
+   that rejects the tag, the screen still shows a complete labelled timestamp, because the
+   enhancement only ever replaces one correct rendering with another. Rendering an empty element for
+   a script to fill would make the failure mode a blank column on a compliance screen. No date
+   library: this is arithmetic the platform has done since 2017, and a dependency here would land in
+   every adopting app.
+3. **The recorded instant survives the display.** `datetime` and `title` carry the stored value at
+   microsecond precision whatever the visible text says, so a local-zone rendering never becomes the
+   only account of when something happened. The CSV export is untouched — it is the evidence
+   artifact and has no display layer at all.
+
+`config.display_time_zone` takes `:viewer` or `:utc` and **refuses to boot on anything else**, for
+the reason `correlated_connections` does: a typo like `:local` falling through to UTC for every
+reader is invisible. The application's own `Time.zone` is deliberately not a third option — it is
+neither the reader's zone nor the recorded one, and offering it would mean a screen labelled with a
+zone that no one reading it is in. `AuditLog::DateRange` is the opposite case and stays app-zone on
+purpose: a date *filter* is a human's calendar day.
+
 ---
 
 ## 5. The trigger function

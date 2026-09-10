@@ -5,6 +5,36 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Fixed
+
+- **Timestamps on the auditor screens showed no date in some applications, and
+  never showed the year in any of them.** The helper rendered
+  `l(time, format: :short)`, which reads the *host's* `time.formats.short` — so
+  the format of every timestamp in the auditor UI was decided by one of your
+  I18n keys. An app that had set that key to a time-only format got audit screens
+  with no date at all, and Rails' own default (`%d %b %H:%M`) omits the year on a
+  log kept for seven years. The format is the library's own now, and the zone is
+  always named: `10 Sep 2026 13:06 UTC`.
+
+### Added
+
+- **Timestamps render in the reader's own timezone**, resolved in their browser
+  through `Intl.DateTimeFormat` — no date library, and no dependency added to
+  your app. It is progressive enhancement in that direction on purpose: the
+  server renders a complete labelled UTC timestamp and a small inline script
+  re-renders it locally, so no JavaScript, a blocked script or a strict Content
+  Security Policy leaves a correct timestamp rather than a blank column. The
+  script carries your CSP nonce when you have a policy.
+
+  `datetime` and `title` keep the recorded instant at microsecond precision
+  whatever the visible text says, so a local rendering never becomes the only
+  account of when something happened. The CSV export is untouched.
+
+- **`config.display_time_zone`** — `:viewer` (default) or `:utc`. The engine
+  refuses to boot on any other value rather than falling back to UTC silently.
+  The application's own `Time.zone` is deliberately not an option: it is neither
+  the reader's zone nor the recorded one. DESIGN §4.
+
 ## 0.6.1 — 2026-09-10
 
 The starter stylesheet only. No library code changed, so an application that has

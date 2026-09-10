@@ -1,3 +1,8 @@
+<%# The timestamp script rides with the nav so no screen has to remember it, and
+    only when the host asked for reader-local times. %>
+<% if AuditLog.config.display_time_zone == :viewer %>
+  <%= render "audit_log/shared/local_time" %>
+<% end %>
 <nav class="audit-nav">
   <span class="audit-brand">Audit log</span>
   <%= link_to "Overview", root_path(audit_range_params), class: ("on" if controller_name == "dashboard") %>

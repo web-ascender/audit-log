@@ -581,6 +581,25 @@ Do not "fix" these without reading the linked reasoning first.
   `rake audit_log:partitions` report violations. `ENV["PGTZ"] ||= "UTC"` in the
   engine only makes `pg_dump` render those bounds as `+00` instead of a rotating
   local offset.
+- **A timestamp on a screen is formatted HERE, never through `l(time, format:
+  :short)`.** That read the HOST's `time.formats.short`, so an app I18n key
+  decided the format of every timestamp in the auditor UI — the forbidden
+  coupling, reached through a helper. A real install had set it to a time-only
+  format and got audit screens with NO DATE; Rails' own default omits the YEAR on
+  a log kept seven years. Three properties are load-bearing now: **the zone is
+  always named** (two readers seeing different unlabelled numbers is worse than
+  everyone seeing UTC); **the reader's zone is progressive enhancement, in that
+  direction** — the server renders UTC and a ~25-line inline script re-renders
+  through `Intl.DateTimeFormat`, so no JS, a blocked script or a hostile CSP
+  leaves a complete timestamp rather than a blank column, and rendering an empty
+  element for the script to fill is the way to break it; and **`datetime` and
+  `title` keep the recorded instant at microsecond precision**, so a local
+  rendering never becomes the only account of when something happened. No date
+  library — `Intl` is platform, and a dependency here lands in every adopter.
+  `config.display_time_zone` is `:viewer` or `:utc` and REFUSES TO BOOT on
+  anything else (`correlated_connections`' argument: `:local` would fall through
+  to UTC for everyone, silently). There is deliberately no `:app` value — the
+  host's `Time.zone` is neither the reader's zone nor the recorded one. DESIGN §4.
 - **`AuditLog::DateRange` is deliberately NOT UTC** — it builds bounds in
   `Time.zone` because a date filter is a human's calendar day. The cost is that an
   app-zone range crosses a UTC month boundary and touches one extra partition. A
@@ -1341,6 +1360,7 @@ property from different angles — **that nothing goes missing without saying so
 | `redaction_spec` | redaction removes structure, not just values |
 | `association_labels_spec` | a label replaces a stored id, or a failed lookup reads as an absent one |
 | `css_generator_spec` | the starter stylesheet stops being inert as shipped, stops being valid CSS once enabled, or grows a rule that would reach past `.audit-log` into the host's own markup |
+| `time_display_spec` | a timestamp loses its date, its year or its zone, or the host's own I18n formatting reaches an audit screen |
 | `identity_spec` | a screen hand-spells a recorded identity, so two tabs describe one fact differently — or the `#` that a host app uses for its own numbering comes back |
 | `readme_spec` | the README's contents table drifts from its headings, an internal link dangles, a rake task exists that the docs never mention — **nested ones included; the old two-space regex checked 6 of 13 and skipped every retention task** — or `llms.txt` routes into a heading that is gone, cites a dead `§n`, or falls out of `spec.files` |
 | `record_timeline_spec` | an unsubjected action vanishes from a record's narrative, or a capped section does not admit it is capped |

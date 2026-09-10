@@ -21,9 +21,31 @@ module AuditLog
       tag.span(source, class: "badge source-#{source}")
     end
 
+    # The ONE place a timestamp reaches a screen, and it deliberately does NOT
+    # go through `l(time, format: :short)` any more.
+    #
+    # That read the HOST's `time.formats.short`, so the format of every timestamp
+    # on these screens was decided by an application I18n key -- the coupling
+    # this library does not permit anywhere else. An app that had set it to a
+    # time-only format got audit screens showing no DATE AT ALL, and Rails' own
+    # default (`%d %b %H:%M`) omits the YEAR, which is wrong on a log with a
+    # seven-year retention horizon. Both failures are silent and both were real.
+    #
+    # THE ZONE IS ALWAYS NAMED. An unlabelled timestamp on an audit screen is
+    # ambiguous, and two readers seeing different unlabelled numbers is worse
+    # than everyone seeing UTC. `title` and `datetime` carry the exact recorded
+    # instant at microsecond precision whatever the visible text says, so the
+    # stored fact is always one hover away.
+    UTC_FORMAT = "%d %b %Y %H:%M UTC"
+
     def audit_time(time)
       return "" if time.blank?
-      tag.time(l(time, format: :short), datetime: time.iso8601, title: time.iso8601)
+
+      utc   = time.utc
+      exact = utc.iso8601(6)
+
+      tag.time(utc.strftime(UTC_FORMAT), datetime: exact, title: exact,
+        data: { audit_time: ("local" if AuditLog.config.display_time_zone == :viewer) })
     end
 
     # A diff value is [old, new]. The three shapes carry different meanings and

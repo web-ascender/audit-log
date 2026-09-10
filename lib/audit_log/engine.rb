@@ -62,6 +62,13 @@ module AuditLog
     #
     # after_initialize, because database.yml is fully loaded by then and the
     # host's own initializer has already had its say.
+    # Same posture as verify_correlated_connections! below: a value that matches
+    # nothing is a screen quietly showing something other than what was asked
+    # for, so the app refuses to boot instead. DESIGN §9.
+    initializer "audit_log.verify_display_time_zone" do
+      config.after_initialize { AuditLog.config.verify_display_time_zone! }
+    end
+
     initializer "audit_log.verify_correlated_connections" do
       config.after_initialize do
         known = ActiveRecord::Base.configurations

@@ -49,6 +49,7 @@ the authority on *why* any of this is shaped the way it is.
   - [Bounding it](#bounding-it)
   - [What the timeline covers](#what-the-timeline-covers)
 - [Styling the auditor UI (optional)](#styling-the-auditor-ui-optional)
+- [Timestamps](#timestamps)
 - [Making association ids readable (optional)](#making-association-ids-readable-optional)
   - [The four things a cell can say](#the-four-things-a-cell-can-say)
   - [Configuring the label lookup](#configuring-the-label-lookup)
@@ -1127,6 +1128,36 @@ badges carry their own text, and a redacted payload says so in words. Keep that
 if you retheme. An auditor may be colour blind, and these screens are read as
 evidence.
 
+## Timestamps
+
+Every timestamp on the auditor screens is rendered by one helper, and three
+things about it are deliberate.
+
+**The zone is always named.** `10 Sep 2026 13:06 UTC`, not `10 Sep 13:06`. An
+unlabelled timestamp on an audit screen is ambiguous, and two readers seeing
+different unlabelled numbers is worse than everyone seeing UTC.
+
+**The reader's own zone by default, through their browser.** The server renders
+UTC; a small inline script re-renders each `<time>` in the reader's zone using
+the platform's `Intl.DateTimeFormat`, with no date library and no dependency
+added to your app. With JavaScript off, a blocked script, or a Content Security
+Policy that rejects it, the screen still shows a complete labelled UTC timestamp
+— the enhancement only ever replaces one correct rendering with another. Set
+`config.display_time_zone = :utc` for UTC everywhere and no script; the engine
+refuses to boot on any other value rather than falling back silently.
+
+**The recorded instant is always one hover away.** `datetime` and `title` carry
+the stored value at microsecond precision whatever the visible text says, so a
+display in someone's local zone never becomes the only version of when something
+happened. The CSV export is untouched: it ships the recorded UTC values, with
+no display layer in it at all.
+
+The format is the library's own and is **not** `l(time, format: :short)`. That
+read your application's `time.formats.short`, which meant the audit screens'
+timestamps were formatted by one of your I18n keys — an app that had set it to a
+time-only format got audit screens showing no date at all, and Rails' own default
+omits the year, which is wrong on a log kept for seven years.
+
 ## Making association ids readable (optional)
 
 A field-level diff records what the database recorded, which is an id:
@@ -1408,6 +1439,7 @@ knowing anything about any of them.
 |---|---|---|
 | `parent_controller` | `"ApplicationController"` | What the engine's controllers inherit, which is how they pick up your layout and authentication. |
 | `record_url` | `nil` | `->(type, id)` returning a path in **your** app, for a history you render yourself. nil means labels render unlinked, ids intact — it will not guess a route. |
+| `display_time_zone` | `:viewer` | Which zone the auditor screens **show** a timestamp in — `:viewer` for the reader's own, resolved in their browser, or `:utc` for everyone. Stored values are always UTC either way and nothing here can change that. The zone is always named on screen, and `title`/`datetime` carry the exact recorded instant whatever the visible text says. See [Timestamps](#timestamps). |
 | `page_size` | `50` | Rows per page on the auditor screens. Keyset-paginated, so there is no cost curve behind it. |
 | `actor_picker` | `[]` | Populates the actor search on `/audit/actors`. Source it from your users table, not from the log. |
 | `actor_finder` | `type.constantize.find_by(id:)` | Looks up an actor for display when the log holds no snapshot. |

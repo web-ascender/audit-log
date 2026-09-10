@@ -234,6 +234,21 @@ module AuditLog
     # listed here, so every exemption carries a written reason.
     attr_accessor :unaudited_tables
 
+    # Which zone the auditor screens SHOW a timestamp in. Stored values are
+    # always UTC and nothing here can change that (DESIGN §9).
+    #
+    #   :viewer  the reader's own zone, resolved in their browser. The server
+    #            still renders UTC, so a reader with no JavaScript sees a
+    #            complete, labelled UTC timestamp rather than nothing.
+    #   :utc     UTC for everyone, and no script.
+    #
+    # Deliberately NOT the application's `Time.zone`: these screens are read by
+    # people who are not necessarily in the office's timezone, and an app zone is
+    # neither the reader's nor the recorded one. `AuditLog::DateRange` is the
+    # opposite case and stays app-zone on purpose -- a date FILTER is a human's
+    # calendar day (DESIGN §11).
+    attr_accessor :display_time_zone
+
     # Rows per page on the auditor screens. Keyset-paginated, so this is a
     # rendering choice with no cost curve behind it -- there is no OFFSET to
     # grow and no count to compute. See AuditLog::Pagination.
@@ -358,6 +373,7 @@ module AuditLog
       @record_url               = nil
       @default_dimensions       = nil
       @dimension_filters        = {}
+      @display_time_zone        = :viewer
       @page_size                = 50
       @partition_months_ahead   = 3
       @drill_down_slack         = 24.hours
@@ -372,6 +388,21 @@ module AuditLog
         "audit_events"         => "the audit log itself",
         "audit_changes"        => "the audit log itself"
       }
+    end
+
+    DISPLAY_TIME_ZONES = %i[viewer utc].freeze
+
+    # Refuses to boot on a value that matches nothing, for the same reason
+    # verify_correlated_connections! does: the alternative is a typo like
+    # `:local` falling through to UTC for everyone, silently, on screens whose
+    # whole job is to not under-report.
+    def verify_display_time_zone!
+      return if DISPLAY_TIME_ZONES.include?(@display_time_zone)
+
+      raise ArgumentError,
+        "AuditLog.config.display_time_zone is #{@display_time_zone.inspect}, " \
+        "which is not one of #{DISPLAY_TIME_ZONES.map(&:inspect).join(" or ")}. " \
+        "Timestamps would silently fall back to UTC for every reader."
     end
 
     private
