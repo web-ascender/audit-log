@@ -1043,13 +1043,18 @@ Do not "fix" these without reading the linked reasoning first.
   field grid, its repeat inside `.record-list` (an equal-specificity rule above
   it wins on source order otherwise), the un-hung third-level summary, the
   border-drawn triangle, and the rail dot that carries `kind`.
-- **The reference app still has its own unscoped copy, and that is a known
-  duplication.** It styles that app's own pages with most of the same rules, so
-  the two can drift — the failure the activity templates' arrangement exists to
-  prevent. The fix is the same one: have the demo enable the generated file for
-  `/audit` and keep only its own pages' rules in `application.css`. Not done yet;
-  do not "fix" it by copying the template over that file wholesale, which would
-  take the demo's own pages down with it.
+- **The reference app CONSUMES this template — it does not hold a second copy.**
+  Its `application.css` keeps only what its own pages need and what the generated
+  activity feed reads (250 lines to 129); `/audit` is styled by the generated
+  file, enabled and linked. Same workflow as the activity templates: change this
+  template, re-generate the demo's copy, look at both. Do not re-add
+  `.audit-nav`, `.tabs`, `.date-filter`, `.cards`, `.export` or `.timeline` to
+  that file — a header comment there says so.
+- **The demo DELETES the dark-mode block from its enabled copy**, because its own
+  chrome is light only and following the reader's system setting made the audit
+  region a dark panel inside a light page. That is the header's own advice, taken
+  — and it is what the guidance is for, so do not "fix" the demo by putting it
+  back.
 
 ### Documentation for coding agents (DESIGN §24)
 

@@ -30,6 +30,12 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
   of the file says which and why. Fifteen custom properties, a dark palette to
   match, and two breakpoints. DESIGN §21.4.
 
+  The reference app now consumes the generated file instead of holding its own
+  copy — its `application.css` went from 250 lines to 129 — which is the same
+  arrangement the generated activity views already have, and for the same
+  reason. It also deletes the dark-mode block from its enabled copy, because its
+  own chrome is light only: the header's advice, taken.
+
 ## 0.6.0 — 2026-09-09
 
 No migration, and nothing to do on upgrade. One rendering change reaches rows

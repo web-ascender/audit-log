@@ -3443,12 +3443,17 @@ the nesting reads inside out), the disclosure triangle drawn with borders becaus
 a speck at that size, and the rail dot that is the only thing carrying `kind`. The explainer lists
 all five, since the block cannot hold comments.
 
-**That leaves a duplication worth naming.** The reference app still has its own unscoped copy, and
-it styles its own pages with most of the same rules, so the two can drift — the failure §21.3's
-"the templates ARE the reference app's files" arrangement exists to prevent. The resolution is the
-same one: that app enables the generated file for `/audit` and keeps in `application.css` only what
-its own pages need. Until it does, this is two hand-maintained copies and is recorded as such
-rather than left to be rediscovered.
+**The reference app now CONSUMES the template rather than holding a second copy**, which is
+§21.3's arrangement applied to CSS: its `application.css` went from 250 lines to 129, keeping only
+what its own pages need and what the generated activity feed reads, and `/audit` is styled by the
+generated file. Two hand-maintained copies of one stylesheet drift, and the timeline rules are the
+most intricate CSS in either repository. So the workflow is the activity templates' workflow:
+change this template, re-generate the demo's copy, look at both.
+
+**And the demo deletes the dark-mode block from its enabled copy**, which is the guidance above
+being taken rather than merely written down. Its own chrome is light only, so following the
+reader's system setting rendered the audit region as a dark panel inside a light page — seen in a
+real app rather than argued about. A comment sits where the block was.
 
 ---
 
