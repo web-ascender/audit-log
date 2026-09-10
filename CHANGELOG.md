@@ -5,6 +5,12 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## 0.6.1 — 2026-09-10
+
+The starter stylesheet only. No library code changed, so an application that has
+already generated and edited its own copy is unaffected — the file is
+create-once and never re-generated. A new install gets the stylesheet below.
+
 ### Changed
 
 - **The starter stylesheet is one block comment now, not twelve.** Enabling it is
