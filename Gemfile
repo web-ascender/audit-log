@@ -44,4 +44,16 @@ gem "puma", ">= 5.0"
 group :development, :test do
   gem "rspec-rails", "~> 8.0"
   gem "debug", platforms: %i[mri windows], require: "debug/prelude"
+
+  # Sequel through sequel-activerecord_connection -- the path rodauth-rails runs
+  # every Rodauth query through -- for spec/audit_log/sequel_correlation_spec.rb.
+  # NOT gemspec dependencies, and must never become one: the library reaches
+  # Sequel through Active Record's own raw_connection and never names it
+  # (DESIGN §26). `require: false` keeps spec/dummy's Bundler.require from loading
+  # them at boot. The spec requires Sequel itself, so a full run has it loaded
+  # from then on -- which is why the "library never names Sequel" guarantee is a
+  # source check inside that spec rather than something the rest of the suite
+  # could notice.
+  gem "sequel", "~> 5.38", require: false
+  gem "sequel-activerecord_connection", "~> 2.0", require: false
 end

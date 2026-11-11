@@ -12,6 +12,19 @@ module AuditContextHelpers
     )
   end
 
+  # A correlation identity as PRIMITIVES (DESIGN §6.2), for the examples where a
+  # persisted User would put its own audited INSERT among the very rows being
+  # read -- or into the cleanup of a group that runs outside a fixture
+  # transaction. Pairs with `acting_as`.
+  def audit_identity(label, id)
+    { request_id: AuditLog::Context.new_request_id,
+      actor_type: "User", actor_id: id, actor_label: label }
+  end
+
+  def acting_as(identity, &block)
+    AuditLog::Current.set(**identity, &block)
+  end
+
   # No `password:`. The dummy app has no authentication gem and no password
   # column -- see spec/dummy/app/models/user.rb. An actor only has to answer
   # to_label for the audit log's purposes.

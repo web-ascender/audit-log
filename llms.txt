@@ -75,6 +75,14 @@ lines and are not meant to be read end to end.
   one migration. Do **not** add a flag the trigger reads instead — it would pass
   `audit_log:coverage` while auditing nothing, which is why coverage FAILS on purpose while
   capture is off. DESIGN §25.
+- **Use Rodauth, Sequel through `sequel-activerecord_connection`, or anything else that writes
+  through `raw_connection`** —
+  [Sequel, Rodauth, and the raw connection](README.md#sequel-rodauth-and-the-raw-connection).
+  Correlation is **automatic**: the gem stamps the connection when `raw_connection` hands it out.
+  Do not stamp `AuditLog::Current` onto the connection yourself from a Rodauth hook. Ask for
+  `raw_connection` in each unit of work rather than caching the `PG::Connection`. What the host
+  owns is the actor on Rodauth's own requests (`config.actor_resolver`, and `after_login`). A
+  Sequel database with its *own* connections is audited but uncorrelated. DESIGN §26.
 - **Attach to an existing table, install outside `public`, control the transaction, or run
   multiple databases** — [Advanced](README.md#advanced).
 - **Decide whether to use this instead of paper_trail or audited** —

@@ -86,6 +86,7 @@ the authority on *why* any of this is shaped the way it is.
   - [Installing into a schema other than `public`](#installing-into-a-schema-other-than-public)
   - [Transaction control in `audited`](#transaction-control-in-audited)
   - [Multi-database apps](#multi-database-apps)
+  - [Sequel, Rodauth, and the raw connection](#sequel-rodauth-and-the-raw-connection)
   - [Why objects and not relations](#why-objects-and-not-relations)
   - [Documentation for coding agents](#documentation-for-coding-agents)
 - [Why this one, and not a callback-based gem](#why-this-one-and-not-a-callback-based-gem)
@@ -1716,7 +1717,8 @@ way in, and it is two kinds of thing:
   request, bypass the log for a bulk load, stop auditing altogether. Read these
   when the job lands.
 - **The parts most likely to surprise you** — multiple schemas, transaction
-  control, multiple databases. Read these when one of them does.
+  control, multiple databases, Sequel and Rodauth. Read these when one of them
+  does.
 
 The full design record lives in [`DESIGN.md`](DESIGN.md), which is the
 authority on *why* anything here is shaped the way it is.
@@ -2273,6 +2275,70 @@ A **read replica** needs nothing at all. Audit rows are only ever written, and
 `config.correlated_connections` naming a replica that some environments lack is
 the partial-miss case above: a warning, not a failure.
 
+### Sequel, Rodauth, and the raw connection
+
+Anything issued on the database connection Active Record hands out through
+`raw_connection` bypasses Active Record, so this gem stamps the connection at
+that handoff. That is how rodauth-rails stays correlated: it runs every Rodauth
+query through Sequel, using the `sequel-activerecord_connection` extension, and
+that extension borrows Active Record's connection by calling `raw_connection`
+for every statement.
+
+**What is automatic.** There is nothing to install or configure, and nothing in
+this gem is specific to Sequel. The rodauth-rails installer's Gemfile line and
+its generated `db Sequel.postgres(extensions: :activerecord_connection, ...)`
+stay exactly as they are. From then on:
+
+- every Sequel statement carries the current actor and `request_id`, inside a
+  Sequel transaction or outside one;
+- an actor set partway through a request applies from the next statement;
+- `config.correlated_connections` applies as it does to Active Record, by the
+  name of the connection the Sequel database's `activerecord_model` uses
+  (`primary` unless you changed it);
+- the same holds for anything else that writes through `raw_connection`, such as
+  `COPY` via postgres-copy or a hand-written `exec`.
+
+The stamp matters even though the triggers capture every write anyway. The
+correlation context lives on the pooled connection, so an unstamped raw write
+would be credited to **whichever request used that connection last**. That is
+the wrong person, not a blank. Do not replace it with your own stamping from a
+Rodauth hook.
+
+**Ask for the connection where you use it.** The stamp is taken when
+`raw_connection` is called. Code that keeps the `PG::Connection` and reuses it
+across requests is stamped once, for whoever was acting when it first asked.
+Call `raw_connection` again in each unit of work instead. Sequel through the
+extension already does, per statement. Raw statements inside one
+`DB.synchronize { |conn| ... }` block are likewise stamped once, when the block
+is entered, so do not change `AuditLog::Current` partway through such a block.
+
+**What is not automatic: the actor on Rodauth's own requests.** rodauth-rails
+runs `RodauthController`'s action callbacks around every Rodauth route, and the
+generated `RodauthController` inherits from `ApplicationController`. So if that
+is where `AuditLog::ControllerContext` is included, Rodauth requests get a
+`request_id` like any other. The actor needs two things from you:
+
+```ruby
+# config/initializers/audit_log.rb -- the default, current_user, is not a Rodauth method
+config.actor_resolver = ->(controller) { controller.rodauth.rails_account }
+
+# app/misc/rodauth_main.rb -- nobody is logged in yet when the login
+# request's callbacks run, so name the actor once Rodauth knows it
+after_login { AuditLog::Current.actor = rails_account }
+```
+
+Writes before that point, such as a failed login's lockout counter, are filed
+under the request's id with no actor, which is accurate.
+
+**Not covered: a Sequel database with its own connections** (`Sequel.connect(...)`
+without the extension). It runs in separate database sessions that never pass
+through `raw_connection`. Its writes are still audited, and arrive with a NULL
+actor and NULL `request_id`, like a console session. Route Sequel through the
+extension if those writes need an actor.
+
+The reasoning, the lock and leasing findings, and the versions this was verified
+against are in DESIGN §26.
+
 ### Why objects and not relations
 
 The auditor screens encode rules that are invisible from outside the gem: a diff
@@ -2390,7 +2456,7 @@ who will not read the whole design document first.
 | `lib/audit_log/configuration.rb` | Every host-app coupling point. The only file to read before adopting. |
 | `lib/audit_log/current.rb` | `CurrentAttributes` holding the audit identity as **primitives**. |
 | `lib/audit_log/context.rb` | Writes the correlation GUCs onto a connection; mints UUIDv7 ids. |
-| `lib/audit_log/transaction_stamp.rb` | Adapter prepend. Read the comment — it explains why `raw_execute` and not `begin_db_transaction`. |
+| `lib/audit_log/transaction_stamp.rb` | Adapter prepend: `raw_execute` for Active Record's statements, `raw_connection` for everything issued on the raw connection (Sequel through `sequel-activerecord_connection`, `COPY`). Read the comment — it explains why `raw_execute` and not `begin_db_transaction`. |
 | `lib/audit_log/controller_context.rb` | The whole web integration. |
 | `lib/audit_log/job_context.rb` | The whole background-job integration. |
 | `lib/audit_log/registry.rb` | The allowlist of auditable actions, and each one's human sentence. |
@@ -2467,7 +2533,7 @@ sections most likely to matter, and the shape of the mistake each one prevents:
 
 | If you are touching | Read | Because |
 |---|---|---|
-| `transaction_stamp.rb` | §6.1 | `begin_db_transaction` is the obvious hook and misses `update_all` — bulk writes land with a **NULL actor** |
+| `transaction_stamp.rb` | §6.1, §26 | `begin_db_transaction` is the obvious hook and misses `update_all` — bulk writes land with a **NULL actor**. An unstamped `raw_connection`, or a memo kept across a `ROLLBACK AND CHAIN` or an aborted `COMMIT`, credits the next write to **the previous request's actor**. And a stamp sent into an aborted transaction leaves the pooled connection **aborted** |
 | `current.rb`, job or controller context | §6.2, §6.4 | the origin is captured in `serialize`, not `around_enqueue`; `perform_all_later` skips enqueue callbacks entirely |
 | `event_subscriber.rb`, `record.rb` | §7, §12 | `readonly?` keyed on `true` breaks **inserts**, silently disabling layer 2 |
 | `partitions.rb`, the SQL, migrations | §8 | every boundary is UTC midnight, and the three manual operations must not overlap |

@@ -5,6 +5,55 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Fixed
+
+- **Writes issued on Active Record's raw connection now carry the current actor and
+  `request_id`.** The main case is Sequel through `sequel-activerecord_connection`,
+  the path rodauth-rails runs every Rodauth query through. Those statements share
+  Active Record's connection but never pass through `raw_execute`, so the correlation
+  stamp was never refreshed for them:
+  - inside a transaction they carried the stamp written at BEGIN, which went stale
+    the moment an `after_login` hook changed the actor;
+  - outside a transaction they carried whatever that pooled connection last held.
+    That was an earlier request's actor, not a NULL, so a change was credited to the
+    wrong person and nothing said so.
+
+  Every write was still audited; only its attribution was wrong. The connection is
+  now stamped when Active Record hands it out through its public `raw_connection`.
+  That covers the extension, which asks per statement, and any other raw-connection
+  writer such as `COPY`. Nothing to configure, and the gem names no Sequel constant
+  and loads no Sequel code. A Sequel database with its own connections stays out of
+  scope: still audited, with a NULL actor. README "Sequel, Rodauth, and the raw
+  connection", `DESIGN.md` §26.
+
+- **The correlation stamp no longer outlives the session it was written to, or gets
+  sent where it cannot land.** Each of these is fixed:
+  - **Statements credited to the previous request's actor.** Active Record restarts a
+    parent transaction with `ROLLBACK AND CHAIN` when a nested `requires_new` fails
+    before the parent wrote anything (`create_or_find_by`'s shape). PostgreSQL
+    silently turns the `COMMIT` of an aborted transaction into a ROLLBACK. Both
+    reverted the stamp but left its memo in place, so the next statement skipped
+    re-stamping and was credited to whoever used the connection before.
+  - **A rollback that never reached the server.** If a statement failed under a
+    nested `Current.set`, or inside a job's `around_perform`, the stale stamp was
+    written in front of the rollback, inside the aborted transaction, and failed.
+    Active Record then raised `InFailedSqlTransaction` instead of the original error
+    and left the enclosing transaction aborted. On the Sequel path it left the pooled
+    connection aborted for the next request.
+  - **A broken `COPY`.** A stamp attempted in the middle of a `COPY` broke the COPY.
+  - **Unstamped sessions after a reconnect.** A connection that `raw_connection`
+    reconnected while handing it over was handed out unstamped. An adapter reused
+    after `disconnect!` ran its next statement on a fresh, unstamped session. Both
+    landed with a NULL actor.
+
+  Rollbacks are no longer stamped, and no stamp is sent into an aborted or busy
+  session. `DESIGN.md` §26.
+
+### Documentation
+
+- `DESIGN.md` §2 and §2.4 no longer list `pagy` as a dependency. It has not been one
+  since 0.2.0.
+
 ## 0.6.3 — 2026-09-10
 
 A documentation release. No behaviour changes, no schema changes, and no stored

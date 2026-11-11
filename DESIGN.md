@@ -70,7 +70,7 @@ children must read as **one action**, not forty unrelated version rows.
 | **Rails** | 8.0 | 8.1 | 8.1.3+ | `Rails.event` structured events |
 | **PostgreSQL** | 13 | 16 | 18 | row triggers on partitioned parents |
 | **Solid Queue** | 1.0 | 1.x | latest | ActiveJob-only queue backend |
-| **Pagy** | 9.0 | 9.x | latest | `Pagy::Keyset` |
+| **Pagy** | — | — | — | not required since 0.2.0, which replaced `Pagy::Keyset` with `AuditLog::Pagination` (§2.4, §11.0)  **[corrected 2026-11-11]** |
 
 "Hard floor" is where the design stops working. "Supported floor" is what we will actually test
 and run against. Our existing apps are on Ruby 3.4.5, Rails 8.1.3, and PostgreSQL 16+, so nothing
@@ -122,8 +122,11 @@ configure. Measured, not read: see the warning in §6.4.
 
 **There is also a ceiling: `~> 8.0`, i.e. below 9.0.**  **[added 2026-08-28]** Not a formality.
 `TransactionStamp` prepends `raw_execute`, which is a *private* adapter method — §6.1 calls it the
-single private choke point every write funnels through — and a major version is free to move
-exactly that. An unbounded `>= 8.0` asserted that Rails 9 and 10 work, which nobody has verified.
+single private choke point every Active Record write funnels through — and a major version is free
+to move exactly that. (Statements issued on the raw connection — Sequel through
+`sequel-activerecord_connection`, `COPY` — are stamped where Active Record hands that connection
+out, at the *public* `raw_connection`, which the same ceiling covers. §26.)  **[amended 2026-11-11]**
+An unbounded `>= 8.0` asserted that Rails 9 and 10 work, which nobody has verified.
 Raising the ceiling means re-verifying the prepend against the new adapter internals first, and the
 guard for that is `completeness_spec`: if `raw_execute` stops being the choke point, `update_all`
 and raw SQL start landing with a NULL actor and nothing else reports it.
@@ -173,8 +176,16 @@ the partition-creation job. Workable, one more moving part. Below 11, abandon pa
   like plain honesty. It is not. The host application picks its own `pg` build and version — which
   on some platforms means picking against a system libpq — and a constraint here is this gem
   dictating a version of somebody else's C extension for no benefit it can name. Rails brings the
-  adapter; this gem brings the DDL. The gemspec's runtime dependencies are `rails`, `pagy` and
-  `csv`, and nothing else.
+  adapter; this gem brings the DDL. The gemspec's runtime dependencies are `rails` and `csv`, and
+  nothing else.  **[corrected 2026-11-11]** This sentence listed `pagy` as a third dependency until
+  2026-11-11, nine releases after 0.2.0 removed it — the bullet above says so, and so did the
+  gemspec. `pagination_spec` pins the gemspec side; nothing pinned this sentence.
+- **No Sequel dependency, although the correlation context reaches Sequel.**  **[added 2026-11-11]**
+  A host running Sequel through `sequel-activerecord_connection` (rodauth-rails) gets its Sequel
+  statements stamped because the extension takes Active Record's connection through the public
+  `raw_connection`, which `TransactionStamp` stamps. The library never names Sequel. `sequel` and
+  `sequel-activerecord_connection` are development-only Gemfile entries here, for the spec that
+  proves it. §26.
 - **No queue backend commitment.** Solid Queue is the target, but §6.4's ActiveJob concern is
   adapter-independent; the Sidekiq middleware in §6.4 exists only for non-ActiveJob workers.
 
@@ -796,6 +807,15 @@ from each of the four entry points: web, background job, console, and migration.
 > which is **once per request rather than once per transaction** — fewer round trips than the
 > original design, not more. The cost is one Ruby-level comparison per statement.
 >
+> **[corrected 2026-11-11]** "Single choke point" was true of every statement *Active Record*
+> issues, and no further. A host running Sequel through `sequel-activerecord_connection` (which is
+> how rodauth-rails runs every Rodauth query) issues statements on the same `PG::Connection` that
+> never reach `raw_execute`. Because the stamp is session-level, they carried whatever stamp that
+> pooled connection last held: an earlier actor, not a NULL. `raw_execute` remains the choke point
+> for Active Record's statements. Everything else on the connection is obtained through the public
+> `raw_connection`, which `TransactionStamp` now stamps at handoff with the same memo and the same
+> `correlated_connections`. See §26.
+>
 > Two consequences follow, and both are load-bearing:
 >
 > 1. **The setting must be session-level (`set_config(..., false)`), not transaction-local.** A
@@ -809,6 +829,14 @@ from each of the four entry points: web, background job, console, and migration.
 >    worse: the memo then went stale in the "unstamped" direction, so a later reset to the empty
 >    stamp matched the stale memo, short-circuited, and left the previous actor's identity in force.
 >    A spec caught that one.
+>
+>    **[amended 2026-11-11]** Rollback was not the only way the server diverges. `ROLLBACK AND
+>    CHAIN` (Active Record's transaction *restart*), the `COMMIT` of an aborted transaction (which
+>    PostgreSQL silently turns into a ROLLBACK) and `disconnect!` all revert or drop the stamp too,
+>    and each now forgets the memo. And no rollback is ever *stamped*: a stale stamp in front of one
+>    runs inside a transaction that is, in the case that makes it stale, usually aborted. It fails,
+>    the rollback is never sent, and the enclosing transaction stays aborted. More generally, no
+>    stamp is sent into an aborted or busy session at all. §26 has the table and the sequence.
 >
 > Also prepend `configure_connection` — it must both reset the memo (a reconnect discards session
 > settings) and *suppress* stamping while it runs, since it issues statements of its own against a
@@ -4475,3 +4503,297 @@ as long as the pause lasts, and the failure message says so.
   encapsulating something that had been copied rather than shared.
 - **Emitting the events on `after_commit`.** §7's argument, unchanged: a failed narration must roll
   the detach back, and `after_commit` cannot.
+
+---
+
+## 26. Writes on the raw connection: Sequel, rodauth-rails, and the rest  **[added 2026-11-11]**
+
+rodauth-rails runs every Rodauth query through Sequel, using the `sequel-activerecord_connection`
+extension. That extension owns no connections. It borrows Active Record's own `PG::Connection`,
+and Sequel transactions *are* Active Record transactions, because the extension delegates
+`begin_transaction`, `commit_transaction` and `rollback_transaction` to the adapter. The first host
+to need this is Overwatch 3.0, a Rails 8.1 app authenticating through Rodauth.
+
+**Layer 1 was never in question.** The trigger fires whoever issues the statement. The correlation
+context was. §6.1 stamps on `raw_execute` on the premise that every statement funnels through it,
+and Sequel's statements do not. The extension runs them as `async_exec` / `async_exec_params`
+directly on the `PG::Connection` it obtained from the adapter, so `raw_execute` never sees them.
+Nor does it see anything else issued on that connection, such as `COPY FROM` through postgres-copy
+or a host's own `raw_connection.exec`.
+
+### The failure is not a NULL
+
+The stamp is **session-level** (§6.1, consequence 1), so an unstamped statement does not arrive
+uncorrelated. It arrives carrying whatever stamp that pooled connection last held, which is an
+*earlier* unit of work's actor and `request_id`. That is the "silent and in the wrong direction"
+failure `TransactionStamp`'s comments warn about, reached by a path those comments did not know
+existed. `sequel_correlation_spec` reproduced it before any fix: a Sequel `UPDATE ... RETURNING`
+run under actor B, on a connection Active Record had last stamped for actor A, was filed as
+**"Actor A"**. The shape is the real one. Rodauth's lockout feature increments the failed-login
+counter with a bare `UPDATE ... RETURNING`, and nothing earlier in that request has touched Active
+Record.
+
+Inside a transaction Sequel's statements did carry the right stamp, because BEGIN goes through
+`internal_execute` → `raw_execute`. That stayed right only until `AuditLog::Current` changed
+mid-transaction, which is precisely what a Rodauth `after_login` hook does. A connection that had
+just reconnected carried no stamp at all.
+
+### The hook: Active Record's public `raw_connection`
+
+```ruby
+module AuditLog::TransactionStamp
+  def raw_connection
+    super.tap { AuditLog::Context.ensure_stamped!(self) }
+  end
+end
+```
+
+`raw_connection` is Active Record's **public**, documented handoff of the driver connection. Its own
+doc comment says Active Record "cannot track if the database is getting modified using this
+client". That makes it the one place every out-of-Active-Record writer on this connection has to
+pass through, and stamping there covers them all:
+- **sequel-activerecord_connection calls it on every `synchronize`.** That is
+  `activerecord_connection.raw_connection`, inside the extension's lease and lock. Sequel re-enters
+  `synchronize` for **every statement**, inside a transaction too, so a mid-transaction actor
+  change is caught on the next statement. The stamp is per statement for Sequel, as `raw_execute`
+  gives Active Record.
+- **Active Record never calls it itself,** so its own statements pay nothing extra. Checked in
+  8.0.5.2 and 8.1.4.1: every `raw_connection` in the PostgreSQL adapter is `perform_query`'s
+  parameter, never a call to the method.
+- **This library never names Sequel.** No constant, no `require`, no bundle check, and no private
+  method of the extension. `sequel_correlation_spec` pins that by reading `lib/` and `app/`, since
+  the suite itself loads Sequel and would not otherwise notice a reference.
+
+It reuses `Context.ensure_stamped!` unchanged, so the memo, the `@audit_stamping` recursion guard
+and `config.correlated_connections` all apply exactly as on the Active Record path. The cost
+profile is the same too: one Ruby comparison per handoff, and a round trip only when the memo is
+stale. The spec asserts **one** stamp for a unit of work issuing four Sequel statements, and
+**zero** extra when Active Record stamped the connection first. Because `TransactionStamp` is
+prepended onto the PostgreSQL adapter alone, the adapter scope is the same on both paths by
+construction rather than by a second predicate.
+
+**The stamp is taken at handoff, not per statement.** A caller that obtains the `PG::Connection`
+once and reuses it across units of work is stamped once. A caller that asks again per unit of work
+is stamped each time, and the extension asks per statement.
+
+### The memo and the session must agree, and a stamp goes only where it can land
+
+Hooking `raw_connection` was the easy half. Both reviews of this feature found the same class of
+defect twice over, and the class is worth naming because a third instance is the likely future
+bug: **something reverts or replaces the session's settings, and the memo keeps claiming them** —
+or **a stamp is sent where the session cannot accept it**, and takes the caller's statement down
+with it. The first reads as the previous request's actor on the next write; the second reads as an
+error that is not the real one, or as a pooled connection left aborted.
+
+**One rule decides where a stamp may go, and it lives in `Context.ensure_stamped!`, not in the
+hooks.** After the memo comparison — so only when a stamp is actually about to be written —
+`accepts_stamp?` asks libpq for the session's transaction status, from local state with no round
+trip, and skips the write when it is:
+- `PQTRANS_INERROR`, an **aborted** transaction, which accepts nothing but a rollback;
+- `PQTRANS_ACTIVE`, a command **in progress** — a `COPY` streaming, whose writer may well ask for
+  `raw_connection` per row (postgres-copy does).
+
+Skipping writes nothing, so the memo still matches the server. A session not yet connected reads
+as `nil` and is stamped: the stamp's own query connects it. The first version put an aborted-only
+guard on `raw_connection` alone, on the theory that an Active Record statement in an aborted
+transaction fails with the same error either way. That was wrong twice — `COMMIT` and
+`ROLLBACK AND CHAIN` both *succeed* in an aborted transaction, so a stamp attempted in front of
+them is the only thing that fails — and a guard per hook had already missed a hook. One rule,
+asked at the one point every path crosses, cannot.
+
+**The memo is forgotten whenever the session it describes is reverted or replaced:**
+
+| Path | Why the server diverges | Hook |
+|---|---|---|
+| `ROLLBACK` | reverts every `SET` in the transaction | `exec_rollback_db_transaction` |
+| `ROLLBACK TO SAVEPOINT` | reverts every `SET` since the savepoint | `exec_rollback_to_savepoint` |
+| `ROLLBACK AND CHAIN` | what Active Record issues to *restart* a parent transaction it nested a `requires_new` inside before the parent wrote anything — `create_or_find_by`'s shape. Missed by the first fix, and it credited the next write to the previous request | `exec_restart_db_transaction` |
+| `COMMIT` of an aborted transaction | PostgreSQL answers it with `ROLLBACK` and **raises nothing**, so Active Record believes it committed. Whether it was aborted can only be asked *before* the `COMMIT` is sent; a `COMMIT` that raises committed nothing either | `commit_db_transaction` |
+| reconnect | a new session has no settings | `configure_connection` (since §6.1) |
+| `disconnect!` | no session at all; a *reused* adapter reconnects lazily **inside** its next statement, after that statement's stamp check has already trusted the memo | `disconnect!` |
+
+Forgetting is always safe — it costs one round trip on the next statement — so every hook errs that
+way. Forgetting after *every* `COMMIT` would also be safe, and would turn "once per request" back
+into "once per transaction", the cost §6.1 exists to avoid.
+
+**None of the three rollbacks is ever stamped.** A rollback writes nothing, so a stamp in front of
+it buys nothing, and the one time that stamp is stale is the time the transaction is most likely
+aborted:
+1. a statement inside a transaction runs under a nested `Current.set` (or JobContext's
+   `around_perform`), so the stamp written inside the transaction says B;
+2. that statement fails, and the transaction is aborted;
+3. `Current` unwinds to A as the exception propagates;
+4. the rollback goes through `raw_execute`, which would stamp A against a memo saying B;
+5. that `SELECT` would fail inside the aborted transaction, and the rollback would never be sent.
+
+`accepts_stamp?` already refuses step 4 in the aborted case; the hooks suppress stamping outright
+so the clean case does not pay a pointless round trip either. Before either existed, Active Record
+reported `InFailedSqlTransaction` instead of the real error and left the enclosing transaction
+aborted (predating this section). Sequel swallows a failed rollback while Active Record pops its
+transaction, so there the pooled connection went back to the pool **still inside an aborted
+transaction**, for whoever checked it out next; Rodauth's `raises_uniqueness_violation?` shape, a
+rescued `savepoint: :only`, broke the same way. Suppression and `configure_connection` share one
+idiom, `without_audit_stamp`, which restores rather than clears the flag, so a reconnect inside a
+suppressed rollback cannot end its suppression early.
+
+**The handoff is stamped AFTER `super`.** `raw_connection`'s own `with_raw_connection` can verify
+the connection — a fresh checkout that idled past `verify_timeout` — and replace a dead backend
+with a new session carrying no stamp. Stamped first, a matching memo skipped the write and the new,
+unstamped session was what got handed over. Stamped after, the stamp lands on exactly the session
+the caller receives; by then `raw_connection` has marked the adapter dirty, so the stamp's own query
+will not reconnect it a second time.
+
+Every row of the table, the after-`super` order and both `accepts_stamp?` states has an example
+in `correlation_spec` or `sequel_correlation_spec`, and each was checked by deleting the fix it
+pins: the example written for it fails, and nothing else does.
+
+### The lock, verified rather than assumed
+
+The extension calls `raw_connection` while holding `activerecord_connection.lock`, inside
+`ActiveSupport::Dependencies.interlock.permit_concurrent_loads`. Stamping there calls the adapter's
+`exec_query`, which takes the same lock again in `with_raw_connection`. If the lock were not
+re-entrant for its owner, every Sequel statement would deadlock, or raise `ThreadError` on a
+recursive `Mutex#lock`.
+
+It is re-entrant on both ends of `rails ~> 8.0`, read from source:
+
+| | `lock_thread` a Thread | a Fiber | otherwise | `permit_concurrent_loads` |
+|---|---|---|---|---|
+| **8.1.4.1** | `ThreadMonitor`: skips `@mutex.lock` when `@owner == Thread.current` | `::Monitor` | `NullLock` | a soft-deprecated no-op |
+| **8.0.5.2** | `ThreadLoadInterlockAwareMonitor`: `mon_try_enter` succeeds at once for the owner, without touching the interlock | `LoadInterlockAwareMonitor` | `NullLock` | `yield_shares`, which saves and restores the previous wait, so it nests |
+
+Active Record also re-enters this lock itself on every lazily-begun transaction. `with_raw_connection`
+calls `materialize_transactions` while holding it, and `internal_execute("BEGIN")` →
+`raw_execute` → `with_raw_connection` takes it again. Re-entry is something Active Record already
+depends on.
+
+Reading it was not enough, because the lock outside a fixture transaction is the `NullLock`, which
+proves nothing. The spec runs inside the fixture transaction, where the pool pins its connection
+with a real monitor. It asserts the lock is *not* the `NullLock`, and asserts that exactly **one**
+stamp was written during the Sequel statement. The first version of that example omitted the
+second assertion and stamped nothing at all, because a lazy `let` had stamped through Active Record
+first.
+
+**Stamping through the raw `PG::Connection` was the fallback, and is not needed.** It would also
+have been worse:
+- it bypasses Active Record's instrumentation, which carries `Context::STAMP_QUERY_NAME` and is
+  what the specs count;
+- it bypasses the statement cache and Active Record's error translation;
+- it needs a second code path writing the memo.
+
+**Observed, not changed.** The Active Record path stamps *before* taking the adapter lock:
+`ensure_stamped!` runs ahead of `super` in `raw_execute`, and the lock is taken inside
+`with_raw_connection`. On a connection shared between threads, which only `lock_thread` produces in
+practice (system tests sharing one connection with the server thread), a stamp and the statement
+after it can interleave with another thread's. The extension already holds the lock when it calls
+`raw_connection`, so on the Sequel path stamp and statement are atomic. Nothing in production
+shares a connection across threads, and nobody has reported this.
+
+### Leasing: the right connection by construction
+
+On Active Record ≥ 7.2 the extension wraps its work in
+`activerecord_model.with_connection(prevent_permanent_checkout: true)`. Inside that block the lease
+is non-sticky, so `activerecord_model.connection` returns `pool.active_connection`, the leased
+adapter, and it is that adapter's `raw_connection` the extension calls. Stamping inside
+`raw_connection` stamps `self`, the adapter handing its connection over. There is no question of
+which connection to stamp.
+
+The question was real for the design this replaced, and the wrong answer fails twice. Stamping
+`ActiveRecord::Base.connection` from outside the extension:
+- is **the wrong pool** whenever `activerecord_model` is not `Base`, which the extension makes
+  configurable;
+- outside the block, takes a **sticky lease**, the permanent checkout `prevent_permanent_checkout`
+  exists to avoid.
+
+The spec pins the first. It runs a Sequel database on a second pool named `secondary`, correlates
+only that name, and requires the row to carry the actor. Against the earlier Sequel-specific hook,
+swapping it to `ActiveRecord::Base.connection` failed exactly that example, and no other.
+
+### Rejected
+
+- **A Sequel-specific hook, `AuditLog::SequelStamp`. It was built first and replaced the same
+  day.** It prepended Sequel's public `Database#synchronize` onto `Sequel::ActiveRecordConnection`,
+  installed itself when the extension appeared in `Gem.loaded_specs`, and stamped the extension's
+  `activerecord_connection` from inside the block. It worked, and passed every example above. The
+  review that followed found what it cost:
+  - it **loaded Sequel at boot** in any host that bundled the extension, including `spec/dummy`.
+    That cut against the rule that the dummy app proves the library needs nothing a host might
+    not have;
+  - it called the extension's **private** `activerecord_connection`, a coupling no gemspec can
+    constrain because Sequel is not a dependency;
+  - it **restated** the adapter scope as an `is_a?(TransactionStamp)` guard, a second copy of a
+    decision the prepend already makes;
+  - it paid an extra pool lookup per Sequel statement;
+  - it **covered one library**, leaving every other raw-connection writer credited to the previous
+    actor.
+
+  `raw_connection` is one level below it and has none of those properties.
+- **`log_connection_yield`.** Public, and called exactly once per statement. But it is Sequel's
+  *logging* hook, so a database write there is misuse. It misses raw use of the connection inside
+  a host's `DB.synchronize`. It also runs inside the extension's `_execute`, which has swapped the
+  connection's `type_map_for_results` to `PG::TypeMapAllStrings`, so Active Record's stamp would
+  run on a connection in a state Active Record does not know about.
+- **The extension's private `activerecord_synchronize` / `activerecord_lock` /
+  `with_activerecord_connection`.** These are private methods of a third-party gem with no
+  stability promise, and give nothing `raw_connection` does not.
+- **An opt-in Sequel extension (`extensions: [:activerecord_connection, :audit_log]`).** Forgetting
+  it misattributes silently, which is the failure `verify_correlated_connections!` refuses to boot
+  over. It could not have been made automatic through `Sequel::Database.after_initialize` either,
+  because Sequel runs that hook *before* it loads the `extensions:` option: `run_after_initialize`
+  at `database/misc.rb` line 38, `initialize_load_extensions(:extensions)` at line 51, in Sequel
+  5.110.
+- **Clearing the stamp at the end of every unit of work,** so that any path this library has not
+  found arrives NULL rather than as the previous actor. It is a real improvement in failure
+  direction, and it costs every application one round trip per request and per job to serve paths
+  nobody has identified. With `raw_connection` stamped, the known path is covered. Revisit if a
+  second unhooked path turns up.
+
+### Limits, stated rather than discovered
+
+- **Sequel with its OWN connections is out of scope.** A `Sequel.connect(...)` database without the
+  extension opens separate PostgreSQL sessions, which `raw_connection` never sees. Their writes are
+  audited by the trigger and arrive with a NULL actor and NULL `request_id`, like any out-of-band
+  write (§9). The spec pins that, so the README's statement of it stays true.
+- **Handoff granularity.** A caller that keeps a `PG::Connection` across units of work is stamped
+  once, when it obtained it. Raw statements inside one `DB.synchronize { |conn| ... }` block, with
+  `AuditLog::Current` changed between them, are likewise stamped once. The README tells hosts to
+  ask for the connection per unit of work.
+- **A reconnect INSIDE an Active Record statement runs that statement unstamped.** If a backend
+  dies while the memo matches, `raw_execute`'s check passes, and the statement's own
+  `with_raw_connection` then verifies, reconnects and runs on a fresh session. That statement
+  lands with a NULL actor, not the wrong one, and the next statement re-stamps. It predates this
+  section, and closing it means stamping from inside Active Record's private
+  `with_raw_connection`. The handoff got the after-`super` fix because there the stamp can be
+  taken after the reconnect.
+- **Readers pay too.** Anything that takes the raw connection without writing pays the comparison,
+  and a round trip when the stamp is stale. Action Cable's PostgreSQL adapter calls `raw_connection`
+  on every broadcast (`with_broadcast_connection`, actioncable 8.1.4.1) and once for its listener's
+  dedicated connection. Inside a request, the broadcast's connection usually already carries that
+  request's stamp.
+- **The coupling.** The hook depends on two things:
+  1. Active Record's public `raw_connection`, inside the gemspec's existing `~> 8.0` ceiling;
+  2. the extension continuing to call `raw_connection` per `synchronize`.
+
+  If a future extension cached the `PG::Connection` instead, Sequel's statements would be stamped
+  only when it was first obtained, silently. `sequel_correlation_spec` guards that, but only
+  against the version this repository resolves (`~> 2.0` in the Gemfile). Nothing constrains the
+  version a host runs.
+- **Verified against:**
+  - sequel-activerecord_connection 2.0.1 with Sequel 5.110.0, on all six of CI's legs (Ruby 3.3 /
+    4.0.6, Rails 8.0.5.2 / 8.1.4.1, PostgreSQL 16 / 18), run locally;
+  - 1.5.1, once by hand on Ruby 4.0.6 and Rails 8.1.4.1. Its `synchronize` calls `raw_connection`
+    in the same place.
+
+### What the host still owns
+
+The actor on Rodauth's own requests. These facts were read from rodauth-rails 2.2.3's source and
+not run:
+- rodauth-rails runs the configured `rails_controller`'s `process_action` callbacks around every
+  Rodauth route;
+- the generated `RodauthController` inherits from `ApplicationController`;
+- so `ControllerContext` mints a `request_id` for those requests as for any other.
+
+The actor is a different matter. `actor_resolver` defaults to `current_user`, which Rodauth does not
+define. And on the login request nobody is logged in when that `before_action` runs, so the host
+sets `AuditLog::Current.actor` in `after_login`. Making that assignment reach the next statement is
+the mid-transaction case above. The README says how.
