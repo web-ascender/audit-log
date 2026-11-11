@@ -100,8 +100,8 @@ Update it when you change behaviour.
 | Ruby | **>= 3.3** — the floor is `SecureRandom.uuid_v7` (DESIGN §2.1), not a preference. 3.3.0 exactly also cannot run Rails 8.1, for a reason of Rails' own. Developed on 4.0.6. |
 | Rails | **`~> 8.0`** — floor 8.0 (DESIGN §2.2), and a real ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. Developed on 8.1.3.1. |
 | PostgreSQL | **>= 16.** Developed on 18.6, port 5438 — not the workspace default 5437. CI runs 16 and 18; DESIGN §20 is the authority and says the design "targets PG 16 and requires nothing newer". Verified: the whole suite passes on 16.13. |
-| Tests | RSpec against `spec/dummy` (553 examples), on every push via GitHub Actions — six legs: Ruby 3.3/4.0.6 × Rails 8.0/latest × PG 16/18 |
-| Runtime deps | `rails`, `csv` (export). **`pg` and `pagy` deliberately are not** — the host app picks its own `pg` build, and its own pagination gem. `AuditLog::Pagination` is this library's own keyset pager precisely so a `pagy` constraint does not propagate into the host. |
+| Tests | RSpec against `spec/dummy` (578 examples), on every push via GitHub Actions — six legs: Ruby 3.3/4.0.6 × Rails 8.0/latest × PG 16/18 |
+| Runtime deps | `rails`, `csv` (export). **`pg` and `pagy` deliberately are not** — the host app picks its own `pg` build, and its own pagination gem. `AuditLog::Pagination` is this library's own keyset pager precisely so a `pagy` constraint does not propagate into the host. Nor is `sequel`: `sequel` and `sequel-activerecord_connection` are dev-only Gemfile entries (`require: false`) for `sequel_correlation_spec`. The library reaches Sequel through Active Record's `raw_connection` and never names it. |
 
 ```bash
 bundle install
@@ -180,8 +180,67 @@ Do not "fix" these without reading the linked reasoning first.
   `begin_db_transaction`.** This looks like a hot-path mistake and is not.
   Transaction-start stamping misses `update_all`/`delete_all`/raw SQL, which open
   no transaction, so those writes land with a NULL actor. Read the comment at the
-  top of `lib/audit_log/transaction_stamp.rb` before touching it. It also clears
-  its per-connection memo on rollback — that is load-bearing, not defensive.
+  top of `lib/audit_log/transaction_stamp.rb` before touching it.
+- **The memo is forgotten on EVERY path that reverts or replaces the session, and
+  that list is longer than it looks.** (DESIGN §26's table.) `ROLLBACK`,
+  `ROLLBACK TO SAVEPOINT`, **`ROLLBACK AND CHAIN`** (Active Record's transaction
+  restart — `create_or_find_by`'s shape; the first fix missed it), the **`COMMIT`
+  of an aborted transaction** (PostgreSQL silently turns it into a ROLLBACK, so
+  `commit_db_transaction` asks `Context.aborted?` BEFORE sending it), a reconnect
+  (`configure_connection`) and **`disconnect!`**. Each missing one credited the
+  next write to the PREVIOUS actor or landed it NULL. If Active Record grows
+  another way to end a transaction, it needs a hook here. Forgetting is always
+  safe — one round trip — but forgetting after every COMMIT would undo §6.1's
+  "once per request".
+- **No rollback is ever stamped, and no stamp is sent into an aborted or busy
+  session — and the second rule lives in `Context.ensure_stamped!`, not in the
+  hooks.** `accepts_stamp?` refuses `PQTRANS_INERROR` (aborted) and
+  `PQTRANS_ACTIVE` (a COPY streaming), asked only AFTER the memo comparison so the
+  hot path pays nothing. A per-hook guard was tried first and had already missed a
+  hook; `COMMIT` and `ROLLBACK AND CHAIN` *succeed* in an aborted transaction, so a
+  stamp in front of them is the only thing that fails. A stale stamp before a
+  rollback replaced the real error with `InFailedSqlTransaction`, and on Sequel's
+  path left the pooled connection aborted for the next request.
+  `without_audit_stamp` is the ONE suppression idiom (rollbacks and
+  `configure_connection`), and it restores rather than clears.
+- **`raw_execute` is the choke point for ACTIVE RECORD only, so `TransactionStamp`
+  also prepends the PUBLIC `raw_connection`, and the library never names
+  Sequel.** (DESIGN §26.) `sequel-activerecord_connection` (rodauth-rails) runs
+  statements as `async_exec` on Active Record's own `PG::Connection`, so they
+  never reach `raw_execute`. The stamp is session-level, so they used to carry the
+  PREVIOUS unit of work's actor, not a NULL. Things here that look improvable and
+  are not:
+  1. **Not a Sequel hook.** `AuditLog::SequelStamp` — a prepend on Sequel's
+     `synchronize`, auto-installed via `Gem.loaded_specs` — was built first and
+     REPLACED the same day. It loaded Sequel at boot in every host that bundled it,
+     called the extension's private `activerecord_connection`, restated the
+     adapter scope as an `is_a?` guard, and covered one library.
+     `raw_connection` is one level down, public, and covers every raw-connection
+     writer (`COPY`, a host's own `exec`). `sequel_correlation_spec` reads
+     every file under `lib/` and `app/` (rake tasks and templates too) and fails
+     on any non-comment `Sequel` constant or `"sequel…"` string — a `require`, a
+     `Gem.loaded_specs` key, a `defined?`; the suite loads Sequel, so nothing else
+     would notice.
+  2. **Stamped at HANDOUT, AFTER `super`.** `super` can verify the connection and
+     replace a dead backend with a fresh, unstamped session; stamped first, a
+     matching memo skipped the write and that session was handed out. Active
+     Record never calls `raw_connection` itself (checked in 8.0 and 8.1), so its
+     own statements pay nothing. The extension calls it once per `synchronize` —
+     per statement — on the adapter it leased, so the right connection is `self`
+     by construction. A caller that caches the `PG::Connection` is stamped once;
+     that limit is stated, not hidden.
+  3. **It calls the adapter's `exec_query` while the extension holds the adapter
+     lock.** That lock is re-entrant on every lock class Rails 8.0 and 8.1 can put
+     there, verified and spec'd under a real monitor — and the spec asserts the
+     stamp actually HAPPENED, because its first version stamped nothing. Do not
+     "fix" it by stamping through the raw `PG::Connection`.
+  4. **Not `log_connection_yield`, not an opt-in `extensions: [:audit_log]`.** The
+     first is a logging hook that misses raw use; the second misattributes
+     silently when forgotten.
+
+  Sequel with its OWN connections is out of scope: audited, uncorrelated, and
+  pinned by a spec. Sequel is never a gemspec dependency; it is a dev-only Gemfile
+  entry.
 - **`AuditLog::Record#readonly?` returns `persisted?`, not `true`.** A flat
   `true` makes `create_or_update` raise on **inserts**, which breaks the event
   subscriber and silently disables all of layer 2.
@@ -1259,6 +1318,7 @@ purpose, so do not re-run the audit and delete them.
 | `Timeline::FieldChange#association?`, `TouchedRecord#label_failed?`, `Actor#system?` | the published host-facing contract — a host renders these, this gem does not have to |
 | `add_audit_dimension_index` / `remove_audit_dimension_index` | published migration API, for the tuning step when one facet turns out to be on every screen (DESIGN §23) |
 | `DimensionIndex.status` | for an operator asking "did that retrofit finish?" without re-running the migration |
+| `TransactionStamp#raw_connection` | Active Record never calls its own `raw_connection`; hosts, `sequel-activerecord_connection` (once per Sequel statement) and Action Cable's PostgreSQL adapter do. Deleting it re-opens §26's misattribution, and only `sequel_correlation_spec` and `correlation_spec`'s raw-connection example would say so |
 
 **Two are kept for symmetry and that is a real reason.** `Change#updated?` and
 `Timeline::Activity#change_only?` are each the unused third of a set whose other
@@ -1379,7 +1439,7 @@ one. Do not reintroduce it.
 ## Testing
 
 ```bash
-bundle exec rspec                         # 553 examples, against spec/dummy
+bundle exec rspec                         # 578 examples, against spec/dummy
 bundle exec rspec spec/audit_log          # the library proper
 bundle exec rspec spec/requests           # the auditor UI and the CSV export
 bundle exec rspec spec/preview.rb         # dev tool: renders 19 screens to spec/dummy/public/
@@ -1394,6 +1454,15 @@ library's query objects and are what a signature change actually breaks.
 That is the enforcement mechanism for "the one rule that matters most" — see
 above. Do not add a gem to the dummy app to make a spec easier; that is the spec
 telling you the library has grown a coupling.
+
+**One recorded exception: `sequel` and `sequel-activerecord_connection`**, dev-only
+and `require: false`, for `sequel_correlation_spec`. It is an interop test of a
+path the library deliberately does NOT name — the hook is Active Record's own
+`raw_connection` — and the rule's purpose is kept by that spec's source check,
+which fails if any file under `lib/` or `app/` mentions Sequel outside a comment.
+What the exception does NOT buy: the rest of the suite proving it runs without
+Sequel loaded, since the spec loads it for the whole run. Do not let a second
+gem in on this precedent without the same kind of check.
 
 When changing the library, the specs that matter most all assert the same
 property from different angles — **that nothing goes missing without saying so**:
@@ -1418,6 +1487,8 @@ property from different angles — **that nothing goes missing without saying so
 | `event_transport_spec` | layer 2 silently stops emitting on one end of `rails ~> 8.0`, or takes the wrong branch for the Rails it is on |
 | `schema_isolation_spec` | the library reverts to assuming `public` — rows filed in the wrong schema's table, or a provisioning check answered from another schema's state |
 | `dimensions_spec` | a facet stops reaching the writes no callback sees, a faceted feed silently answers a narrower question than its screen claims, or a cleared filter turns into a scan of the whole log |
+| `correlation_spec` | a write is credited to the PREVIOUS unit of work's actor, or lands NULL, because something reverted or replaced the session while the memo kept its stamp — a rollback of any of three kinds, the COMMIT of an aborted transaction, a reconnect at handoff, a `disconnect!` — or a stamp sent into an aborted or mid-COPY session takes the caller's statement or rollback down with it |
+| `sequel_correlation_spec` | a Sequel statement (rodauth-rails) is credited to an EARLIER unit of work's actor, a cold connection's first Sequel write lands uncorrelated, the stamp lands on a different pool from the one the extension leased, a stamp in front of a ROLLBACK leaves the pooled connection aborted, or the library starts naming Sequel |
 | `capture_spec` | capture stops without saying so, or resumes under different arguments than it had — a `record_type` naming the wrong model, an exclusion silently dropped so a password column re-enters the diffs |
 
 A change that makes any of those pass *more easily* is a regression.

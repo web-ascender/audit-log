@@ -12,6 +12,11 @@ module AuditLog
              set_config('audit.actor_label', $4, false)
     SQL
 
+    # What the stamp is logged and instrumented as. A constant because specs count
+    # stamp round trips by it, and a renamed literal there would count zero and
+    # turn "spends no round trip" assertions vacuous.
+    STAMP_QUERY_NAME = "AUDIT CONTEXT"
+
     class << self
       # Called before every statement. Returns immediately unless the connection's
       # stamp is stale, so the common case is two comparisons and no I/O.
@@ -21,12 +26,20 @@ module AuditLog
 
         wanted = current_stamp
         return if conn.instance_variable_get(:@audit_stamp) == wanted
+        return unless accepts_stamp?(conn)
 
         write_stamp!(conn, wanted)
       end
 
       def forget_stamp!(conn)
         conn.instance_variable_set(:@audit_stamp, nil)
+      end
+
+      # Whether the session is inside an aborted transaction. PostgreSQL turns the
+      # COMMIT of one into a ROLLBACK without raising, so the caller -- the COMMIT
+      # hook -- has to ask before the COMMIT is sent.
+      def aborted?(conn)
+        session_status(conn) == PG::PQTRANS_INERROR
       end
 
       # Mint a fresh correlation id. UUIDv7, not v4: request_id is indexed on the
@@ -62,6 +75,30 @@ module AuditLog
 
       private
 
+      # ONE rule for every path that stamps -- an Active Record statement, a COMMIT,
+      # a ROLLBACK AND CHAIN, a raw_connection handoff -- instead of a guard per
+      # hook, because the per-hook version already missed one. A session inside an
+      # ABORTED transaction (INERROR) accepts nothing but a rollback, and one partway
+      # through a command (ACTIVE: a COPY streaming) accepts nothing at all; sending
+      # the stamp into either fails, and takes the caller's own statement -- or the
+      # rollback that would have recovered the transaction -- down with it. Skipped,
+      # nothing is written, so the memo still matches the server.
+      #
+      # Asked only once the memo has already said a stamp is needed, so the common
+      # case pays nothing. libpq answers from local state: no round trip.
+      def accepts_stamp?(conn)
+        status = session_status(conn)
+        status != PG::PQTRANS_INERROR && status != PG::PQTRANS_ACTIVE
+      end
+
+      # nil when there is no session yet -- the stamp's own query will connect one,
+      # so that must not read as a refusal -- or when libpq cannot say.
+      def session_status(conn)
+        conn.instance_variable_get(:@raw_connection)&.transaction_status
+      rescue PG::Error
+        nil
+      end
+
       def current_stamp
         [
           AuditLog::Current.request_id.to_s,
@@ -73,11 +110,13 @@ module AuditLog
 
       def write_stamp!(conn, wanted)
         conn.instance_variable_set(:@audit_stamping, true)
-        conn.exec_query(STAMP_SQL, "AUDIT CONTEXT", wanted, prepare: true)
+        conn.exec_query(STAMP_SQL, STAMP_QUERY_NAME, wanted, prepare: true)
 
-        # Always record what was written. The one way the server can diverge from
-        # this memo is a rollback reverting a session-level SET, and
-        # AuditLog::TransactionStamp clears the memo on exactly those paths.
+        # Always record what was written. The server diverges from this memo only
+        # when something reverts or discards a session-level SET -- a ROLLBACK, a
+        # ROLLBACK TO SAVEPOINT, a ROLLBACK AND CHAIN, the COMMIT of an aborted
+        # transaction (which PostgreSQL turns into a ROLLBACK), a reconnect, a
+        # disconnect -- and AuditLog::TransactionStamp clears the memo on each.
         #
         # An earlier version instead skipped memoizing while a transaction was
         # open. That was worse, not safer: the memo then went stale in the

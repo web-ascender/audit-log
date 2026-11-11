@@ -84,10 +84,11 @@ Gem::Specification.new do |spec|
   # BOUNDED at < 9.0, and not merely because rubygems advises against open-ended
   # dependencies. AuditLog::TransactionStamp prepends `raw_execute` -- a PRIVATE
   # ActiveRecord adapter method, and DESIGN §6.1 calls it the single private choke
-  # point every write funnels through. Private APIs are exactly what a major
-  # version is free to move. `>= 8.0` claimed Rails 9 and 10 work, which nobody
-  # has verified and which that prepend makes implausible. Raising this ceiling is
-  # a deliberate act that means re-verifying the prepend, not a formality.
+  # point every Active Record write funnels through. Private APIs are exactly what
+  # a major version is free to move. `>= 8.0` claimed Rails 9 and 10 work, which
+  # nobody has verified and which that prepend makes implausible. Raising this
+  # ceiling is a deliberate act that means re-verifying the prepend, not a
+  # formality.
   spec.add_dependency "rails", "~> 8.0"
 
   # For the CSV export only -- a former default gem that Ruby 3.4 unbundled, so

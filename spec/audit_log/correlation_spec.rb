@@ -179,6 +179,241 @@ RSpec.describe "request correlation" do
     expect(changes_for(order).first.actor_label).not_to eq(user.reload.to_label)
   end
 
+  # A rollback must never stamp. The stamp written inside this transaction says
+  # B; Current unwinds to A before Active Record rolls back; a stamp in front of
+  # the ROLLBACK TO SAVEPOINT would then run inside the ABORTED transaction, fail,
+  # and keep the rollback from ever being sent -- replacing the real error with
+  # InFailedSqlTransaction and leaving the enclosing transaction aborted. A
+  # Current.set block and JobContext's around_perform both unwind exactly like
+  # this. Pre-existing on this path; found while reviewing the Sequel one, where
+  # it poisoned the pooled connection outright. DESIGN §26.
+  it "rolls back, and reports the real error, when the actor changed back inside an aborted transaction" do
+    conn  = ActiveRecord::Base.connection
+    error = nil
+
+    acting_as(audit_identity("A", 1)) do
+      ActiveRecord::Base.transaction(requires_new: true) do
+        conn.execute("SELECT 1")
+        acting_as(audit_identity("B", 2)) { conn.execute("SELECT 1/0") }
+      end
+    rescue ActiveRecord::StatementInvalid => e
+      error = e
+    end
+
+    expect(error.cause).to be_a(PG::DivisionByZero)
+    expect(conn.select_value("SELECT 1")).to eq(1)
+  end
+
+  # raw_connection is Active Record's PUBLIC handoff of the PG::Connection, and
+  # nothing issued on it reaches raw_execute -- so it is stamped at the handoff.
+  # Without that, this write carries the stamp the connection last held: the
+  # previous actor, not a NULL. DESIGN §26; sequel_correlation_spec is the same
+  # property reached through Sequel.
+  it "stamps a write issued on the raw connection with the current actor, not the connection's last" do
+    product = create_product(price_cents: 1_000)
+    other   = create_user(name: "Other Person")
+    as_actor(user) { Product.where(id: product.id).update_all(price_cents: 1_100) }
+
+    request_id = nil
+    as_actor(other) do
+      request_id = AuditLog::Current.request_id
+      ActiveRecord::Base.connection.raw_connection
+                        .exec_params("UPDATE products SET price_cents = $1 WHERE id = $2", [1_200, product.id])
+    end
+
+    change = changes_for(product).last
+    expect(change.diff).to eq("price_cents" => [1_100, 1_200])
+    expect(change.actor_label).to eq(other.to_label)
+    expect(change.request_id).to eq(request_id)
+  end
+
+  # Nothing can be written inside an aborted transaction, so the handoff does not
+  # try to stamp one. Reading transaction_status there is an ordinary thing to
+  # do, and a stale stamp attempted first would turn it into
+  # InFailedSqlTransaction raised out of raw_connection itself.
+  it "hands out the raw connection inside an aborted transaction without trying to stamp it" do
+    conn   = ActiveRecord::Base.connection
+    status = nil
+
+    acting_as(audit_identity("A", 1)) do
+      ActiveRecord::Base.transaction(requires_new: true) do
+        conn.execute("SELECT 1")
+        begin
+          conn.execute("SELECT 1/0")
+        rescue ActiveRecord::StatementInvalid
+          nil
+        end
+        status = acting_as(audit_identity("B", 2)) { conn.raw_connection.transaction_status }
+        raise ActiveRecord::Rollback
+      end
+    end
+
+    expect(status).to eq(PG::PQTRANS_INERROR)
+    expect(conn.select_value("SELECT 1")).to eq(1)
+  end
+
+  # Nor partway through a command. While a COPY streams, the session is
+  # PQTRANS_ACTIVE and accepts nothing else -- and postgres-copy-style code asks
+  # for raw_connection per row. A stale stamp attempted there would be sent into
+  # the middle of the COPY, fail, and abort it. The rows belong to the COPY, which
+  # was issued (and stamped) under the actor who started it.
+  it "does not try to stamp a session partway through a COPY" do
+    conn     = ActiveRecord::Base.connection
+    starter  = audit_identity("Started the COPY", 1)
+    sku      = "COPY-#{SecureRandom.hex(3).upcase}"
+    now      = Time.current.utc.iso8601
+
+    acting_as(starter) do
+      conn.raw_connection.copy_data(
+        "COPY products (sku, name, price_cents, created_at, updated_at) FROM STDIN WITH (FORMAT csv)"
+      ) do
+        acting_as(audit_identity("Changed mid-COPY", 2)) do
+          conn.raw_connection.put_copy_data("#{sku},Copied,700,#{now},#{now}\n")
+        end
+      end
+    end
+
+    copied = Product.find_by!(sku: sku)
+    expect(changes_for(copied).sole.actor_label).to eq("Started the COPY")
+  end
+
+  # --------------------------------------------------------------------------
+  # Transaction endings only a REAL transaction has. ROLLBACK AND CHAIN is what
+  # Active Record issues to restart a parent it nested a requires_new inside
+  # before the parent had written anything -- inside the fixture transaction
+  # every requires_new is a savepoint, so these cannot be reached from there.
+  # And PostgreSQL turns the COMMIT of an aborted transaction into a ROLLBACK
+  # without raising. Rows commit here, so the group cleans up after itself, on a
+  # fresh connection in case an example left the pooled one aborted.
+  # --------------------------------------------------------------------------
+  describe "outside any fixture transaction" do
+    self.use_transactional_tests = false
+
+    let!(:product)  { create_product(price_cents: 1_000) }
+    let(:previous)  { audit_identity("Previous request", 101) }
+    let(:current)   { audit_identity("Current request", 202) }
+    let(:conn)      { ActiveRecord::Base.connection }
+
+    after do
+      ActiveRecord::Base.connection_pool.disconnect!
+      Product.where(id: product.id).delete_all
+      AuditLog::Change.where(record_type: "Product", record_id: product.id).delete_all
+    end
+
+    def last_change
+      changes_for(product).last
+    end
+
+    # create_or_find_by's shape. The stamp for this request is written inside the
+    # transaction; the nested insert fails; Active Record restarts the parent with
+    # ROLLBACK AND CHAIN, which reverts the stamp to the previous request's. A memo
+    # still claiming this request would skip the next stamp and credit the update
+    # to whoever used the connection before.
+    it "forgets the stamp a ROLLBACK AND CHAIN reverted, so the next write re-stamps" do
+      acting_as(previous) { Product.where(id: product.id).update_all(price_cents: 1_100) }
+
+      acting_as(current) do
+        Product.transaction do
+          begin
+            Product.transaction(requires_new: true) do
+              Product.insert!({ sku: product.sku, name: "Duplicate", price_cents: 1 })
+            end
+          rescue ActiveRecord::RecordNotUnique
+            nil
+          end
+          Product.where(id: product.id).update_all(price_cents: 1_200)
+        end
+      end
+
+      expect(last_change.diff).to eq("price_cents" => [1_100, 1_200])
+      expect(last_change.actor_label).to eq("Current request")
+    end
+
+    # The restart is a rollback too, and is never stamped -- otherwise the stale
+    # stamp in front of it runs in the aborted transaction, fails, and the
+    # ROLLBACK AND CHAIN is never sent.
+    it "restarts for real, and reports the real error, when the actor changed back first" do
+      error = nil
+
+      acting_as(previous) do
+        ActiveRecord::Base.transaction do
+          begin
+            ActiveRecord::Base.transaction(requires_new: true) do
+              acting_as(current) { conn.execute("SELECT 1/0") }
+            end
+          rescue ActiveRecord::StatementInvalid => e
+            error = e
+          end
+
+          expect(conn.select_value("SELECT 1")).to eq(1)
+        end
+      end
+
+      expect(error.cause).to be_a(PG::DivisionByZero)
+    end
+
+    # PostgreSQL answers the COMMIT of an aborted transaction with ROLLBACK and no
+    # error, so Active Record believes it committed while the stamp written inside
+    # was reverted. The memo has to go there too.
+    it "forgets the stamp an aborted transaction's COMMIT silently rolled back" do
+      acting_as(previous) { Product.where(id: product.id).update_all(price_cents: 1_100) }
+
+      acting_as(current) do
+        ActiveRecord::Base.transaction do
+          conn.execute("SELECT 1")
+          begin
+            conn.execute("SELECT 1/0")
+          rescue ActiveRecord::StatementInvalid
+            nil
+          end
+        end
+        Product.where(id: product.id).update_all(price_cents: 1_200)
+      end
+
+      expect(last_change.diff).to eq("price_cents" => [1_100, 1_200])
+      expect(last_change.actor_label).to eq("Current request")
+    end
+
+    # The handoff can itself reconnect: a connection checked out after idling
+    # past verify_timeout is verified first, and a dead backend is replaced --
+    # with a fresh session carrying no stamp. So the stamp is taken AFTER
+    # raw_connection's own work, on the session actually handed over. Stamping
+    # first saw a matching memo, skipped, and handed out the unstamped session.
+    it "stamps the session a raw_connection handoff reconnected to" do
+      acting_as(current) do
+        conn.execute("SELECT 1")
+        pid = conn.select_value("SELECT pg_backend_pid()")
+
+        other = ActiveRecord::Base.connection_pool.checkout
+        other.execute("SELECT pg_terminate_backend(#{pid})")
+        ActiveRecord::Base.connection_pool.checkin(other)
+
+        # What a checkout after a long idle looks like to the adapter.
+        conn.clean!
+        conn.instance_variable_set(:@last_activity, nil)
+
+        conn.raw_connection.exec_params("UPDATE products SET price_cents = $1 WHERE id = $2", [1_200, product.id])
+      end
+
+      expect(last_change.actor_label).to eq("Current request")
+      expect(last_change.request_id).to eq(current[:request_id])
+    end
+
+    # A disconnected adapter has no session for the memo to describe. Reused, it
+    # reconnects lazily INSIDE the next statement -- after that statement's stamp
+    # check has already trusted the memo -- so the memo goes when the session does.
+    it "forgets the stamp on disconnect!, so a reused adapter's new session is stamped" do
+      acting_as(current) do
+        Product.where(id: product.id).update_all(price_cents: 1_100)
+        conn.disconnect!
+        Product.where(id: product.id).update_all(price_cents: 1_200)
+      end
+
+      expect(last_change.diff).to eq("price_cents" => [1_100, 1_200])
+      expect(last_change.actor_label).to eq("Current request")
+    end
+  end
+
   it "does not leak one actor's identity into the next unit of work" do
     other = create_user(name: "Other Person")
 

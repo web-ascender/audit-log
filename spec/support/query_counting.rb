@@ -12,11 +12,16 @@
 # of primary-key lookups the cache would collapse identically. See the note in
 # CLAUDE.md about RSpec running with the cache OFF while requests run with it ON
 # -- an assertion that only holds in one of the two is not an assertion.
+#
+# `named:` counts only the statements logged under that one name -- the
+# correlation stamp's round trips, say, via AuditLog::Context::STAMP_QUERY_NAME.
+# The same subscriber rather than a second one, for the reason above.
 module QueryCounting
-  def count_queries
+  def count_queries(named: nil)
     count = 0
     sub = ActiveSupport::Notifications.subscribe("sql.active_record") do |_, _, _, _, payload|
-      count += 1 unless payload[:name].to_s.match?(/SCHEMA|TRANSACTION/)
+      name = payload[:name].to_s
+      count += 1 if named ? name == named : !name.match?(/SCHEMA|TRANSACTION/)
     end
     yield
     count

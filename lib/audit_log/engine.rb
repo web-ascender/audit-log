@@ -19,8 +19,10 @@ module AuditLog
     isolate_namespace AuditLog
 
     # ---------------------------------------------------------------- layer 1
-    # Stamp the correlation context onto every transaction on an audited
-    # database, so the trigger can read it. Plan §6.1.
+    # Stamp the correlation context onto every statement on an audited database,
+    # so the trigger can read it -- Active Record's through raw_execute, and
+    # anything issued on the raw connection (Sequel via
+    # sequel-activerecord_connection, COPY) through raw_connection. Plan §6.1, §26.
     initializer "audit_log.transaction_stamp" do
       ActiveSupport.on_load(:active_record_postgresqladapter) do
         prepend AuditLog::TransactionStamp
