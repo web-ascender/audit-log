@@ -5,6 +5,21 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## 0.7.0 — 2026-11-12
+
+Backwards compatible. There is no schema change and no migration, nothing in an
+existing app has to change, and every rake task keeps its name and its exit
+status. To upgrade, bump the tag. Two additions you may want to act on:
+
+- The partition tasks can be scheduled from a job queue (Solid Queue,
+  sidekiq-cron).
+- Writes made on Active Record's raw connection, such as Sequel via
+  rodauth-rails, now carry the right actor.
+
+One output change: an unfinished rollup's staging table now prints as `NOTE:`,
+not `WARNING:`. Anything that alerts on `WARNING:` in `audit_log:partitions`
+output will stop seeing it, on purpose.
+
 ### Added
 
 - **The scheduled partition tasks can run from a job queue.** Three ActiveJob
