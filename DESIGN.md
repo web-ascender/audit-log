@@ -2031,6 +2031,108 @@ intervening `execute` and the second acquire is served from cache as `true` whil
 `pg_locks` shows the session holding nothing. Mutual exclusion that reports
 success and does nothing is worse than none.
 
+### Scheduling from a job queue  **[added 2026-11-12]**
+
+The section opens by calling rotation "a daily recurring task (`config/recurring.yml` under Solid
+Queue)", and until this change the library shipped nothing a recurring task could name. The
+target stack is Kamal with Solid Queue, and occasionally Sidekiq with sidekiq-cron. There a rake
+task needs a shell and a cron-capable container that nothing else in the deployment needs. The
+first adopter on that stack wrote the job itself. That job is the evidence for every decision
+below. It needed its own base class and a heartbeat (`RailsCare.check_in`) around the run. It
+chose to fail when it found a misfiled row, because a check-in alerts on a raise and not on a log
+line. And it copied the rake task's stale `rake audit_log:rollup` into its own message, which is
+what a second hand-maintained copy of the reporting does.
+
+**The shape.** The three schedulable routines live in `AuditLog::Maintenance`
+(`rotate_partitions!`, `retire_partitions!`, `roll_up_partitions!`), which names no ActiveJob.
+The rake tasks call them with a console reporter. Three one-line jobs call them with a log
+reporter: `AuditLog::RotatePartitions`, `RetirePartitions` and `RollUpPartitions`. A host that
+wants its own base class, queue, retries or heartbeat calls the routine from its own job. That
+path is documented as first-class, because the things a host wraps around a scheduled run are
+exactly the things this library cannot guess.
+
+**What a routine says goes to a reporter as it happens.** It is not collected for the end, for the
+reason `retire!` and `rollup!` yield per partition. Rotation reports every warning and note
+*before* the freeze, so a VACUUM that raises cannot take them down with it. There are three levels, and the
+line between the last two is the decision:
+
+- **info**: what it did.
+- **note**: disk held by something awaiting a human decision. That is a retired partition, an
+  unmarked lookalike, or an unfinished rollup's staging table.
+- **warning**: the layout is misfiling rows or will block provisioning. That is rows in a default
+  partition, or a boundary off UTC midnight.
+
+The unfinished rollup was printed as a WARNING by the rake task, and it is reclassified as a note.
+The line is "does this threaten the write path", and a staging table is disk. The rollup that left
+it already failed loudly, and the next rollup reclaims it.
+
+**The job raises; the rake task prints. Each uses the channel its environment watches.**
+`rotate_partitions!` raises `MaintenanceWarning` when there was a warning, *after* all its work,
+so a misaligned boundary never costs a closed month its freeze. A job's only channel anybody
+reads is whether it failed. That covers Solid Queue's failed executions, an error tracker's
+ActiveJob integration and a check-in. A warning written to a worker log is a scheduler
+discarding output, the silent skip this section's 2026-08-29 amendment warns about. The rake task
+passes `raise_on_warnings: false` and keeps exiting 0, because a cron's channel is its output
+(stderr, mailed or captured), and changing an established cron line's exit status is not this
+change's business. Notes never raise. The daily job is the one whose failure means "the write
+path is at risk", and failing it daily over unreclaimed disk teaches a team to ignore it.
+
+**Alternatives, and why each lost:**
+
+- **Document a host-written job; ship none.** This was the pre-existing state. Every host then
+  re-derives the warning/note line and the reporting, which the first adopter did, with a stale
+  task name. The PORO alone fixes the duplication but leaves the ordinary case writing
+  boilerplate that has to be right.
+- **Jobs only, with the rake task calling `perform_now`.** That has one fewer type. But the rake
+  task would load ActiveJob, which breaks it in a host that never did, and job semantics (raise)
+  would leak into the cron path.
+- **`config/recurring.yml` `command: "AuditLog::Partitions.ensure!"`.** This needs no code at all,
+  and it is the trap. It provisions, skips the freeze and every warning, and looks complete. The
+  README names it so nobody arrives at it by economy.
+- **Report warnings through `Rails.error.report(handled: true)` and let the job succeed.** This is
+  quieter on the dashboard, and it is heard only by a host that subscribed an error tracker to
+  `Rails.error`. Failure is heard by every backend's own machinery.
+- **The jobs under the engine's `app/jobs`.** That is conventional, but production eager loading
+  would then evaluate `ActiveJob::Base` at boot in every host, including one that never loaded
+  ActiveJob. Kernel `autoload` from `lib/audit_log.rb` loads a job only when a schedule names it.
+- **A `config.parent_job`, mirroring `parent_controller`.** A controller needs the host's layout
+  and authentication to render at all; a job needs nothing from its base to run. What a host does
+  want (a heartbeat, retries off, a tenant loop) wraps the run, which its own job expresses
+  better than a superclass string.
+
+**Three omissions on the job classes are decisions:**
+
+- **`ActiveJob::Base` and no `JobContext`.** The gem names no host constant. Nothing a partition
+  run does writes an audited row. With `Current` empty, `ensure_stamped!` writes the empty stamp
+  rather than leaving the previous job's actor on the session.
+- **No `queue_as`.** `default` is the one queue every Sidekiq process consumes unless told
+  otherwise. A named queue nobody listens on would leave the daily job enqueued forever, and the
+  first symptom would be the outage it exists to prevent. The schedule entry's `queue:` is the
+  host's control.
+- **No `retry_on`.** Solid Queue retries nothing, so a failure waits for the next cycle, which is
+  what the maintenance lock and lock timeout were designed around. Sidekiq retries by default.
+  That would re-run retention and rollup outside the low-traffic window. It would also turn a
+  warning on the daily job, which persists until somebody drains, into weeks of retries with an
+  error report each: the alert fatigue the warning/note line exists to avoid. sidekiq-cron's
+  `retry:` does not reach an ActiveJob class, so the documented remedy on Sidekiq is the host's
+  own job, for all three, with retries off.
+
+**Not shipped as jobs, deliberately.** `drain_default` is the one task that must not be scheduled
+(above). Export and drop are disposal, which is never automatic. `freeze` is already inside
+rotation. `coverage` belongs in CI.
+
+**A failed freeze still carries the warnings.** The freeze runs last, after every warning and
+note has been reported. If it raises after a warning, the run raises `MaintenanceWarning` with
+the VACUUM error as its `cause` and the tail of its message. Otherwise the job would fail as a
+VACUUM error, and the misfiled rows, the finding that needs a person, would exist only in the
+worker log.
+
+**A loop over schemas** (§14) must rescue per schema and raise once after the loop, for a warning
+and a real failure alike. Otherwise one schema's misfiled row or failed VACUUM stops every later
+schema being provisioned, which turns one schema's problem into everybody's outage. The messages
+qualify table names with `current_schema()` whenever it is not `public`, so a collected failure
+says whose tables.
+
 ---
 
 ## 9. Out-of-band writes
@@ -3098,8 +3200,16 @@ library is entitled to know about, the same discipline that keeps Devise and Sol
 sweeps has to be swept by the host:
 
 ```ruby
-# The daily cron line. Its failure is a write-path outage (§8), for every tenant.
-Apartment::Tenant.each { AuditLog::Partitions.ensure! }
+# The daily run. Its failure is a write-path outage (§8), for every tenant -- so
+# one tenant's warning or failure is collected, not raised, until every tenant
+# has been provisioned.
+problems = []
+Apartment::Tenant.each do |tenant|
+  AuditLog::Maintenance.rotate_partitions!
+rescue => error
+  problems << "#{tenant}: #{error.class}: #{error.message}"
+end
+raise AuditLog::Error, "partition run: #{problems.join(" | ")}" if problems.any?
 ```
 
 Same shape for `audit_log:coverage`, `audit_log:reconcile`, retention, rollup and redaction. This

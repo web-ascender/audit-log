@@ -1,80 +1,27 @@
 # frozen_string_literal: true
 
-# Reported rather than silently skipped, for the reason orphaned_rollups is: an
-# invisible cost is one nobody reclaims. A table that LOOKS retired and carries no
-# marker of ours is either somebody's manual copy that we correctly refused to
-# touch, or a partition this library can no longer manage -- and in both cases the
-# disk it holds will never be freed by anything here.
-def report_unmarked_retired
-  AuditLog::Partitions.unmarked_retired.each do |r|
-    warn "NOTE: #{r[:name]} looks retired but carries no #{AuditLog::Partitions::RETIRED_MARKER} " \
-         "marker, so nothing here will export or drop it. " \
-         "#{ActiveSupport::NumberHelper.number_to_human_size(r[:bytes])}. " \
-         "Either this library did not retire it, or its comment was lost. Drop it by hand if it is yours."
-  end
-end
-
 # A date-bounded drop skips what it cannot date rather than guessing, so say
 # which ones -- otherwise BEFORE= appears to have simply missed them.
-def report_undateable(before)
+def report_undateable(before, reporter)
   undateable = AuditLog::Partitions.retired_partitions.reject { |r| r[:upper] }
   undateable.each do |r|
-    warn "NOTE: #{r[:name]} has an unreadable retirement marker, so BEFORE=#{before.to_date} " \
-         "skipped it. Drop it without BEFORE, or by hand."
+    reporter.note("#{r[:name]} has an unreadable retirement marker, so BEFORE=#{before.to_date} " \
+                  "skipped it. Drop it without BEFORE, or by hand.")
   end
 end
 
 namespace :audit_log do
-  desc "Create missing monthly partitions and report any default-partition overflow"
+  desc "Create missing monthly partitions, freeze newly closed ones, report anything misfiled"
   task partitions: :environment do
-    created = AuditLog::Partitions.ensure!
-    puts created.any? ? "Created: #{created.join(', ')}" : "All partitions present."
-
-    overflow = AuditLog::Partitions.overflow_count
-    overflow.each do |table, count|
-      next if count.zero?
-      warn "WARNING: #{count} row(s) in #{table}_default -- a monthly partition was missing " \
-           "when they were written. Attaching a partition covering their range will fail " \
-           "until they are relocated."
-    end
-
-    # Every boundary must be UTC midnight, or adjacent months overlap (CREATE
-    # fails) or leave a gap (rows land in the default partition, which then
-    # blocks attaching the real one). A hit here means a partition was created
-    # from a session whose TimeZone was not UTC.
-    AuditLog::Partitions.misaligned_bounds.each do |b|
-      warn "WARNING: #{b[:name]} is not UTC-aligned -- covers " \
-           "#{b[:lower].iso8601} to #{b[:upper].iso8601}. Expect a gap or an " \
-           "overlap at the month boundary; see AuditLog::Partitions."
-    end
-
-    AuditLog::Partitions.retired_partitions.each do |r|
-      warn "NOTE: #{r[:name]} is detached and still occupying " \
-           "#{ActiveSupport::NumberHelper.number_to_human_size(r[:bytes])}. Export it and drop it."
-    end
-
-    report_unmarked_retired
-
-    # FREEZING RUNS HERE, and after the creation above rather than before it.
+    # The routine is AuditLog::Maintenance.rotate_partitions!, shared with
+    # AuditLog::RotatePartitions so a job queue can schedule it without a shell.
     #
-    # Creation is the safety-critical half -- a missing future partition is a
-    # write-path outage -- so it commits first, and a VACUUM that turns out slow
-    # or fails cannot delay it.
-    #
-    # It is bounded by the frozen marker, so on most days this is two catalog
-    # queries and no work; on the first run of a month it freezes exactly one
-    # partition per table. That is what makes it safe to do daily, and it takes
-    # the "when should I run freeze?" decision away from the operator entirely.
-    frozen = AuditLog::Partitions.freeze_closed!
-    puts "Froze: #{frozen.join(', ')}" if frozen.any?
-
-    # Not partitions and not in `list`, so nothing else would ever mention them --
-    # while each holds a full year of audit data.
-    AuditLog::Partitions.orphaned_rollups.each do |r|
-      warn "WARNING: #{r[:name]} is a staging table left by a rollup that did not finish, " \
-           "occupying #{ActiveSupport::NumberHelper.number_to_human_size(r[:bytes])}. " \
-           "Re-run `rake audit_log:rollup` to reclaim it."
-    end
+    # raise_on_warnings: false, because a cron's channel is this task's OUTPUT and
+    # it has always exited 0 on a warning. The job raises instead, because nobody
+    # reads a worker's log. See the header of lib/audit_log/maintenance.rb.
+    AuditLog::Maintenance.rotate_partitions!(
+      reporter: AuditLog::Maintenance::ConsoleReporter.new, raise_on_warnings: false
+    )
   end
   # ---------------------------------------------------------------------------
   # The partition lifecycle, nested so `rails -T audit_log:partitions` shows the
@@ -111,62 +58,19 @@ namespace :audit_log do
 
     desc "DETACH partitions past the retention horizon. Never drops. DRY_RUN=1 to preview"
     task retention: :environment do
-      retention = AuditLog.config.retention
-      if retention.nil?
-        puts "Retention is disabled (AuditLog.config.retention is nil)."
-        next
-      end
-
-      expired = AuditLog::Partitions.expired_partitions
-      puts "Horizon: #{retention.inspect} -- anything ending before " \
-           "#{(Time.now.utc - retention).iso8601} is expired."
-
-      if expired.empty?
-        puts "Nothing expired."
-        next
-      end
-
-      if ENV["DRY_RUN"].present?
-        expired.each { |b| puts "  would detach: #{b[:name]} (#{b[:lower].to_date} .. #{b[:upper].to_date})" }
-        next
-      end
-
-      # Printed from the block, as each partition commits: every one is its own
-      # transaction, so a failure partway through leaves the earlier ones already
-      # retired, and the operator has to be told which.
-      AuditLog::Partitions.retire! { |r| puts "  detached: #{r[:name]} -> #{r[:retired_as]}" }
-      warn "Retired partitions still hold their data. Export and/or drop them; " \
-           "`rake audit_log:partitions` lists them."
+      # Shared with AuditLog::RetirePartitions. Takes ACCESS EXCLUSIVE.
+      AuditLog::Maintenance.retire_partitions!(
+        reporter: AuditLog::Maintenance::ConsoleReporter.new, dry_run: ENV["DRY_RUN"].present?
+      )
     end
 
     desc "Consolidate closed years of monthly partitions into yearly ones. DRY_RUN=1 to preview"
     task rollup: :environment do
-      if AuditLog.config.rollup_after.nil?
-        puts "Rollup is disabled (AuditLog.config.rollup_after is nil)."
-        next
-      end
-
-      candidates = AuditLog::Partitions.rollup_candidates
-      if candidates.empty?
-        puts "No closed year is stored as monthly partitions."
-        next
-      end
-
-      candidates.each do |c|
-        puts "#{c[:table]} #{c[:year]}: #{c[:partitions].size} monthly partition(s) -> " \
-             "#{AuditLog::Partitions.year_partition_name(c[:table], c[:year])}"
-      end
-
-      if ENV["DRY_RUN"].present?
-        puts "DRY_RUN -- nothing changed."
-        next
-      end
-
-      # Rewrites a full year of data and then takes ACCESS EXCLUSIVE for the swap.
-      # Maintenance window, not a cron.
-      AuditLog::Partitions.rollup! do |r|
-        puts "  #{r[:name]}: #{r[:rows]} row(s), replaced #{r[:replaced].size} monthly partition(s)"
-      end
+      # Shared with AuditLog::RollUpPartitions. Rewrites a full year of data and
+      # then takes ACCESS EXCLUSIVE for the swap: a maintenance window, not daily.
+      AuditLog::Maintenance.roll_up_partitions!(
+        reporter: AuditLog::Maintenance::ConsoleReporter.new, dry_run: ENV["DRY_RUN"].present?
+      )
     end
 
     desc "Export EVERY retired partition to DIR as gzipped CSV plus a manifest, verified"
@@ -216,8 +120,11 @@ namespace :audit_log do
         puts "Reclaimed #{ActiveSupport::NumberHelper.number_to_human_size(dropped.sum { |r| r[:bytes] })}."
       end
 
-      report_unmarked_retired
-      report_undateable(before) if before
+      # AuditLog::Maintenance owns the sentence, so the daily run and the drop
+      # tasks cannot describe one lookalike two ways.
+      reporter = AuditLog::Maintenance::ConsoleReporter.new
+      AuditLog::Maintenance.note_unmarked_retired(reporter)
+      report_undateable(before, reporter) if before
     end
 
     desc "Export retired partitions, verify, then DROP only what verified. [BEFORE=YYYY-MM-DD]"
@@ -244,8 +151,11 @@ namespace :audit_log do
         end
       end
 
-      report_unmarked_retired
-      report_undateable(before) if before
+      # AuditLog::Maintenance owns the sentence, so the daily run and the drop
+      # tasks cannot describe one lookalike two ways.
+      reporter = AuditLog::Maintenance::ConsoleReporter.new
+      AuditLog::Maintenance.note_unmarked_retired(reporter)
+      report_undateable(before, reporter) if before
     end
 
     desc "VACUUM FREEZE closed partitions. Runs in audit_log:partitions already. FORCE=1 to redo all"

@@ -76,6 +76,7 @@ the authority on *why* any of this is shaped the way it is.
   - [Schedule this one](#schedule-this-one)
   - [Run when something needs it](#run-when-something-needs-it)
   - [Retention: schedulable, in this order](#retention-schedulable-in-this-order)
+  - [Scheduling from a job queue](#scheduling-from-a-job-queue)
   - [Only on a scratch database](#only-on-a-scratch-database)
 - [Advanced](#advanced)
   - [Attaching to a table that already exists](#attaching-to-a-table-that-already-exists)
@@ -222,7 +223,7 @@ command, and the reasoning for any of it is linked rather than inline.
 
 ```ruby
 # Gemfile
-gem "audit_log", git: "https://github.com/web-ascender/audit-log", tag: "v0.6.3"
+gem "audit_log", git: "https://github.com/web-ascender/audit-log", tag: "v0.7.0"
 ```
 
 A private repo, so `bundle` needs credentials for the company GitHub org. Pin to
@@ -279,13 +280,29 @@ spec asserting the same thing, so the decision cannot be skipped instead of made
 
 ### 5. Schedule the daily task
 
+From your job queue:
+
+```yaml
+# config/recurring.yml (Solid Queue)
+production:
+  audit_log_partitions:
+    class: AuditLog::RotatePartitions
+    schedule: every day at 2am
+```
+
+or from cron, if you have one:
+
 ```
 0 2 * * *   bin/rails audit_log:partitions
 ```
 
 **A missing future partition is a write-path outage**, not a degraded report.
-This is the one task that belongs in a cron; the rest are in
-[Rake tasks](#rake-tasks).
+Both run the same routine. The job **fails** when the run finds rows misfiled,
+because a failed job is what your queue's dashboard and your error tracker show;
+the rake task prints the same warning to stderr. This is the one task that must
+be scheduled; the rest are in [Rake tasks](#rake-tasks), and sidekiq-cron and
+writing your own job are in
+[Scheduling from a job queue](#scheduling-from-a-job-queue).
 
 ### 6. Read the initializer before deploying
 
@@ -1621,11 +1638,13 @@ templates.
 
 Registered by the engine, so they appear in any host app's `bin/rails -T`.
 
-**One is mandatory in cron; two others belong there too, with conditions.**
+**One must be scheduled; two others belong in a schedule too, with conditions.**
 `audit_log:partitions` is operationally required, and it now folds freezing in,
 so there is nothing to schedule for that. `retention` and `rollup` are the two an
 app with a compliance horizon will *want* scheduled — retention that depends on
-somebody remembering, monthly, for seven years, is not retention.
+somebody remembering, monthly, for seven years, is not retention. All three are
+also jobs, for a schedule run by Solid Queue or sidekiq-cron rather than cron —
+see [Scheduling from a job queue](#scheduling-from-a-job-queue).
 
 The condition on both is the same. They take `ACCESS EXCLUSIVE` on an audit
 table, which blocks **every audited write in your application** while it runs, so
@@ -1644,7 +1663,7 @@ stall the write path.
 
 | Task | What it does | Why, and when |
 |---|---|---|
-| `audit_log:partitions` | Creates missing monthly partitions, **freezes newly closed ones**, and warns on default-partition overflow and retired leftovers | **Daily, in cron. Non-negotiable.** A missing future partition is a **write-path outage**, not a degraded report — every audited write fails once the calendar passes the last partition. Keeps `config.partition_months_ahead` (3) provisioned. Creation commits before the freeze, so a slow `VACUUM` can never delay the half that matters. |
+| `audit_log:partitions` | Creates missing monthly partitions, **freezes newly closed ones**, warns on default-partition overflow and boundaries off UTC midnight, and notes retired leftovers | **Daily, from cron or as `AuditLog::RotatePartitions`. Non-negotiable.** A missing future partition is a **write-path outage**, not a degraded report — every audited write fails once the calendar passes the last partition. Keeps `config.partition_months_ahead` (3) provisioned. Creation commits before the freeze, so a slow `VACUUM` can never delay the half that matters. |
 
 ### Run when something needs it
 
@@ -1691,6 +1710,99 @@ only part actually on offer.
 *named* like a retired partition — a manual copy taken before a risky migration,
 say — carries no marker and is reported, never touched. That is the same rule
 that keeps rollup from dropping somebody's `audit_events_2019`.
+
+### Scheduling from a job queue
+
+The three schedulable tasks are also ActiveJob classes, so an app on Solid Queue
+or sidekiq-cron schedules them without a shell or a cron container. Each runs
+exactly what its rake task runs.
+
+| Job | Rake task | Cadence |
+|---|---|---|
+| `AuditLog::RotatePartitions` | `audit_log:partitions` | **Daily.** |
+| `AuditLog::RetirePartitions` | `audit_log:partitions:retention` | Monthly, in a low-traffic window |
+| `AuditLog::RollUpPartitions` | `audit_log:partitions:rollup` | Monthly or quarterly, in a low-traffic window |
+
+```yaml
+# config/recurring.yml (Solid Queue)
+production:
+  audit_log_partitions:
+    class: AuditLog::RotatePartitions
+    schedule: every day at 2am
+  audit_log_retention:
+    class: AuditLog::RetirePartitions
+    schedule: "0 3 1 * *"        # 03:00 on the 1st
+  audit_log_rollup:
+    class: AuditLog::RollUpPartitions
+    schedule: "30 3 1 * *"
+```
+
+```yaml
+# config/schedule.yml (sidekiq-cron)
+audit_log_partitions:
+  cron: "0 2 * * *"
+  class: "AuditLog::RotatePartitions"
+  active_job: true
+```
+
+What a job does differently from the rake task, and what to set:
+
+- **The daily job fails when the run finds rows misfiled.** That means rows in a
+  default partition, or a partition boundary off UTC midnight. It raises
+  `AuditLog::MaintenanceWarning` **after** finishing its work, so a warning
+  never costs a closed month its freeze — and if the freeze itself fails, the
+  error raised still carries the warning. A warning written to a worker log is
+  read by nobody. The rake task prints the same warning to stderr and exits 0,
+  because a cron's channel is its output. Retired partitions waiting to be
+  disposed of, and an unfinished rollup's staging table, are **logged as notes
+  and never fail the job**. They are disk awaiting a decision, and a daily job
+  that fails over them teaches you to ignore the one job whose failure means an
+  outage.
+- **The jobs use the `default` queue.** Set `queue:` on the schedule entry to
+  move one. Never route the daily job to a queue no worker consumes: it sits
+  enqueued forever, and the first symptom is the outage it exists to prevent.
+- **Solid Queue does not retry a failed job**, so a failure waits for the next
+  run. That is the design: retention and rollup raise on lock contention so the
+  retry is next cycle's. **Sidekiq retries by default**, and sidekiq-cron's
+  `retry:` does not apply to ActiveJob classes. That re-runs retention and rollup
+  outside your window, and turns one persistent warning on the daily job into
+  weeks of retries with an error report each. **On Sidekiq, schedule all three as
+  your own job with retries off:**
+
+  ```ruby
+  class AuditLogPartitionsWorker
+    include Sidekiq::Job
+    sidekiq_options retry: false   # tomorrow's run is the retry
+
+    def perform = AuditLog::Maintenance.rotate_partitions!
+  end
+  ```
+
+**Writing your own job** is the supported path whenever you want your own base
+class, queue, retry policy or a heartbeat around the run. Call the same routines
+the shipped jobs call:
+
+```ruby
+class AuditTrail::MaintainPartitions < ApplicationJob
+  queue_as :maintenance
+
+  def perform
+    Heartbeat.check_in("audit-log-partitions") { AuditLog::Maintenance.rotate_partitions! }
+  end
+end
+
+# AuditLog::Maintenance.retire_partitions! and .roll_up_partitions! for the other two.
+```
+
+**Looping over schemas or tenants?** Do not let one schema's warning *or
+failure* stop the rest being provisioned. Rescue per schema, then raise once —
+the pattern is in
+[Installing into a schema other than `public`](#installing-into-a-schema-other-than-public).
+Messages name the schema whenever it is not `public`.
+
+Do not schedule `AuditLog::Partitions.ensure!` on its own, for example as a
+Solid Queue `command:`. It provisions, and it skips the freeze and every
+warning. [`DESIGN.md`](DESIGN.md) §8 has why the jobs are shaped like this.
 
 ### Only on a scratch database
 
@@ -2067,8 +2179,15 @@ gets an independent, self-contained audit log.
 # install migration does the right thing per tenant with no changes.
 #
 # What does NOT sweep automatically is anything scheduled. The daily task is the
-# one whose failure is a write-path outage, so it is the one to get right:
-Apartment::Tenant.each { AuditLog::Partitions.ensure! }
+# one whose failure is a write-path outage, so it is the one to get right -- and
+# one tenant's warning or failure must not stop the rest being provisioned:
+problems = []
+Apartment::Tenant.each do |tenant|
+  AuditLog::Maintenance.rotate_partitions!
+rescue => error   # a MaintenanceWarning or a real failure: keep going either way
+  problems << "#{tenant}: #{error.class}: #{error.message}"
+end
+raise AuditLog::Error, "partition run: #{problems.join(" | ")}" if problems.any?
 ```
 
 The same wrapping applies to `audit_log:coverage`, `audit_log:reconcile`,

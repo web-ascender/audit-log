@@ -42,6 +42,8 @@ module AuditLog
     EventSubscriber:   "audit_log/event_subscriber",
     Identity:          "audit_log/identity",
     JobContext:        "audit_log/job_context",
+    Maintenance:       "audit_log/maintenance",
+    MaintenanceWarning: "audit_log/maintenance",
     MigrationHelpers:  "audit_log/migration_helpers",
     Pagination:        "audit_log/pagination",
     Payload:           "audit_log/payload",
@@ -49,6 +51,12 @@ module AuditLog
     RecordLabel:       "audit_log/record_label",
     Redaction:         "audit_log/redaction",
     Registry:          "audit_log/registry",
+    # The three scheduled jobs. Autoloaded rather than in the engine's app/jobs,
+    # where production eager loading would reference ActiveJob::Base at boot in
+    # every host -- including one that never loaded ActiveJob.
+    RetirePartitions:  "audit_log/retire_partitions",
+    RollUpPartitions:  "audit_log/roll_up_partitions",
+    RotatePartitions:  "audit_log/rotate_partitions",
     Schema:            "audit_log/schema",
     TransactionStamp:  "audit_log/transaction_stamp",
     VERSION:           "audit_log/version"

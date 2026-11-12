@@ -5,6 +5,56 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## 0.7.0 — 2026-11-12
+
+Backwards compatible. There is no schema change and no migration, nothing in an
+existing app has to change, and every rake task keeps its name and its exit
+status. To upgrade, bump the tag. Two additions you may want to act on:
+
+- The partition tasks can be scheduled from a job queue (Solid Queue,
+  sidekiq-cron).
+- Writes made on Active Record's raw connection, such as Sequel via
+  rodauth-rails, now carry the right actor.
+
+One output change: an unfinished rollup's staging table now prints as `NOTE:`,
+not `WARNING:`. Anything that alerts on `WARNING:` in `audit_log:partitions`
+output will stop seeing it, on purpose.
+
+### Added
+
+- **The scheduled partition tasks can run from a job queue.** Three ActiveJob
+  classes cover them: `AuditLog::RotatePartitions` (daily, the same as
+  `audit_log:partitions`), `AuditLog::RetirePartitions` and
+  `AuditLog::RollUpPartitions`. A Solid Queue `config/recurring.yml` or a
+  sidekiq-cron schedule can name them directly, so no shell or cron container is
+  needed.
+  - The routines behind them are `AuditLog::Maintenance.rotate_partitions!`,
+    `.retire_partitions!` and `.roll_up_partitions!`. Call them from your own job
+    when you want your own base class, queue, retry policy or a heartbeat around
+    the run. The rake tasks call the same routines.
+  - **The daily job fails when the run finds rows misfiled.** That means rows in a
+    default partition, or a partition boundary off UTC midnight. It raises
+    `AuditLog::MaintenanceWarning` after finishing its work. If the freeze then
+    fails too, the warning is still what is raised, with the VACUUM error as its
+    `cause`.
+  - The rake task still prints the warning and exits 0.
+  - Messages name the schema when it is not `public`, so a failure collected
+    across tenants says which tenant.
+  - On Sidekiq, which retries by default, schedule your own job with retries off.
+    The README shows how.
+
+  README "Scheduling from a job queue", `DESIGN.md` §8.
+
+### Changed
+
+- An unfinished rollup's staging table is now reported as a **NOTE**, not a
+  WARNING. It is disk awaiting a decision, not a risk to the write path, and it
+  never fails the daily job.
+- The default-partition warning now names the repair:
+  `rake audit_log:partitions:drain_default`.
+- The unfinished-rollup message named a task that no longer exists
+  (`audit_log:rollup`). It now names `audit_log:partitions:rollup`.
+
 ### Fixed
 
 - **Writes issued on Active Record's raw connection now carry the current actor and
