@@ -100,7 +100,7 @@ Update it when you change behaviour.
 | Ruby | **>= 3.3** — the floor is `SecureRandom.uuid_v7` (DESIGN §2.1), not a preference. 3.3.0 exactly also cannot run Rails 8.1, for a reason of Rails' own. Developed on 4.0.6. |
 | Rails | **`~> 8.0`** — floor 8.0 (DESIGN §2.2), and a real ceiling below 9.0 because `TransactionStamp` prepends the *private* `raw_execute`. Developed on 8.1.3.1. |
 | PostgreSQL | **>= 16.** Developed on 18.6, port 5438 — not the workspace default 5437. CI runs 16 and 18; DESIGN §20 is the authority and says the design "targets PG 16 and requires nothing newer". Verified: the whole suite passes on 16.13. |
-| Tests | RSpec against `spec/dummy` (578 examples), on every push via GitHub Actions — six legs: Ruby 3.3/4.0.6 × Rails 8.0/latest × PG 16/18 |
+| Tests | RSpec against `spec/dummy` (606 examples), on every push via GitHub Actions — six legs: Ruby 3.3/4.0.6 × Rails 8.0/latest × PG 16/18 |
 | Runtime deps | `rails`, `csv` (export). **`pg` and `pagy` deliberately are not** — the host app picks its own `pg` build, and its own pagination gem. `AuditLog::Pagination` is this library's own keyset pager precisely so a `pagy` constraint does not propagate into the host. Nor is `sequel`: `sequel` and `sequel-activerecord_connection` are dev-only Gemfile entries (`require: false`) for `sequel_correlation_spec`. The library reaches Sequel through Active Record's `raw_connection` and never names it. |
 
 ```bash
@@ -1122,6 +1122,55 @@ Do not "fix" these without reading the linked reasoning first.
   audit tables. The README names the asymmetry so nobody discovers which one they
   ran.
 
+### Scheduled maintenance jobs (DESIGN §8, "Scheduling from a job queue")
+
+- **The routine is `AuditLog::Maintenance`, and the rake tasks and the jobs are
+  both thin callers of it.** `rotate_partitions!`, `retire_partitions!`,
+  `roll_up_partitions!`. Do not put logic back into the rake file or into a job.
+  A second copy of the reporting is how the first adopter's hand-rolled job came
+  to repeat the rake task's stale `audit_log:rollup` task name.
+- **`maintenance.rb` names no ActiveJob, and the jobs live in `lib/` behind
+  Kernel `autoload`, not in `app/jobs`.** The rake tasks reach `Maintenance`, so
+  an ActiveJob reference there breaks them in a host that never loaded it. A job
+  under `app/` is eager-loaded at boot in every host. `maintenance_spec` greps
+  for both.
+- **The job RAISES on a warning; the rake task PRINTS it and exits 0.** The
+  routine is the same, and only `raise_on_warnings:` differs. Each surfaces
+  through the channel its environment watches: nobody reads a worker log, and a
+  cron's channel is its output. The raise comes AFTER all the work, so a
+  misfiled row never costs a closed month its freeze. Every warning AND note is
+  reported before the freeze, which runs LAST. If the freeze raises after a
+  warning, the run raises `MaintenanceWarning` with the VACUUM error as its
+  `cause`, so the misfiled rows are not left only in a worker log. Do not move
+  any of it. Do not make the rake task exit non-zero to "match": that changes an
+  established cron line's contract. Warnings go through a private `Tally`
+  wrapper, never a separate list, so a warning cannot be logged and yet fail to
+  fail the job.
+- **Warning means the write path or row placement is at risk** (default-partition
+  overflow, a misaligned boundary). **Note means disk awaiting a decision**
+  (retired, an unmarked lookalike, an orphaned rollup). The orphaned rollup was a
+  WARNING in the rake task and is a note now, on purpose. Failing the daily job
+  over disk teaches a team to ignore the one job whose failure is an outage.
+- **`ActiveJob::Base`, no `JobContext`, no `queue_as`, no `retry_on`. All four
+  are decisions.** The first three: no host constant, nothing audited is
+  written, and `default` is the one queue every Sidekiq process consumes, where
+  a named queue nobody consumes leaves the daily job enqueued forever. The
+  fourth: Solid Queue retries nothing, so the retry is next cycle's. Sidekiq's
+  default retries would re-run retention and rollup outside the window, and turn
+  one persistent warning into weeks of retries, so the README sends Sidekiq apps
+  to their own job with retries off, for all three. Do not add a
+  `config.parent_job`. A host wanting a base class, a heartbeat or retries off
+  writes its own job around the routine, and the README documents that as
+  first-class.
+- **No job for `drain_default`, export or drop.** Draining must not be
+  scheduled, and disposal is never automatic.
+- **A schema/tenant loop rescues PER SCHEMA and raises once after the loop**,
+  for a warning and a real failure alike. A raise inside the loop, of either
+  kind, stops later schemas being provisioned. README and DESIGN §14 both show
+  the rescuing form. Do not "simplify" either back to
+  `Apartment::Tenant.each { … }` with a bare call. Messages qualify table names
+  with `current_schema()` off `public`, so a collected failure says whose.
+
 ### The starter stylesheet (DESIGN §21.4)
 
 - **The engine ships NO CSS, and that follows from `parent_controller` rather
@@ -1319,6 +1368,7 @@ purpose, so do not re-run the audit and delete them.
 | `add_audit_dimension_index` / `remove_audit_dimension_index` | published migration API, for the tuning step when one facet turns out to be on every screen (DESIGN §23) |
 | `DimensionIndex.status` | for an operator asking "did that retrofit finish?" without re-running the migration |
 | `TransactionStamp#raw_connection` | Active Record never calls its own `raw_connection`; hosts, `sequel-activerecord_connection` (once per Sequel statement) and Action Cable's PostgreSQL adapter do. Deleting it re-opens §26's misattribution, and only `sequel_correlation_spec` and `correlation_spec`'s raw-connection example would say so |
+| `AuditLog::RotatePartitions`, `RetirePartitions`, `RollUpPartitions` | named only from a HOST's `config/recurring.yml` or sidekiq-cron schedule, as a string. Deleting one breaks a schedule in an app you cannot see, and the first symptom of losing `RotatePartitions` is a write-path outage months later |
 
 **Two are kept for symmetry and that is a real reason.** `Change#updated?` and
 `Timeline::Activity#change_only?` are each the unused third of a set whose other
@@ -1404,6 +1454,11 @@ had to change.
 The README carries the full reference — what each does, why, and when. Keep the
 two in step: a task added here and not there is a task nobody runs.
 
+`partitions`, `partitions:retention` and `partitions:rollup` are also
+`AuditLog::RotatePartitions`, `RetirePartitions` and `RollUpPartitions`, for a
+Solid Queue or sidekiq-cron schedule. All six call `AuditLog::Maintenance` — see
+"Scheduled maintenance jobs" above.
+
 `audit_log:benchmark` writes synthetic rows into the real audit tables. Run it
 against a scratch database or clean up after. Drive any new benchmark query
 through the library's own query objects — an earlier version hand-rolled
@@ -1439,7 +1494,7 @@ one. Do not reintroduce it.
 ## Testing
 
 ```bash
-bundle exec rspec                         # 578 examples, against spec/dummy
+bundle exec rspec                         # 606 examples, against spec/dummy
 bundle exec rspec spec/audit_log          # the library proper
 bundle exec rspec spec/requests           # the auditor UI and the CSV export
 bundle exec rspec spec/preview.rb         # dev tool: renders 19 screens to spec/dummy/public/
@@ -1490,6 +1545,7 @@ property from different angles — **that nothing goes missing without saying so
 | `correlation_spec` | a write is credited to the PREVIOUS unit of work's actor, or lands NULL, because something reverted or replaced the session while the memo kept its stamp — a rollback of any of three kinds, the COMMIT of an aborted transaction, a reconnect at handoff, a `disconnect!` — or a stamp sent into an aborted or mid-COPY session takes the caller's statement or rollback down with it |
 | `sequel_correlation_spec` | a Sequel statement (rodauth-rails) is credited to an EARLIER unit of work's actor, a cold connection's first Sequel write lands uncorrelated, the stamp lands on a different pool from the one the extension leased, a stamp in front of a ROLLBACK leaves the pooled connection aborted, or the library starts naming Sequel |
 | `capture_spec` | capture stops without saying so, or resumes under different arguments than it had — a `record_type` naming the wrong model, an exclusion silently dropped so a password column re-enters the diffs |
+| `maintenance_spec` | a scheduled run finds rows misfiled and nobody hears — the job succeeds on a warning, a warning waits for the end where a failing VACUUM loses it, a note starts failing the daily job, or ActiveJob becomes reachable from the rake path or from boot |
 
 A change that makes any of those pass *more easily* is a regression.
 

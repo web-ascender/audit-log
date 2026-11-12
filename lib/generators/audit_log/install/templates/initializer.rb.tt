@@ -126,8 +126,10 @@ AuditLog.configure do |config|
   # Policy, not implementation -- someone has to own the horizon, and it should be
   # visible where the rest of this app's audit decisions are.
   #
-  # Only `rake audit_log:partitions` is safe to schedule. The others take ACCESS
-  # EXCLUSIVE on an audit table and belong in a maintenance window.
+  # `rake audit_log:partitions` (or the AuditLog::RotatePartitions job) must run
+  # daily. Retention and rollup (AuditLog::RetirePartitions, RollUpPartitions)
+  # may be scheduled monthly, in a low-traffic window: they take ACCESS EXCLUSIVE
+  # on an audit table. README "Scheduling from a job queue".
   # config.retention        = 7.years   # nil disables retirement entirely
   # config.rollup_after     = 2.years   # consolidate closed years; nil disables
 

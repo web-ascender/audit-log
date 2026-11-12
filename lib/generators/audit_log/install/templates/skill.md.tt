@@ -53,10 +53,10 @@ gems**; very little here works the way `paper_trail` or `audited` does.
 
 ## Operating it
 
-`bin/rails audit_log:partitions` daily is the only task that belongs in cron: a missing
-future partition is a write-path outage, not a degraded report. Retention, rollup, export,
-redaction and the reconciler are all in the README's *Rake tasks* section, with the
-conditions each one needs.
+The partition run must be scheduled daily — `bin/rails audit_log:partitions` from cron, or its
+job from a Solid Queue or sidekiq-cron schedule: a missing future partition is a write-path
+outage, not a degraded report. Retention, rollup, export, redaction and the reconciler are all
+in the README's *Rake tasks* section, with the conditions each one needs.
 
 ---
 

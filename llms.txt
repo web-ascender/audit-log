@@ -56,8 +56,10 @@ lines and are not meant to be read end to end.
   library names no application constant, so the answer is a config attribute rather than a
   patch.
 - **Operate it** — [Rake tasks](README.md#rake-tasks). `audit_log:partitions` daily is the
-  only task that belongs in cron: a missing future partition is a **write-path outage**, not
-  a degraded report.
+  only task that must be scheduled: a missing future partition is a **write-path outage**, not
+  a degraded report. On Solid Queue or sidekiq-cron, schedule `AuditLog::RotatePartitions`
+  instead, or call `AuditLog::Maintenance.rotate_partitions!` from your own job —
+  [Scheduling from a job queue](README.md#scheduling-from-a-job-queue).
 - **Erase personal data from the log** —
   [Redacting values under an erasure request](README.md#redacting-values-under-an-erasure-request).
   Values go, structure stays: `changed_columns` is never touched, so *"the email changed at
