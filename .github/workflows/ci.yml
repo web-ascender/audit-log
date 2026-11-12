@@ -145,7 +145,8 @@ jobs:
       - name: Install the PostgreSQL 18 client
         run: |
           sudo install -d /usr/share/keyrings
-          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --retry-max-time 120 \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc \
             | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
           echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list
